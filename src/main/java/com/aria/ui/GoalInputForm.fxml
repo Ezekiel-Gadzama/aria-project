@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<?import javafx.geometry.Insets?>
+
+<VBox spacing="10" xmlns="http://javafx.com/javafx/11.0.1"
+      xmlns:fx="http://javafx.com/fxml/1"
+      fx:controller="com.aria.ui.MainController">
+    <padding><Insets top="20" right="20" bottom="20" left="20"/></padding>
+
+    <Label text="ARIA - Automated Relationship & Interaction Assistant"
+           style="-fx-font-size: 18px; -fx-font-weight: bold;"/>
+
+    <GridPane hgap="10" vgap="10">
+        <Label text="Target Name:" GridPane.columnIndex="0" GridPane.rowIndex="0"/>
+        <TextField fx:id="targetNameField" GridPane.columnIndex="1" GridPane.rowIndex="0"/>
+
+        <Label text="Platform:" GridPane.columnIndex="0" GridPane.rowIndex="1"/>
+        <ComboBox fx:id="platformComboBox" GridPane.columnIndex="1" GridPane.rowIndex="1"/>
+
+        <Label text="Meeting Context:" GridPane.columnIndex="0" GridPane.rowIndex="2"/>
+        <TextArea fx:id="contextArea" GridPane.columnIndex="1" GridPane.rowIndex="2"
+                  prefRowCount="3" wrapText="true"/>
+
+        <Label text="Desired Outcome:" GridPane.columnIndex="0" GridPane.rowIndex="3"/>
+        <TextArea fx:id="outcomeArea" GridPane.columnIndex="1" GridPane.rowIndex="3"
+                  prefRowCount="2" wrapText="true"/>
+    </GridPane>
+
+    <HBox spacing="10" alignment="CENTER_RIGHT">
+        <Button text="Ingest Chat History" onAction="#onIngestHistory"/>
+        <Button text="Start Conversation" onAction="#onStartConversation"
+                style="-fx-font-weight: bold;"/>
+    </HBox>
+</VBox>

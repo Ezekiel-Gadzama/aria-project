@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<?import javafx.geometry.Insets?>
+
+<VBox spacing="10" xmlns="http://javafx.com/javafx/11.0.1"
+      xmlns:fx="http://javafx.com/fxml/1"
+      fx:controller="com.aria.ui.ConversationController">
+    <padding><Insets top="20" right="20" bottom="20" left="20"/></padding>
+
+    <Label text="Conversation with " fx:id="targetLabel"
+           style="-fx-font-size: 16px; -fx-font-weight: bold;"/>
+
+    <TextArea fx:id="conversationArea" prefHeight="300" prefWidth="400"
+              editable="false" wrapText="true"/>
+
+    <HBox spacing="10">
+        <TextArea fx:id="messageInput" prefWidth="300" prefRowCount="2"
+                  wrapText="true" promptText="Type your message..."/>
+        <Button text="Send" onAction="#onSendMessage"
+                style="-fx-font-weight: bold;"/>
+    </HBox>
+
+    <HBox spacing="10" alignment="CENTER_RIGHT">
+        <Button text="AI Suggest" onAction="#onAISuggest" style="-fx-background-color: #4CAF50; -fx-text-fill: white;"/>
+        <Button text="End Conversation" onAction="#onEndConversation" style="-fx-background-color: #f44336; -fx-text-fill: white;"/>
+    </HBox>
+
+    <ProgressIndicator fx:id="progressIndicator" visible="false"/>
+</VBox>
