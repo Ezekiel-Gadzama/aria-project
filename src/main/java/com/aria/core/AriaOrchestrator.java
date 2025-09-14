@@ -1,32 +1,57 @@
 package com.aria.core;
 
+import com.aria.analysis.ChatAnalyzer;
 import com.aria.core.model.ConversationGoal;
 import com.aria.ai.OpenAIClient;
 import com.aria.ai.ResponseGenerator;
+import com.aria.core.strategy.AdvancedResponseStrategy;
 import com.aria.platform.PlatformConnector;
 import com.aria.platform.telegram.TelegramConnector;
-import com.aria.core.strategy.BasicResponseStrategy;
+import com.aria.core.strategy.ResponseStrategy;
+import com.aria.core.strategy.StrategyFactory;
+import java.util.Map;
+import java.util.List;
+import com.aria.core.model.Message;
 
 public class AriaOrchestrator {
     private PlatformConnector platformConnector;
     private OpenAIClient openAIClient;
     private ResponseGenerator responseGenerator;
-    private BasicResponseStrategy responseStrategy;
+    private ResponseStrategy responseStrategy;
     private ConversationGoal currentGoal;
-    private StringBuilder conversationHistory;
 
     public AriaOrchestrator() {
         this.openAIClient = new OpenAIClient();
         this.responseGenerator = new ResponseGenerator(openAIClient);
-        this.responseStrategy = new BasicResponseStrategy(responseGenerator);
-        this.conversationHistory = new StringBuilder();
+        this.responseStrategy = StrategyFactory.createStrategy(
+                StrategyFactory.StrategyType.BASIC,
+                responseGenerator
+        );
     }
 
     public void initializeConversation(ConversationGoal goal) {
         this.currentGoal = goal;
         this.platformConnector = createPlatformConnector(goal.getPlatform());
-        this.responseStrategy.setConversationGoal(goal);
-        this.conversationHistory.setLength(0); // Clear previous history
+        this.responseStrategy.initialize(goal);
+    }
+
+    public void initializeAdvancedConversation(ConversationGoal goal, Map<String, List<Message>> historicalChats) {
+        this.currentGoal = goal;
+        this.platformConnector = createPlatformConnector(goal.getPlatform());
+
+        // Switch to advanced strategy
+        this.responseStrategy = StrategyFactory.createStrategy(
+                StrategyFactory.StrategyType.ADVANCED,
+                responseGenerator,
+                new ChatAnalyzer() // You'll need to implement ChatAnalyzer
+        );
+
+        this.responseStrategy.initialize(goal);
+
+        // Load historical data for advanced strategy
+        if (responseStrategy instanceof AdvancedResponseStrategy) {
+            ((AdvancedResponseStrategy) responseStrategy).loadHistoricalData(historicalChats);
+        }
     }
 
     private PlatformConnector createPlatformConnector(String platform) {
@@ -39,29 +64,18 @@ public class AriaOrchestrator {
     }
 
     public String generateResponse(String incomingMessage) {
-        // Add incoming message to history
-        addToHistory(currentGoal.getTargetName(), incomingMessage);
-
-        // Generate response using the strategy
-        String response = responseStrategy.generateResponse(incomingMessage);
-
-        // Add AI response to history
-        addToHistory("You", response);
-
-        return response;
+        return responseStrategy.generateResponse(incomingMessage);
     }
 
     public String generateOpeningMessage() {
-        String openingMessage = responseStrategy.generateOpeningMessage();
-        addToHistory("You", openingMessage);
-        return openingMessage;
+        return responseStrategy.generateOpeningMessage();
     }
 
     public boolean sendMessage(String message) {
-        if (platformConnector != null) {
+        if (platformConnector != null && currentGoal != null) {
             boolean success = platformConnector.sendMessage(currentGoal.getTargetName(), message);
             if (success) {
-                addToHistory("You", message);
+                // Message sent successfully, it will be added to history by the strategy
             }
             return success;
         }
@@ -75,18 +89,15 @@ public class AriaOrchestrator {
     }
 
     public String getConversationHistory() {
-        return conversationHistory.toString();
+        return responseStrategy.getConversationHistory();
     }
 
     public void clearConversationHistory() {
-        conversationHistory.setLength(0);
+        responseStrategy.clearHistory();
     }
 
-    private void addToHistory(String sender, String message) {
-        conversationHistory.append(sender)
-                .append(": ")
-                .append(message)
-                .append("\n\n");
+    public double getEngagementLevel() {
+        return responseStrategy.estimateEngagementLevel();
     }
 
     // Getters for external access
@@ -98,7 +109,7 @@ public class AriaOrchestrator {
         return currentGoal;
     }
 
-    public BasicResponseStrategy getResponseStrategy() {
+    public ResponseStrategy getResponseStrategy() {
         return responseStrategy;
     }
 }

@@ -8,7 +8,7 @@
       fx:controller="com.aria.ui.MainController">
     <padding><Insets top="20" right="20" bottom="20" left="20"/></padding>
 
-    <Label text="ARIA - Automated Relationship & Interaction Assistant"
+    <Label text="ARIA - Automated Relationship &amp; Interaction Assistant"
            style="-fx-font-size: 18px; -fx-font-weight: bold;"/>
 
     <GridPane hgap="10" vgap="10">

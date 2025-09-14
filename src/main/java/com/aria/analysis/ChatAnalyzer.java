@@ -6,6 +6,7 @@ import com.aria.core.model.Message;
 import com.aria.core.model.ChatProfile;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 public class ChatAnalyzer {
     private final SuccessScorer successScorer;
