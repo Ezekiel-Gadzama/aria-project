@@ -36,3 +36,13 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+### files ###
+.media/
+aria_session.session
+aria_session.session-journal
+chats_export.json
+media/
+
+### Configuration files ###
+src/main/resources/config.properties

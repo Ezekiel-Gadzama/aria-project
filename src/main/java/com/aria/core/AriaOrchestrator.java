@@ -73,7 +73,7 @@ public class AriaOrchestrator {
 
     public boolean sendMessage(String message) {
         if (platformConnector != null && currentGoal != null) {
-            boolean success = platformConnector.sendMessage(currentGoal.getTargetName(), message);
+            boolean success = platformConnector.sendMessage(currentGoal.getTargetAlias_Number(), message);
             if (success) {
                 // Message sent successfully, it will be added to history by the strategy
             }
@@ -84,8 +84,10 @@ public class AriaOrchestrator {
 
     public void startChatIngestion() {
         if (platformConnector != null) {
+            System.out.println("Got here");
             platformConnector.ingestChatHistory();
         }
+
     }
 
     public String getConversationHistory() {

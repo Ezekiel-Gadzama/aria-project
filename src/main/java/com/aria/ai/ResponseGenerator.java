@@ -67,7 +67,7 @@ public class ResponseGenerator {
             Latest message from target: %s
             
             Generate a natural, engaging response that moves toward the goal:""",
-                currentGoal.getTargetName(),
+                currentGoal.getTargetAlias_Number(),
                 currentGoal.getMeetingContext(),
                 currentGoal.getDesiredOutcome(),
                 styleContext,
@@ -101,7 +101,7 @@ public class ResponseGenerator {
             Goal: %s
             %s
             Make it natural and personalized:""",
-                currentGoal.getTargetName(),
+                currentGoal.getTargetAlias_Number(),
                 currentGoal.getMeetingContext(),
                 currentGoal.getDesiredOutcome(),
                 stylePrompt);
@@ -143,7 +143,7 @@ public class ResponseGenerator {
             Latest message from target: %s
             
             Generate a response that matches the specified communication style:""",
-                currentGoal.getTargetName(),
+                currentGoal.getTargetAlias_Number(),
                 currentGoal.getMeetingContext(),
                 currentGoal.getDesiredOutcome(),
                 styleContext,

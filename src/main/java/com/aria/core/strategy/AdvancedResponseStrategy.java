@@ -1,6 +1,5 @@
 package com.aria.core.strategy;
 
-import com.aria.core.model.ConversationGoal;
 import com.aria.core.model.ChatProfile;
 import com.aria.core.model.Message;
 import com.aria.analysis.ChatAnalyzer;
@@ -41,7 +40,7 @@ public class AdvancedResponseStrategy extends BaseResponseStrategy {
     public String generateResponse(String incomingMessage) {
         validateInitialization();
 
-        addToHistory(currentGoal.getTargetName(), incomingMessage);
+        addToHistory(currentGoal.getTargetAlias_Number(), incomingMessage);
 
         String personalizedResponse = generatePersonalizedResponse(
                 incomingMessage,
@@ -125,7 +124,7 @@ public class AdvancedResponseStrategy extends BaseResponseStrategy {
                 synthesizedProfile.getHumorLevel(),
                 synthesizedProfile.getFormalityLevel(),
                 synthesizedProfile.getEmpathyLevel(),
-                currentGoal.getTargetName(),
+                currentGoal.getTargetAlias_Number(),
                 currentGoal.getMeetingContext(),
                 currentGoal.getDesiredOutcome(),
                 conversationHistory,

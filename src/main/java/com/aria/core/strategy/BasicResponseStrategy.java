@@ -1,6 +1,5 @@
 package com.aria.core.strategy;
 
-import com.aria.core.model.ConversationGoal;
 import com.aria.ai.ResponseGenerator;
 
 public class BasicResponseStrategy extends BaseResponseStrategy {
@@ -22,7 +21,7 @@ public class BasicResponseStrategy extends BaseResponseStrategy {
         validateInitialization();
 
         // Add incoming message to history
-        addToHistory(currentGoal.getTargetName(), incomingMessage);
+        addToHistory(currentGoal.getTargetAlias_Number(), incomingMessage);
 
         // Generate AI response with full context
         String aiResponse = responseGenerator.generateResponse(

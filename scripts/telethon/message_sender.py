@@ -11,6 +11,7 @@ api_id = os.getenv('TELEGRAM_API_ID')
 api_hash = os.getenv('TELEGRAM_API_HASH')
 phone = os.getenv('TELEGRAM_PHONE')
 
+
 async def send_message(target_username, message):
     client = TelegramClient('aria_sender_session', api_id, api_hash)
 
@@ -28,9 +29,11 @@ async def send_message(target_username, message):
     finally:
         await client.disconnect()
 
+
 if __name__ == '__main__':
     # For testing
     import sys
+
     if len(sys.argv) == 3:
         target = sys.argv[1]
         msg = sys.argv[2]

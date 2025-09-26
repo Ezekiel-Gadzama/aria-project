@@ -2,19 +2,19 @@
 package com.aria.core.model;
 
 public class ConversationGoal {
-    private String targetName;
+    private String targetAlias_Number;
     private String platform;
     private String context;
     private String desiredOutcome;
     private String meetingContext;
 
     // Constructors, getters, setters
-    public String getTargetName() {
-        return targetName;
+    public String getTargetAlias_Number() {
+        return targetAlias_Number;
     }
 
-    public void setTargetName(String targetName) {
-        this.targetName = targetName;
+    public void setTargetAlias_Number(String targetAlias_Number) {
+        this.targetAlias_Number = targetAlias_Number;
     }
 
     public String getPlatform() {

@@ -1,6 +1,7 @@
 // MainApp.java
 package com.aria.ui;
 
+import com.aria.ui.MainController;
 import javafx.application.Application;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
@@ -10,15 +11,15 @@ import javafx.stage.Stage;
 public class MainApp extends Application {
     @Override
     public void start(Stage primaryStage) throws Exception {
-        Parent root = FXMLLoader.load(getClass().getResource("/com/aria/ui/GoalInputForm.fxml"));
+        FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/aria/ui/GoalInputForm.fxml"));
+        Parent root = loader.load();
 
-        Scene scene = new Scene(root, 600, 400);
-        scene.getStylesheets().add(getClass().getResource("/application.css").toExternalForm());
+        // Get the controller and set the primary stage
+        MainController controller = loader.getController();
+        controller.setPrimaryStage(primaryStage);
 
         primaryStage.setTitle("ARIA - Automated Relationship & Interaction Assistant");
-        primaryStage.setScene(scene);
-        primaryStage.setMinWidth(600);
-        primaryStage.setMinHeight(400);
+        primaryStage.setScene(new Scene(root));
         primaryStage.show();
     }
 

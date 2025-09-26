@@ -59,7 +59,7 @@ public class DatabaseManager {
         try (Connection conn = DriverManager.getConnection(URL);
              PreparedStatement pstmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
 
-            pstmt.setString(1, goal.getTargetName());
+            pstmt.setString(1, goal.getTargetAlias_Number());
             pstmt.setString(2, goal.getPlatform());
             pstmt.setString(3, goal.getDesiredOutcome());
             pstmt.setString(4, goal.getMeetingContext());
