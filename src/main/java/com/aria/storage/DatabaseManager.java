@@ -1,7 +1,10 @@
 // DatabaseManager.java
 package com.aria.storage;
 
+import com.aria.core.model.TargetUser;
 import com.aria.core.model.User;
+import com.aria.platform.Platform;
+import com.aria.platform.UserPlatform;
 
 import java.sql.*;
 import java.time.LocalDateTime;
@@ -9,7 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class DatabaseManager {
-    // ⚠️ Update with your PostgreSQL connection details
+    // PostgresSQL connection detail
     private static final String URL = "jdbc:postgresql://localhost:5432/aria";
     private static final String USER = "postgres";
     private static final String PASSWORD = "Ezekiel(23)";
@@ -101,11 +104,39 @@ public class DatabaseManager {
                 )
             """;
 
+
+            // Target Users table
+            String createTargetUsersTable = """
+                CREATE TABLE IF NOT EXISTS target_users (
+                    id SERIAL PRIMARY KEY,
+                    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(user_id, name)
+                )
+            """;
+
+            // Target User Platforms table
+            String createTargetUserPlatformsTable = """
+                CREATE TABLE IF NOT EXISTS target_user_platforms (
+                    id SERIAL PRIMARY KEY,
+                    target_user_id INT NOT NULL REFERENCES target_users(id) ON DELETE CASCADE,
+                    platform TEXT NOT NULL,
+                    username TEXT,
+                    number TEXT,
+                    platform_id INT DEFAULT 0,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(target_user_id, platform)
+                )
+            """;
+
             stmt.execute(createUsersTable);
             stmt.execute(createPlatformTable);
             stmt.execute(createDialogsTable);
             stmt.execute(createMessagesTable);
             stmt.execute(createMediaTable);
+            stmt.execute(createTargetUsersTable);
+            stmt.execute(createTargetUserPlatformsTable);
 
         }
     }
@@ -315,5 +346,142 @@ public class DatabaseManager {
             }
         }
         return files;
+    }
+
+    // =====================
+    // Target User Operations
+    // =====================
+
+    public List<TargetUser> getTargetUsersByUserId(int userId) throws SQLException {
+        List<TargetUser> targetUsers = new ArrayList<>();
+
+        String sql = """
+        SELECT tu.id, tu.name, tup.platform, tup.username, tup.number, tup.platform_id
+        FROM target_users tu
+        LEFT JOIN target_user_platforms tup ON tu.id = tup.target_user_id
+        WHERE tu.user_id = ?
+        ORDER BY tu.name, tup.platform
+    """;
+
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setInt(1, userId);
+            ResultSet rs = pstmt.executeQuery();
+
+            TargetUser currentTarget = null;
+            while (rs.next()) {
+                int targetId = rs.getInt("id");
+                String targetName = rs.getString("name");
+
+                // If this is a new target user, create it
+                if (currentTarget == null || currentTarget.getTargetId() != targetId) {
+                    currentTarget = new TargetUser();
+                    currentTarget.setTargetId(targetId);
+                    currentTarget.setName(targetName);
+                    currentTarget.setPlatforms(new ArrayList<>());
+                    targetUsers.add(currentTarget);
+                }
+
+                // Add platform if it exists
+                String platformName = rs.getString("platform");
+                if (platformName != null && !rs.wasNull()) {
+                    try {
+                        Platform platform = Platform.valueOf(platformName.toUpperCase());
+                        UserPlatform userPlatform = new UserPlatform(
+                                rs.getString("username"),
+                                rs.getString("number"),
+                                rs.getInt("platform_id"),
+                                platform
+                        );
+                        currentTarget.getPlatforms().add(userPlatform);
+                    } catch (IllegalArgumentException e) {
+                        // Skip invalid platform names
+                        System.err.println("Invalid platform name: " + platformName);
+                    }
+                }
+            }
+        }
+        return targetUsers;
+    }
+
+    public boolean saveTargetUser(int userId, TargetUser targetUser) throws SQLException {
+        Connection conn = getConnection();
+        try {
+            conn.setAutoCommit(false);
+
+            int targetUserId;
+            if (targetUser.getTargetId() == 0) {
+                // Insert new target user
+                String insertTargetSql = """
+                INSERT INTO target_users (user_id, name)
+                VALUES (?, ?)
+                RETURNING id
+            """;
+                try (PreparedStatement pstmt = conn.prepareStatement(insertTargetSql)) {
+                    pstmt.setInt(1, userId);
+                    pstmt.setString(2, targetUser.getName());
+                    ResultSet rs = pstmt.executeQuery();
+                    if (rs.next()) {
+                        targetUserId = rs.getInt(1);
+                    } else {
+                        throw new SQLException("Failed to insert target user");
+                    }
+                }
+            } else {
+                // Update existing target user
+                targetUserId = targetUser.getTargetId();
+                String updateTargetSql = "UPDATE target_users SET name = ? WHERE id = ?";
+                try (PreparedStatement pstmt = conn.prepareStatement(updateTargetSql)) {
+                    pstmt.setString(1, targetUser.getName());
+                    pstmt.setInt(2, targetUserId);
+                    pstmt.executeUpdate();
+                }
+
+                // Delete existing platforms
+                String deletePlatformsSql = "DELETE FROM target_user_platforms WHERE target_user_id = ?";
+                try (PreparedStatement pstmt = conn.prepareStatement(deletePlatformsSql)) {
+                    pstmt.setInt(1, targetUserId);
+                    pstmt.executeUpdate();
+                }
+            }
+
+            // Insert platforms
+            String insertPlatformSql = """
+            INSERT INTO target_user_platforms (target_user_id, platform, username, number, platform_id)
+            VALUES (?, ?, ?, ?, ?)
+        """;
+            try (PreparedStatement pstmt = conn.prepareStatement(insertPlatformSql)) {
+                for (UserPlatform platform : targetUser.getPlatforms()) {
+                    pstmt.setInt(1, targetUserId);
+                    pstmt.setString(2, platform.getPlatform().name());
+                    pstmt.setString(3, platform.getUsername());
+                    pstmt.setString(4, platform.getNumber());
+                    pstmt.setInt(5, platform.getPlatformId());
+                    pstmt.addBatch();
+                }
+                pstmt.executeBatch();
+            }
+
+            conn.commit();
+            return true;
+
+        } catch (SQLException e) {
+            conn.rollback();
+            throw e;
+        } finally {
+            conn.setAutoCommit(true);
+            conn.close();
+        }
+    }
+
+    public boolean deleteTargetUser(int userId, String targetName) throws SQLException {
+        String sql = "DELETE FROM target_users WHERE user_id = ? AND name = ?";
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setInt(1, userId);
+            pstmt.setString(2, targetName);
+            int rowsAffected = pstmt.executeUpdate();
+            return rowsAffected > 0;
+        }
     }
 }

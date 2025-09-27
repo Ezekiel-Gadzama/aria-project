@@ -20,18 +20,15 @@ public class BasicResponseStrategy extends BaseResponseStrategy {
     public String generateResponse(String incomingMessage) {
         validateInitialization();
 
-        // Add incoming message to history
-        addToHistory(currentGoal.getTargetAlias_Number(), incomingMessage);
+        // Use the helper method from base class
+        addToHistory(getCurrentTargetAlias(), incomingMessage);
 
-        // Generate AI response with full context
         String aiResponse = responseGenerator.generateResponse(
                 incomingMessage,
                 getConversationHistory()
         );
 
-        // Add AI response to history
         addToHistory("You", aiResponse);
-
         return aiResponse;
     }
 }

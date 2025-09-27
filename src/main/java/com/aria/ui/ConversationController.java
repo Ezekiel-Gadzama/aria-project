@@ -1,8 +1,7 @@
-// ConversationController.java
-
 package com.aria.ui;
 
 import com.aria.core.AriaOrchestrator;
+import com.aria.service.UserService;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
@@ -20,6 +19,7 @@ public class ConversationController {
 
     private AriaOrchestrator orchestrator;
     private Stage primaryStage;
+    private UserService userService; // Add this field
 
     public void setOrchestrator(AriaOrchestrator orchestrator) {
         this.orchestrator = orchestrator;
@@ -27,6 +27,10 @@ public class ConversationController {
 
     public void setPrimaryStage(Stage primaryStage) {
         this.primaryStage = primaryStage;
+    }
+
+    public void setUserService(UserService userService) {
+        this.userService = userService;
     }
 
     public void setTarget(String targetName) {
@@ -86,29 +90,32 @@ public class ConversationController {
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
         alert.setTitle("End Conversation");
         alert.setHeaderText("Are you sure you want to end this conversation?");
-        alert.setContentText("This will return to the main setup screen.");
+        alert.setContentText("This will return to the target management screen.");
 
         alert.showAndWait().ifPresent(response -> {
             if (response == ButtonType.OK) {
-                returnToMainView();
+                returnToTargetManagement(); // Changed method name
             }
         });
     }
 
-    private void returnToMainView() {
+    private void returnToTargetManagement() { // Renamed method
         try {
-            FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/aria/ui/GoalInputForm.fxml"));
-            Parent mainRoot = loader.load();
+            FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/aria/ui/TargetManagement.fxml"));
+            Parent root = loader.load();
 
-            MainController mainController = loader.getController();
-            mainController.setPrimaryStage(primaryStage);
+            TargetManagementController controller = loader.getController();
+            controller.setPrimaryStage(primaryStage);
+            if (userService != null) {
+                controller.setUserService(userService);
+            }
 
-            Scene mainScene = new Scene(mainRoot);
-            primaryStage.setScene(mainScene);
-            primaryStage.setTitle("ARIA - Automated Relationship & Interaction Assistant");
+            Scene scene = new Scene(root);
+            primaryStage.setScene(scene);
+            primaryStage.setTitle("ARIA - Target Management");
 
         } catch (IOException e) {
-            showAlert("Error", "Failed to return to main view: " + e.getMessage());
+            showAlert("Error", "Failed to return to target management: " + e.getMessage());
         }
     }
 

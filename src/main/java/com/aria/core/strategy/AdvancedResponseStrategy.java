@@ -7,7 +7,6 @@ import com.aria.ai.ResponseGenerator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
-import java.util.stream.DoubleStream;
 
 public class AdvancedResponseStrategy extends BaseResponseStrategy {
     private final ChatAnalyzer chatAnalyzer;
@@ -20,9 +19,7 @@ public class AdvancedResponseStrategy extends BaseResponseStrategy {
     }
 
     public void loadHistoricalData(Map<String, List<Message>> historicalChats) {
-        if (currentGoal == null) {
-            throw new IllegalStateException("Initialize strategy before loading historical data");
-        }
+        validateInitialization();
         this.analyzedChats = chatAnalyzer.analyzeAllChats(historicalChats, currentGoal.getDesiredOutcome());
         this.synthesizedProfile = synthesizeOptimalProfile();
         responseGenerator.setStyleProfile(synthesizedProfile);
@@ -40,7 +37,7 @@ public class AdvancedResponseStrategy extends BaseResponseStrategy {
     public String generateResponse(String incomingMessage) {
         validateInitialization();
 
-        addToHistory(currentGoal.getTargetAlias_Number(), incomingMessage);
+        addToHistory(getCurrentTargetAlias(), incomingMessage);
 
         String personalizedResponse = generatePersonalizedResponse(
                 incomingMessage,
@@ -48,7 +45,6 @@ public class AdvancedResponseStrategy extends BaseResponseStrategy {
         );
 
         addToHistory("You", personalizedResponse);
-
         return personalizedResponse;
     }
 
@@ -90,7 +86,6 @@ public class AdvancedResponseStrategy extends BaseResponseStrategy {
                 base.getHumorLevel()
         ));
 
-        // Repeat for other attributes
         blended.setFormalityLevel(calculateWeightedAverage(
                 successful.values().stream().mapToDouble(ChatProfile::getFormalityLevel),
                 failed.values().stream().mapToDouble(ChatProfile::getFormalityLevel),
@@ -115,6 +110,7 @@ public class AdvancedResponseStrategy extends BaseResponseStrategy {
             
             Conversation Context:
             Target: %s
+            Platform: %s
             Meeting Context: %s
             Goal: %s
             History: %s
@@ -124,11 +120,34 @@ public class AdvancedResponseStrategy extends BaseResponseStrategy {
                 synthesizedProfile.getHumorLevel(),
                 synthesizedProfile.getFormalityLevel(),
                 synthesizedProfile.getEmpathyLevel(),
-                currentGoal.getTargetAlias_Number(),
+                getCurrentTargetAlias(),  // Use helper method
+                getCurrentPlatform(),     // Use helper method
                 currentGoal.getMeetingContext(),
                 currentGoal.getDesiredOutcome(),
                 conversationHistory,
                 incomingMessage
         );
+    }
+
+    @Override
+    public double estimateEngagementLevel() {
+        validateInitialization();
+        double baseEngagement = super.estimateEngagementLevel();
+
+        if (analyzedChats != null && analyzedChats.containsKey(getCurrentTargetAlias())) {
+            ChatProfile targetProfile = analyzedChats.get(getCurrentTargetAlias());
+            double historicalEngagement = targetProfile.getSuccessScore();
+            return (baseEngagement * 0.6) + (historicalEngagement * 0.4);
+        }
+
+        return baseEngagement;
+    }
+
+    public ChatProfile getSynthesizedProfile() {
+        return synthesizedProfile;
+    }
+
+    public Map<String, ChatProfile> getAnalyzedChats() {
+        return analyzedChats;
     }
 }

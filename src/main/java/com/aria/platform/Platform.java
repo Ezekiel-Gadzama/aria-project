@@ -1,5 +1,5 @@
 package com.aria.platform;
 
-public enum Platforms {
+public enum Platform {
     TELEGRAM, WHATSAPP, INSTAGRAM
 }

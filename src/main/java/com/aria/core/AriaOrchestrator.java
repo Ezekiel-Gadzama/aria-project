@@ -2,11 +2,12 @@ package com.aria.core;
 
 import com.aria.analysis.ChatAnalyzer;
 import com.aria.core.model.ConversationGoal;
+import com.aria.core.model.TargetUser;
 import com.aria.ai.OpenAIClient;
 import com.aria.ai.ResponseGenerator;
 import com.aria.core.strategy.AdvancedResponseStrategy;
 import com.aria.platform.PlatformConnector;
-import com.aria.platform.Platforms;
+import com.aria.platform.Platform;
 import com.aria.platform.telegram.TelegramConnector;
 import com.aria.core.strategy.ResponseStrategy;
 import com.aria.core.strategy.StrategyFactory;
@@ -14,7 +15,6 @@ import java.util.Map;
 import java.util.List;
 import com.aria.core.model.Message;
 import com.aria.service.UserService;
-import com.aria.storage.DatabaseManager;
 
 public class AriaOrchestrator {
     private PlatformConnector platformConnector;
@@ -22,7 +22,8 @@ public class AriaOrchestrator {
     private ResponseGenerator responseGenerator;
     private ResponseStrategy responseStrategy;
     private ConversationGoal currentGoal;
-    private UserService userService; // Add this
+    private TargetUser currentTargetUser; // Store the target user
+    private UserService userService;
 
     public AriaOrchestrator(UserService userService) {
         this.openAIClient = new OpenAIClient();
@@ -32,41 +33,45 @@ public class AriaOrchestrator {
                 responseGenerator
         );
         this.userService = userService;
-
     }
 
-    public void initializeConversation(ConversationGoal goal) {
+    public void initializeConversation(ConversationGoal goal, TargetUser targetUser) {
         this.currentGoal = goal;
-        this.platformConnector = createPlatformConnector(goal.getPlatform());
-        this.responseStrategy.initialize(goal);
+        this.currentTargetUser = targetUser;
+
+        Platform platform = targetUser.getSelectedPlatformType();
+        this.platformConnector = createPlatformConnector(platform);
+        this.responseStrategy.initialize(goal, targetUser);
     }
 
-    public void initializeAdvancedConversation(ConversationGoal goal, Map<String, List<Message>> historicalChats) {
+    public void initializeAdvancedConversation(ConversationGoal goal, TargetUser targetUser,
+                                               Map<String, List<Message>> historicalChats) {
         this.currentGoal = goal;
-        this.platformConnector = createPlatformConnector(goal.getPlatform());
+        this.currentTargetUser = targetUser;
 
-        // Switch to advanced strategy
+        Platform platform = targetUser.getSelectedPlatformType();
+        this.platformConnector = createPlatformConnector(platform);
+
         this.responseStrategy = StrategyFactory.createStrategy(
                 StrategyFactory.StrategyType.ADVANCED,
                 responseGenerator,
-                new ChatAnalyzer() // You'll need to implement ChatAnalyzer
+                new ChatAnalyzer()
         );
 
-        this.responseStrategy.initialize(goal);
+        this.responseStrategy.initialize(goal, targetUser);
 
-        // Load historical data for advanced strategy
         if (responseStrategy instanceof AdvancedResponseStrategy) {
             ((AdvancedResponseStrategy) responseStrategy).loadHistoricalData(historicalChats);
         }
     }
 
-    private PlatformConnector createPlatformConnector(Platforms platform) {
+    private PlatformConnector createPlatformConnector(Platform platform) {
         switch (platform) {
-            case Platforms.TELEGRAM:
+            case TELEGRAM:
                 return new TelegramConnector();
-            case Platforms.WHATSAPP:
+            case WHATSAPP:
                 throw new IllegalArgumentException("WHATSAPP not yet integrated");
-            case Platforms.INSTAGRAM:
+            case INSTAGRAM:
                 throw new IllegalArgumentException("INSTAGRAM not yet integrated");
             default:
                 throw new IllegalArgumentException("Unsupported platform: " + platform);
@@ -82,10 +87,13 @@ public class AriaOrchestrator {
     }
 
     public boolean sendMessage(String message) {
-        if (platformConnector != null && currentGoal != null) {
-            boolean success = platformConnector.sendMessage(currentGoal.getTargetAlias_Number(), message);
+        if (platformConnector != null && currentTargetUser != null) {
+            boolean success = platformConnector.sendMessage(
+                    currentTargetUser.getSelectedUsername(),
+                    message
+            );
             if (success) {
-                // Message sent successfully, it will be added to history by the strategy
+                // Message sent successfully
             }
             return success;
         }
@@ -94,20 +102,8 @@ public class AriaOrchestrator {
 
     public void startChatIngestion() {
         if (platformConnector != null) {
-            DatabaseManager.savePlatformAccount(
-                    userService.getUser().getUserAppId(),
-                    platformConnector.getPlatformName(),
-                    "ezekiel_wa",
-                    platformConnector.getApiId(),
-                    platformConnector.getApiHash(),
-                    null,
-                    "waAccessToken",
-                    "waRefreshToken"
-            );
-            System.out.println("Got here");
             platformConnector.ingestChatHistory();
         }
-
     }
 
     public String getConversationHistory() {
@@ -122,13 +118,17 @@ public class AriaOrchestrator {
         return responseStrategy.estimateEngagementLevel();
     }
 
-    // Getters for external access
+    // Getters
     public PlatformConnector getPlatformConnector() {
         return platformConnector;
     }
 
     public ConversationGoal getCurrentGoal() {
         return currentGoal;
+    }
+
+    public TargetUser getCurrentTargetUser() {
+        return currentTargetUser;
     }
 
     public ResponseStrategy getResponseStrategy() {

@@ -4,28 +4,28 @@ import com.aria.core.model.User;
 import com.aria.storage.DatabaseManager;
 
 public class UserService {
-    private final DatabaseManager db;
-    private final User user;
+    private DatabaseManager dbManager;
+    private User user;
 
-    public UserService(DatabaseManager db, User user) {
-        this.db = db;
+    public UserService(DatabaseManager dbManager, User user) {
+        this.dbManager = dbManager;
         this.user = user;
-        this.registerUser(user);
     }
 
-    public void registerUser(User user) {
+    public boolean registerUser() {
         try {
-            if (db.userExists(user.getPhone())) {
-                return; // already registered
-            }
-            user.setUserAppId(db.saveUser(user));
+            user.setUserAppId(dbManager.saveUser(user));
+            return true;
         } catch (Exception e) {
             throw new RuntimeException("Failed to register user", e);
         }
     }
 
-    public User getUser(){
+    public User getUser() {
         return user;
     }
 
+    public DatabaseManager getDatabaseManager() {
+        return dbManager;
+    }
 }

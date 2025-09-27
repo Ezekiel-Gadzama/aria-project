@@ -1,12 +1,14 @@
 package com.aria.core.strategy;
 
 import com.aria.core.model.ConversationGoal;
+import com.aria.core.model.TargetUser;
 import com.aria.ai.ResponseGenerator;
 import java.util.stream.DoubleStream;
 
 public abstract class BaseResponseStrategy implements ResponseStrategy {
     protected final ResponseGenerator responseGenerator;
     protected ConversationGoal currentGoal;
+    protected TargetUser currentTargetUser;
     protected StringBuilder conversationHistory;
 
     protected BaseResponseStrategy(ResponseGenerator responseGenerator) {
@@ -15,9 +17,19 @@ public abstract class BaseResponseStrategy implements ResponseStrategy {
     }
 
     @Override
-    public void initialize(ConversationGoal goal) {
+    public void initialize(ConversationGoal goal, TargetUser targetUser) {
         this.currentGoal = goal;
-        this.responseGenerator.setCurrentGoal(goal);
+        this.currentTargetUser = targetUser;
+
+        if (targetUser != null && targetUser.getSelectedPlatform() != null) {
+            this.responseGenerator.setConversationContext(
+                    goal,
+                    targetUser.getSelectedUsername(),
+                    targetUser.getSelectedPlatformType().name()
+            );
+        } else {
+            this.responseGenerator.setCurrentGoal(goal);
+        }
         clearHistory();
     }
 
@@ -65,9 +77,19 @@ public abstract class BaseResponseStrategy implements ResponseStrategy {
     }
 
     protected void validateInitialization() {
-        if (currentGoal == null) {
+        if (currentGoal == null || currentTargetUser == null) {
             throw new IllegalStateException("Strategy not initialized. Call initialize() first.");
         }
+    }
+
+    protected String getCurrentTargetAlias() {
+        return currentTargetUser != null ? currentTargetUser.getSelectedUsername() : "";
+    }
+
+    protected String getCurrentPlatform() {
+        return currentTargetUser != null && currentTargetUser.getSelectedPlatformType() != null
+                ? currentTargetUser.getSelectedPlatformType().name()
+                : "";
     }
 
     protected double calculateWeightedAverage(DoubleStream successfulValues,

@@ -1,9 +1,9 @@
-// MainController.java
 package com.aria.ui;
 
 import com.aria.core.AriaOrchestrator;
 import com.aria.core.model.ConversationGoal;
-import com.aria.platform.Platforms;
+import com.aria.core.model.TargetUser;
+import com.aria.platform.Platform;
 import com.aria.service.UserService;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
@@ -11,19 +11,21 @@ import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.stage.Stage;
+import javafx.util.StringConverter;
 
 import java.io.IOException;
 
 public class MainController {
     @FXML private TextField targetNameField;
-    @FXML private ComboBox<Platforms> platformComboBox;
+    @FXML private ComboBox<Platform> platformComboBox;
     @FXML private TextArea contextArea;
     @FXML private TextArea outcomeArea;
-
 
     private AriaOrchestrator orchestrator;
     private UserService userService;
     private Stage primaryStage;
+    private TargetUser preSelectedTarget;
+    private String preSelectedPlatform;
 
     public void setPrimaryStage(Stage primaryStage) {
         this.primaryStage = primaryStage;
@@ -31,61 +33,139 @@ public class MainController {
 
     public void setUserService(UserService userService) {
         this.userService = userService;
-        // Initialize orchestrator with this service
-        orchestrator = new AriaOrchestrator(userService);
+        this.orchestrator = new AriaOrchestrator(userService);
+    }
+
+    public void setPreSelectedTarget(TargetUser targetUser, String platform) {
+        this.preSelectedTarget = targetUser;
+        this.preSelectedPlatform = platform;
+        populatePreSelectedFields();
     }
 
     public void initialize() {
-        platformComboBox.getItems().addAll(Platforms.values());
-        platformComboBox.getSelectionModel().selectFirst();
-
-        // Optional: pretty-print the enum values instead of raw UPPERCASE
-        platformComboBox.setCellFactory(cb -> new ListCell<>() {
+        platformComboBox.getItems().addAll(Platform.values());
+        platformComboBox.setConverter(new StringConverter<Platform>() {
             @Override
-            protected void updateItem(Platforms item, boolean empty) {
-                super.updateItem(item, empty);
-                setText(empty || item == null ? "" : capitalize(item.name()));
+            public String toString(Platform platform) {
+                return platform.name().charAt(0) + platform.name().substring(1).toLowerCase();
+            }
+
+            @Override
+            public Platform fromString(String string) {
+                return Platform.valueOf(string.toUpperCase());
             }
         });
-        platformComboBox.setButtonCell(new ListCell<>() {
-            @Override
-            protected void updateItem(Platforms item, boolean empty) {
-                super.updateItem(item, empty);
-                setText(empty || item == null ? "" : capitalize(item.name()));
+
+        if (preSelectedTarget == null) {
+            platformComboBox.getSelectionModel().selectFirst();
+        } else {
+            populatePreSelectedFields();
+        }
+    }
+
+    private void populatePreSelectedFields() {
+        if (preSelectedTarget != null) {
+            targetNameField.setText(preSelectedTarget.getName());
+            targetNameField.setDisable(true);
+
+            // Populate from the target's conversation goal if available
+            ConversationGoal goal = preSelectedTarget.getConversationGoal();
+            if (goal != null) {
+                if (goal.getMeetingContext() != null) {
+                    contextArea.setText(goal.getMeetingContext());
+                }
+                if (goal.getDesiredOutcome() != null) {
+                    outcomeArea.setText(goal.getDesiredOutcome());
+                }
             }
-        });
-    }
 
-    private String capitalize(String text) {
-        return text.substring(0,1).toUpperCase() + text.substring(1).toLowerCase();
-    }
+            if (preSelectedPlatform != null) {
+                try {
+                    Platform platform = Platform.valueOf(preSelectedPlatform.toUpperCase());
+                    platformComboBox.getSelectionModel().select(platform);
+                    platformComboBox.setDisable(true);
 
+                    // Set the selected platform index on the target user
+                    preSelectedTarget.findPlatformIndex(platform).ifPresent(preSelectedTarget::setSelectedPlatformIndex);
+                } catch (IllegalArgumentException e) {
+                    // Platform not found, leave combo box enabled
+                }
+            }
+        }
+    }
 
     @FXML
     private void onStartConversation() {
-        String targetAlias_Number = targetNameField.getText().trim();
-        Platforms platform = platformComboBox.getValue();
         String context = contextArea.getText().trim();
         String outcome = outcomeArea.getText().trim();
 
-        if (targetAlias_Number.isEmpty() || outcome.isEmpty()) {
-            showAlert("Missing Fields", "Target name and desired outcome are required before starting a conversation.");
+        if (outcome.isEmpty()) {
+            showAlert("Missing Fields", "Desired outcome is required before starting a conversation.");
             return;
         }
 
-        ConversationGoal goal = new ConversationGoal();
-        goal.setTargetAlias_Number(targetAlias_Number);
-        goal.setPlatform(platform);
-        goal.setMeetingContext(context);
-        goal.setDesiredOutcome(outcome);
+        // If we don't have a pre-selected target, create a new one
+        TargetUser targetUser;
+        if (preSelectedTarget == null) {
+            // Create a new target user for ad-hoc conversation
+            targetUser = new TargetUser();
+            targetUser.setName(targetNameField.getText().trim());
 
-        orchestrator.initializeConversation(goal);
+            // Create a basic platform entry for the selected platform
+            Platform selectedPlatform = platformComboBox.getValue();
+            if (selectedPlatform != null) {
+                com.aria.platform.UserPlatform userPlatform = new com.aria.platform.UserPlatform();
+                userPlatform.setPlatform(selectedPlatform);
+                userPlatform.setUsername(targetNameField.getText().trim()); // Use name as username for ad-hoc
+                targetUser.getPlatforms().add(userPlatform);
+                targetUser.setSelectedPlatformIndex(0); // Select the first (and only) platform
+            }
+        } else {
+            targetUser = preSelectedTarget;
 
-        // Switch to conversation view
-        switchToConversationView(targetAlias_Number);
+            // Update the selected platform if the user changed it
+            Platform selectedPlatform = platformComboBox.getValue();
+            if (selectedPlatform != null && !platformComboBox.isDisable()) {
+                targetUser.findPlatformIndex(selectedPlatform).ifPresent(targetUser::setSelectedPlatformIndex);
+            }
+        }
 
-        // Start chat ingestion in background
+        // Use or create conversation goal
+        ConversationGoal goal;
+        if (targetUser.getConversationGoal() != null) {
+            goal = targetUser.getConversationGoal();
+            goal.setMeetingContext(context);
+            goal.setDesiredOutcome(outcome);
+        } else {
+            goal = new ConversationGoal();
+            goal.setMeetingContext(context);
+            goal.setDesiredOutcome(outcome);
+            targetUser.setConversationGoal(goal);
+        }
+
+        // FIXED: Use the new method signature with TargetUser
+        orchestrator.initializeConversation(goal, targetUser);
+        switchToConversationView(targetUser.getName());
         startChatIngestion();
+    }
+
+    @FXML
+    private void onBackToTargets() {
+        try {
+            FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/aria/ui/TargetManagement.fxml"));
+            Parent root = loader.load();
+
+            TargetManagementController controller = loader.getController();
+            controller.setPrimaryStage(primaryStage);
+            controller.setUserService(userService);
+
+            Scene scene = new Scene(root);
+            primaryStage.setScene(scene);
+            primaryStage.setTitle("ARIA - Target Management");
+
+        } catch (IOException e) {
+            showAlert("Error", "Failed to return to target management: " + e.getMessage());
+        }
     }
 
     private void switchToConversationView(String targetName) {
@@ -96,9 +176,8 @@ public class MainController {
             ConversationController conversationController = loader.getController();
             conversationController.setTarget(targetName);
             conversationController.setPrimaryStage(primaryStage);
-
-            // Inject the same orchestrator instance
             conversationController.setOrchestrator(orchestrator);
+            conversationController.setUserService(userService); // Add this line
 
             Scene conversationScene = new Scene(conversationRoot);
             primaryStage.setScene(conversationScene);
@@ -106,22 +185,17 @@ public class MainController {
 
         } catch (IOException e) {
             showAlert("Error", "Failed to load conversation view: " + e.getMessage());
-            e.printStackTrace();
         }
     }
-
 
     private void startChatIngestion() {
         new Thread(() -> {
             try {
                 orchestrator.startChatIngestion();
-                // Chat ingestion completed successfully
                 System.out.println("Chat history ingestion completed!");
             } catch (Exception e) {
-                // Show error alert on JavaFX thread
                 javafx.application.Platform.runLater(() ->
                         showAlert("Error", "Failed to ingest chat history: " + e.getMessage()));
-                e.printStackTrace();
             }
         }).start();
     }

@@ -3,16 +3,20 @@
 <?import javafx.scene.layout.*?>
 <?import javafx.geometry.Insets?>
 
-<VBox spacing="10" xmlns="http://javafx.com/javafx/11.0.1"
+<VBox spacing="20" xmlns="http://javafx.com/javafx/11.0.1"
       xmlns:fx="http://javafx.com/fxml/1"
       fx:controller="com.aria.ui.MainController">
     <padding><Insets top="20" right="20" bottom="20" left="20"/></padding>
 
-    <Label text="ARIA - Automated Relationship &amp; Interaction Assistant"
-           style="-fx-font-size: 18px; -fx-font-weight: bold;"/>
+    <HBox spacing="20" alignment="CENTER_LEFT">
+        <Label text="ARIA - Conversation Setup"
+               style="-fx-font-size: 18px; -fx-font-weight: bold;"/>
+        <Button text="Back to Targets" onAction="#onBackToTargets"
+                style="-fx-background-color: #95a5a6; -fx-text-fill: white;"/>
+    </HBox>
 
     <GridPane hgap="10" vgap="10">
-        <Label text="Target Alias/Number:" GridPane.columnIndex="0" GridPane.rowIndex="0"/>
+        <Label text="Contact:" GridPane.columnIndex="0" GridPane.rowIndex="0"/>
         <TextField fx:id="targetNameField" GridPane.columnIndex="1" GridPane.rowIndex="0"/>
 
         <Label text="Platform:" GridPane.columnIndex="0" GridPane.rowIndex="1"/>
@@ -29,6 +33,6 @@
 
     <HBox spacing="10" alignment="CENTER_RIGHT">
         <Button text="Start Conversation" onAction="#onStartConversation"
-                style="-fx-font-weight: bold;"/>
+                style="-fx-font-weight: bold; -fx-background-color: #3498db; -fx-text-fill: white;"/>
     </HBox>
 </VBox>

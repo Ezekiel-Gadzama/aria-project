@@ -4,13 +4,13 @@ public class UserPlatform {
     private String username;
     private String number;
     private int platformId;
-    private Platforms platform;
+    private Platform platform;
 
     // No-args constructor (default)
     public UserPlatform() {}
 
     // All-args constructor
-    public UserPlatform(String username, String number, int platformId, Platforms platform) {
+    public UserPlatform(String username, String number, int platformId, Platform platform) {
         this.username = username;
         this.number = number;
         this.platformId = platformId;
@@ -43,11 +43,11 @@ public class UserPlatform {
         this.platformId = platformId;
     }
 
-    public Platforms getPlatform() {
+    public Platform getPlatform() {
         return platform;
     }
 
-    public void setPlatform(Platforms platform) {
+    public void setPlatform(Platform platform) {
         this.platform = platform;
     }
 }

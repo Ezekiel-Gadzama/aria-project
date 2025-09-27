@@ -6,7 +6,9 @@ import com.aria.core.model.ChatProfile;
 public class ResponseGenerator {
     private final OpenAIClient openAIClient;
     private ConversationGoal currentGoal;
-    private ChatProfile styleProfile; // Add this field
+    private ChatProfile styleProfile;
+    private String currentTargetAlias;
+    private String currentPlatform;
 
     public ResponseGenerator(OpenAIClient openAIClient) {
         this.openAIClient = openAIClient;
@@ -17,7 +19,18 @@ public class ResponseGenerator {
         this.currentGoal = goal;
     }
 
-    // Add this method
+    public void setCurrentTarget(String targetAlias, String platform) {
+        this.currentTargetAlias = targetAlias;
+        this.currentPlatform = platform;
+    }
+
+    // Add this method to set all conversation context at once
+    public void setConversationContext(ConversationGoal goal, String targetAlias, String platform) {
+        this.currentGoal = goal;
+        this.currentTargetAlias = targetAlias;
+        this.currentPlatform = platform;
+    }
+
     public void setStyleProfile(ChatProfile styleProfile) {
         this.styleProfile = styleProfile;
     }
@@ -40,8 +53,8 @@ public class ResponseGenerator {
     }
 
     private String buildContext(String incomingMessage, String conversationHistory) {
-        if (currentGoal == null) {
-            throw new IllegalStateException("Conversation goal not set. Call setCurrentGoal() first.");
+        if (currentGoal == null || currentTargetAlias == null) {
+            throw new IllegalStateException("Conversation goal and target not set. Call setConversationContext() first.");
         }
 
         // Include style profile in the context if available
@@ -61,13 +74,15 @@ public class ResponseGenerator {
         return String.format("""
             Conversation Context:
             Target: %s
+            Platform: %s
             How we met: %s
             Goal: %s%s
             Conversation History: %s
             Latest message from target: %s
             
             Generate a natural, engaging response that moves toward the goal:""",
-                currentGoal.getTargetAlias_Number(),
+                currentTargetAlias,
+                currentPlatform,
                 currentGoal.getMeetingContext(),
                 currentGoal.getDesiredOutcome(),
                 styleContext,
@@ -76,8 +91,8 @@ public class ResponseGenerator {
     }
 
     public String generateOpeningLine() {
-        if (currentGoal == null) {
-            throw new IllegalStateException("Conversation goal not set. Call setCurrentGoal() first.");
+        if (currentGoal == null || currentTargetAlias == null) {
+            throw new IllegalStateException("Conversation goal and target not set. Call setConversationContext() first.");
         }
 
         // Include style in opening message prompt
@@ -97,11 +112,13 @@ public class ResponseGenerator {
         String prompt = String.format("""
             Generate an engaging opening message for:
             Target: %s
+            Platform: %s
             Context: %s
             Goal: %s
             %s
             Make it natural and personalized:""",
-                currentGoal.getTargetAlias_Number(),
+                currentTargetAlias,
+                currentPlatform,
                 currentGoal.getMeetingContext(),
                 currentGoal.getDesiredOutcome(),
                 stylePrompt);
@@ -124,6 +141,10 @@ public class ResponseGenerator {
 
     // New method to generate response with specific style
     public String generateResponseWithStyle(String incomingMessage, String conversationHistory, ChatProfile style) {
+        if (currentGoal == null || currentTargetAlias == null) {
+            throw new IllegalStateException("Conversation goal and target not set. Call setConversationContext() first.");
+        }
+
         String styleContext = String.format("""
             
             Communication Style to emulate:
@@ -137,13 +158,15 @@ public class ResponseGenerator {
         String context = String.format("""
             Conversation Context:
             Target: %s
+            Platform: %s
             How we met: %s
             Goal: %s%s
             Conversation History: %s
             Latest message from target: %s
             
             Generate a response that matches the specified communication style:""",
-                currentGoal.getTargetAlias_Number(),
+                currentTargetAlias,
+                currentPlatform,
                 currentGoal.getMeetingContext(),
                 currentGoal.getDesiredOutcome(),
                 styleContext,
@@ -156,5 +179,14 @@ public class ResponseGenerator {
     // Utility method for testing without full context
     public String generateBasicResponse(String message) {
         return openAIClient.generateResponse(message);
+    }
+
+    // Getters for current target information
+    public String getCurrentTargetAlias() {
+        return currentTargetAlias;
+    }
+
+    public String getCurrentPlatform() {
+        return currentPlatform;
     }
 }

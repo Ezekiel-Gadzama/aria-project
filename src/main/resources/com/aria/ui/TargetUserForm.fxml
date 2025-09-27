@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<?import javafx.geometry.Insets?>
+
+<VBox spacing="20" xmlns="http://javafx.com/javafx/11.0.1"
+      xmlns:fx="http://javafx.com/fxml/1"
+      fx:controller="com.aria.ui.TargetUserFormController"
+      style="-fx-padding: 30; -fx-background-color: #f5f5f5;">
+
+    <Label text="ARIA - Target User Details"
+           style="-fx-font-size: 24px; -fx-font-weight: bold; -fx-text-fill: #2c3e50;"/>
+
+    <VBox spacing="15" style="-fx-background-color: white; -fx-padding: 20; -fx-border-radius: 5; -fx-border-color: #ddd;">
+        <Label text="Basic Information" style="-fx-font-size: 16px; -fx-font-weight: bold;"/>
+
+        <GridPane hgap="15" vgap="15">
+            <columnConstraints>
+                <ColumnConstraints percentWidth="30"/>
+                <ColumnConstraints percentWidth="70"/>
+            </columnConstraints>
+
+            <Label text="Target Name:" GridPane.columnIndex="0" GridPane.rowIndex="0"
+                   style="-fx-font-weight: bold;"/>
+            <TextField fx:id="targetNameField" GridPane.columnIndex="1" GridPane.rowIndex="0"
+                       promptText="Enter target user's name"/>
+        </GridPane>
+
+        <Separator/>
+
+        <HBox spacing="10" alignment="CENTER_LEFT">
+            <Label text="Platforms" style="-fx-font-size: 16px; -fx-font-weight: bold;"/>
+            <Button text="Add Platform" onAction="#onAddPlatform"
+                    style="-fx-background-color: #3498db; -fx-text-fill: white;"/>
+        </HBox>
+
+        <Label text="For each platform, provide the target's username and phone number:"
+               style="-fx-font-size: 12px; -fx-text-fill: #7f8c8d;"/>
+
+        <VBox fx:id="platformsContainer" spacing="10">
+            <!-- Dynamic platform fields will be added here -->
+        </VBox>
+    </VBox>
+
+    <HBox spacing="15" alignment="CENTER_RIGHT">
+        <Button text="Cancel" onAction="#onCancel"
+                style="-fx-background-color: #95a5a6; -fx-text-fill: white;"/>
+        <Button text="Save" onAction="#onSave"
+                style="-fx-font-weight: bold; -fx-background-color: #27ae60; -fx-text-fill: white; -fx-pref-width: 100;"/>
+    </HBox>
+</VBox>
