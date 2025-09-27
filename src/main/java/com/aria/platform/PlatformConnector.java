@@ -10,6 +10,8 @@ public interface PlatformConnector {
     boolean sendMessage(String target, String message);
     boolean testConnection();
     String getPlatformName();
+    String getApiHash();
+    String getApiId();
     Map<String, List<Message>> getHistoricalChats();
     void connect();
     void disconnect();

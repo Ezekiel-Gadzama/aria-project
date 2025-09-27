@@ -1,9 +1,11 @@
 // ConversationGoal.java
 package com.aria.core.model;
 
+import com.aria.platform.Platforms;
+
 public class ConversationGoal {
     private String targetAlias_Number;
-    private String platform;
+    private Platforms platform;
     private String context;
     private String desiredOutcome;
     private String meetingContext;
@@ -17,11 +19,11 @@ public class ConversationGoal {
         this.targetAlias_Number = targetAlias_Number;
     }
 
-    public String getPlatform() {
+    public Platforms getPlatform() {
         return platform;
     }
 
-    public void setPlatform(String platform) {
+    public void setPlatform(Platforms platform) {
         this.platform = platform;
     }
 

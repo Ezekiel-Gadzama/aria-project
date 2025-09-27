@@ -3,6 +3,8 @@ package com.aria.ui;
 
 import com.aria.core.AriaOrchestrator;
 import com.aria.core.model.ConversationGoal;
+import com.aria.platform.Platforms;
+import com.aria.service.UserService;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
@@ -14,27 +16,55 @@ import java.io.IOException;
 
 public class MainController {
     @FXML private TextField targetNameField;
-    @FXML private ComboBox<String> platformComboBox;
+    @FXML private ComboBox<Platforms> platformComboBox;
     @FXML private TextArea contextArea;
     @FXML private TextArea outcomeArea;
 
+
     private AriaOrchestrator orchestrator;
+    private UserService userService;
     private Stage primaryStage;
 
     public void setPrimaryStage(Stage primaryStage) {
         this.primaryStage = primaryStage;
     }
 
-    public void initialize() {
-        platformComboBox.getItems().addAll("Telegram", "WhatsApp", "Instagram");
-        platformComboBox.getSelectionModel().selectFirst();
-        orchestrator = new AriaOrchestrator();
+    public void setUserService(UserService userService) {
+        this.userService = userService;
+        // Initialize orchestrator with this service
+        orchestrator = new AriaOrchestrator(userService);
     }
+
+    public void initialize() {
+        platformComboBox.getItems().addAll(Platforms.values());
+        platformComboBox.getSelectionModel().selectFirst();
+
+        // Optional: pretty-print the enum values instead of raw UPPERCASE
+        platformComboBox.setCellFactory(cb -> new ListCell<>() {
+            @Override
+            protected void updateItem(Platforms item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? "" : capitalize(item.name()));
+            }
+        });
+        platformComboBox.setButtonCell(new ListCell<>() {
+            @Override
+            protected void updateItem(Platforms item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? "" : capitalize(item.name()));
+            }
+        });
+    }
+
+    private String capitalize(String text) {
+        return text.substring(0,1).toUpperCase() + text.substring(1).toLowerCase();
+    }
+
 
     @FXML
     private void onStartConversation() {
         String targetAlias_Number = targetNameField.getText().trim();
-        String platform = platformComboBox.getValue();
+        Platforms platform = platformComboBox.getValue();
         String context = contextArea.getText().trim();
         String outcome = outcomeArea.getText().trim();
 
@@ -60,15 +90,16 @@ public class MainController {
 
     private void switchToConversationView(String targetName) {
         try {
-            // Load the conversation view FXML
             FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/aria/ui/conversationView.fxml"));
             Parent conversationRoot = loader.load();
 
-            // Get the conversation controller
             ConversationController conversationController = loader.getController();
             conversationController.setTarget(targetName);
+            conversationController.setPrimaryStage(primaryStage);
 
-            // Create new scene and replace the current one
+            // Inject the same orchestrator instance
+            conversationController.setOrchestrator(orchestrator);
+
             Scene conversationScene = new Scene(conversationRoot);
             primaryStage.setScene(conversationScene);
             primaryStage.setTitle("ARIA - Conversation with " + targetName);
@@ -78,6 +109,7 @@ public class MainController {
             e.printStackTrace();
         }
     }
+
 
     private void startChatIngestion() {
         new Thread(() -> {

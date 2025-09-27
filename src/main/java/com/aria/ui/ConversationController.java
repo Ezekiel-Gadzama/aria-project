@@ -21,8 +21,8 @@ public class ConversationController {
     private AriaOrchestrator orchestrator;
     private Stage primaryStage;
 
-    public void initialize() {
-        orchestrator = new AriaOrchestrator();
+    public void setOrchestrator(AriaOrchestrator orchestrator) {
+        this.orchestrator = orchestrator;
     }
 
     public void setPrimaryStage(Stage primaryStage) {

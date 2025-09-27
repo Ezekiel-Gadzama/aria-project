@@ -18,33 +18,6 @@ import org.json.JSONObject;
 
 public class TelethonBridge {
 
-    public void ingestChatHistory() {
-        try {
-            ProcessBuilder processBuilder = new ProcessBuilder(
-                    "python",
-                    "scripts/telethon/chat_ingestor.py"
-            );
-
-            Process process = processBuilder.start();
-            int exitCode = process.waitFor();
-
-            if (exitCode == 0) {
-                System.out.println("Chat ingestion successful");
-                parseChatExport();
-            } else {
-                BufferedReader errorReader = new BufferedReader(
-                        new InputStreamReader(process.getErrorStream()));
-                String line;
-                while ((line = errorReader.readLine()) != null) {
-                    System.err.println("Python Error: " + line);
-                }
-            }
-
-        } catch (IOException | InterruptedException e) {
-            e.printStackTrace();
-        }
-    }
-
     public Map<String, List<Message>> parseChatExport() {
         Map<String, List<Message>> chatData = new HashMap<>();
         Path exportPath = Paths.get("chats_export.json");

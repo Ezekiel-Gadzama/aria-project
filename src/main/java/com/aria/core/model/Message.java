@@ -5,7 +5,7 @@ package com.aria.core.model;
 import java.time.LocalDateTime;
 
 public class Message {
-    private String id;
+    private int id;
     private String sender;
     private String content;
     private LocalDateTime timestamp;
@@ -28,11 +28,11 @@ public class Message {
     }
 
     // Getters and setters
-    public String getId() {
+    public int getId() {
         return id;
     }
 
-    public void setId(String id) {
+    public void setId(int id) {
         this.id = id;
     }
 

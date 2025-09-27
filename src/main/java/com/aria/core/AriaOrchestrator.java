@@ -6,12 +6,15 @@ import com.aria.ai.OpenAIClient;
 import com.aria.ai.ResponseGenerator;
 import com.aria.core.strategy.AdvancedResponseStrategy;
 import com.aria.platform.PlatformConnector;
+import com.aria.platform.Platforms;
 import com.aria.platform.telegram.TelegramConnector;
 import com.aria.core.strategy.ResponseStrategy;
 import com.aria.core.strategy.StrategyFactory;
 import java.util.Map;
 import java.util.List;
 import com.aria.core.model.Message;
+import com.aria.service.UserService;
+import com.aria.storage.DatabaseManager;
 
 public class AriaOrchestrator {
     private PlatformConnector platformConnector;
@@ -19,14 +22,17 @@ public class AriaOrchestrator {
     private ResponseGenerator responseGenerator;
     private ResponseStrategy responseStrategy;
     private ConversationGoal currentGoal;
+    private UserService userService; // Add this
 
-    public AriaOrchestrator() {
+    public AriaOrchestrator(UserService userService) {
         this.openAIClient = new OpenAIClient();
         this.responseGenerator = new ResponseGenerator(openAIClient);
         this.responseStrategy = StrategyFactory.createStrategy(
                 StrategyFactory.StrategyType.BASIC,
                 responseGenerator
         );
+        this.userService = userService;
+
     }
 
     public void initializeConversation(ConversationGoal goal) {
@@ -54,10 +60,14 @@ public class AriaOrchestrator {
         }
     }
 
-    private PlatformConnector createPlatformConnector(String platform) {
-        switch (platform.toLowerCase()) {
-            case "telegram":
+    private PlatformConnector createPlatformConnector(Platforms platform) {
+        switch (platform) {
+            case Platforms.TELEGRAM:
                 return new TelegramConnector();
+            case Platforms.WHATSAPP:
+                throw new IllegalArgumentException("WHATSAPP not yet integrated");
+            case Platforms.INSTAGRAM:
+                throw new IllegalArgumentException("INSTAGRAM not yet integrated");
             default:
                 throw new IllegalArgumentException("Unsupported platform: " + platform);
         }
@@ -84,6 +94,16 @@ public class AriaOrchestrator {
 
     public void startChatIngestion() {
         if (platformConnector != null) {
+            DatabaseManager.savePlatformAccount(
+                    userService.getUser().getUserAppId(),
+                    platformConnector.getPlatformName(),
+                    "ezekiel_wa",
+                    platformConnector.getApiId(),
+                    platformConnector.getApiHash(),
+                    null,
+                    "waAccessToken",
+                    "waRefreshToken"
+            );
             System.out.println("Got here");
             platformConnector.ingestChatHistory();
         }

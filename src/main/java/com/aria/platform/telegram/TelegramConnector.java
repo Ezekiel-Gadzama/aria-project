@@ -149,6 +149,16 @@ public class TelegramConnector implements PlatformConnector {
     }
 
     @Override
+    public String getApiHash() {
+        return apiHash;
+    }
+
+    @Override
+    public String getApiId() {
+        return apiId;
+    }
+
+    @Override
     public Map<String, List<Message>> getHistoricalChats() {
         // Implement this based on your chat export format
         return new HashMap<>();
