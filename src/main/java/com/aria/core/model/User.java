@@ -1,5 +1,9 @@
 package com.aria.core.model;
 
+import com.aria.platform.instagram.InstagramConnector;
+import com.aria.platform.telegram.TelegramConnector;
+import com.aria.platform.whatsapp.WhatsappConnector;
+
 public class User {
     private int userAppId;
     private String phone;
@@ -7,6 +11,9 @@ public class User {
     private String firstName;
     private String lastName;
     private String appGoal;
+    private TelegramConnector telegramConnector;
+    private WhatsappConnector whatsappConnector;
+    private InstagramConnector instagramConnector;
 
     public User(String phone, String username, String firstName, String lastName, String appGoal) {
         this.phone = phone;
@@ -17,6 +24,30 @@ public class User {
     }
 
     // --- Getters ---
+    public InstagramConnector getInstagramConnector() {
+        return instagramConnector;
+    }
+
+    public void setInstagramConnector(InstagramConnector instagramConnector) {
+        this.instagramConnector = instagramConnector;
+    }
+
+    public TelegramConnector getTelegramConnector() {
+        return telegramConnector;
+    }
+
+    public void setTelegramConnector(TelegramConnector telegramConnector) {
+        this.telegramConnector = telegramConnector;
+    }
+
+    public void setWhatsappConnector(WhatsappConnector whatsappConnector) {
+        this.whatsappConnector = whatsappConnector;
+    }
+
+    public WhatsappConnector getWhatsappConnector() {
+        return whatsappConnector;
+    }
+
     public int getUserAppId() {
         return userAppId;
     }

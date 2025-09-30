@@ -1,6 +1,7 @@
 package com.aria.ui;
 
 import com.aria.core.model.TargetUser;
+import com.aria.platform.Platform;
 import com.aria.platform.UserPlatform; // Fixed import
 import com.aria.service.TargetUserService;
 import com.aria.service.UserService;
@@ -15,6 +16,8 @@ import javafx.scene.control.Label;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
+import javafx.scene.control.ButtonType;
+import javafx.scene.control.ButtonBar;
 
 import java.io.IOException;
 import java.util.List;
@@ -70,14 +73,26 @@ public class TargetManagementController {
 
         ComboBox<String> platformComboBox = new ComboBox<>();
         platformComboBox.setPromptText("Select Platform");
-        targetUser.getPlatforms().forEach(platform ->
-                platformComboBox.getItems().add(platform.getPlatform().name()) // Fixed method call
-        );
+
+        // Add platforms with connector status indicators
+        for (UserPlatform platform : targetUser.getPlatforms()) {
+            String platformName = platform.getPlatform().name();
+            boolean connectorRegistered = isConnectorRegistered(platformName);
+            String displayName = platformName + (connectorRegistered ? " ✓" : " ✗");
+            platformComboBox.getItems().add(displayName);
+        }
+
         platformComboBox.setPrefWidth(150);
 
         Button chatButton = new Button("Chat");
         chatButton.setStyle("-fx-background-color: #3498db; -fx-text-fill: white;");
-        chatButton.setOnAction(e -> onStartChat(targetUser, platformComboBox.getValue()));
+        chatButton.setOnAction(e -> {
+            String selectedValue = platformComboBox.getValue();
+            if (selectedValue != null) {
+                String platformName = selectedValue.replace(" ✓", "").replace(" ✗", "");
+                onStartChat(targetUser, platformName);
+            }
+        });
 
         Button editButton = new Button("Edit");
         editButton.setStyle("-fx-background-color: #f39c12; -fx-text-fill: white;");
@@ -98,9 +113,15 @@ public class TargetManagementController {
         switchToTargetUserForm(null);
     }
 
+    @FXML
+    private void onManageConnectors() {
+        switchToConnectorRegistration();
+    }
+
     private void onEditTarget(TargetUser targetUser) {
         switchToTargetUserForm(targetUser);
     }
+
 
     private void onStartChat(TargetUser targetUser, String platform) {
         if (platform == null) {
@@ -108,7 +129,65 @@ public class TargetManagementController {
             return;
         }
 
+        // Check if the required connector is registered
+        if (!isConnectorRegistered(platform)) {
+            showConnectorRequiredAlert(platform);
+            return;
+        }
+
         switchToConversationView(targetUser, platform);
+    }
+
+    private boolean isConnectorRegistered(String platformName) {
+        try {
+            Platform platform = Platform.valueOf(platformName.toUpperCase());
+            return switch (platform) {
+                case TELEGRAM -> userService.getUser().getTelegramConnector() != null &&
+                        userService.getUser().getTelegramConnector().testConnection();
+                case WHATSAPP -> userService.getUser().getWhatsappConnector() != null &&
+                        userService.getUser().getWhatsappConnector().testConnection();
+                case INSTAGRAM -> userService.getUser().getInstagramConnector() != null &&
+                        userService.getUser().getInstagramConnector().testConnection();
+            };
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    private void showConnectorRequiredAlert(String platformName) {
+        Alert alert = new Alert(Alert.AlertType.WARNING);
+        alert.setTitle("Connector Required");
+        alert.setHeaderText(platformName + " Connector Not Registered");
+        alert.setContentText("You need to register a " + platformName + " connector before you can chat on this platform.");
+
+        ButtonType registerButton = new ButtonType("Register Connector");
+        ButtonType cancelButton = new ButtonType("Cancel", ButtonBar.ButtonData.CANCEL_CLOSE);
+
+        alert.getButtonTypes().setAll(registerButton, cancelButton);
+
+        alert.showAndWait().ifPresent(response -> {
+            if (response == registerButton) {
+                switchToConnectorRegistration();
+            }
+        });
+    }
+
+    private void switchToConnectorRegistration() {
+        try {
+            FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/aria/ui/ConnectorRegistration.fxml"));
+            Parent root = loader.load();
+
+            ConnectorRegistrationController controller = loader.getController();
+            controller.setPrimaryStage(primaryStage);
+            controller.setUserService(userService);
+
+            Scene scene = new Scene(root);
+            primaryStage.setScene(scene);
+            primaryStage.setTitle("ARIA - Register Platform Connector");
+
+        } catch (IOException e) {
+            showAlert("Error", "Failed to load connector registration: " + e.getMessage());
+        }
     }
 
     private void switchToTargetUserForm(TargetUser targetUser) {

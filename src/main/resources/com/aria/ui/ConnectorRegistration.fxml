@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<?import javafx.geometry.Insets?>
+
+<VBox spacing="20" xmlns="http://javafx.com/javafx/11.0.1"
+      xmlns:fx="http://javafx.com/fxml/1"
+      fx:controller="com.aria.ui.ConnectorRegistrationController"
+      style="-fx-padding: 30; -fx-background-color: #f5f5f5;">
+
+    <Label text="ARIA - Platform Connector Setup"
+           style="-fx-font-size: 24px; -fx-font-weight: bold; -fx-text-fill: #2c3e50;"/>
+
+    <VBox spacing="15" style="-fx-background-color: white; -fx-padding: 20; -fx-border-radius: 5; -fx-border-color: #ddd;">
+        <Label text="Select Platform to Register" style="-fx-font-size: 16px; -fx-font-weight: bold;"/>
+
+        <ComboBox fx:id="platformComboBox" promptText="Choose a platform"
+                  style="-fx-pref-width: 200;"/>
+
+        <VBox fx:id="connectorFormContainer" spacing="10">
+            <!-- Dynamic form fields will be loaded here based on platform selection -->
+        </VBox>
+    </VBox>
+
+    <HBox spacing="15" alignment="CENTER_RIGHT">
+        <Button text="Cancel" onAction="#onCancel"
+                style="-fx-background-color: #95a5a6; -fx-text-fill: white;"/>
+        <Button text="Register" onAction="#onRegister" fx:id="registerButton"
+                style="-fx-font-weight: bold; -fx-background-color: #27ae60; -fx-text-fill: white; -fx-pref-width: 100;"
+                disable="true"/>
+    </HBox>
+</VBox>

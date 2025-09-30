@@ -66,16 +66,12 @@ public class AriaOrchestrator {
     }
 
     private PlatformConnector createPlatformConnector(Platform platform) {
-        switch (platform) {
-            case TELEGRAM:
-                return new TelegramConnector();
-            case WHATSAPP:
-                throw new IllegalArgumentException("WHATSAPP not yet integrated");
-            case INSTAGRAM:
-                throw new IllegalArgumentException("INSTAGRAM not yet integrated");
-            default:
-                throw new IllegalArgumentException("Unsupported platform: " + platform);
-        }
+        return switch (platform) {
+            case TELEGRAM -> userService.getUser().getTelegramConnector();
+            case WHATSAPP -> userService.getUser().getWhatsappConnector();
+            case INSTAGRAM -> userService.getUser().getInstagramConnector();
+            default -> throw new IllegalArgumentException("Unsupported platform: " + platform);
+        };
     }
 
     public String generateResponse(String incomingMessage) {
