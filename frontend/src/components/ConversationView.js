@@ -1,0 +1,532 @@
+import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { targetApi, conversationApi, platformApi } from '../services/api';
+import './ConversationView.css';
+
+function ConversationView({ userId = 1 }) {
+  const { targetId } = useParams();
+  const navigate = useNavigate();
+  const [target, setTarget] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [goalData, setGoalData] = useState({
+    context: '',          // optional
+    desiredOutcome: '',   // required
+    meetingContext: '',   // optional
+  });
+  const [platformAccounts, setPlatformAccounts] = useState([]);
+  const [selectedAccountIds, setSelectedAccountIds] = useState([]);
+  const [conversationInitialized, setConversationInitialized] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState('');
+
+  useEffect(() => {
+    loadTarget();
+    loadPlatformAccounts();
+    // Check if there is an active conversation; if yes, skip goal page
+    (async () => {
+      try {
+        const resp = await conversationApi.isActive(targetId, userId);
+        if (resp.data?.success && resp.data?.data === true) {
+          setConversationInitialized(true);
+          await loadMessages();
+        }
+      } catch (e) {
+        // ignore
+      }
+    })();
+  }, [targetId]);
+
+  const loadTarget = async () => {
+    try {
+      setLoading(true);
+      const response = await targetApi.getById(targetId, userId);
+      if (response.data.success) {
+        setTarget(response.data.data);
+      } else {
+        setError(response.data.error || 'Failed to load target');
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to load target');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadPlatformAccounts = async () => {
+    try {
+      const response = await platformApi.getAccounts(userId);
+      if (response.data.success) {
+        const accounts = response.data.data || [];
+        setPlatformAccounts(accounts);
+        // Pre-select the target's primary platform account if present
+        if (target?.platformAccountId) {
+          setSelectedAccountIds([target.platformAccountId]);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load platform accounts:', err);
+    }
+  };
+
+  const handleGoalChange = (e) => {
+    setGoalData({
+      ...goalData,
+      [e.target.name]: e.target.value,
+    });
+  };
+
+  const handleInitializeConversation = async (e) => {
+    e.preventDefault();
+    try {
+      const payload = {
+        ...goalData,
+        includedPlatformAccountIds: selectedAccountIds,
+      };
+      const response = await conversationApi.initialize(targetId, payload, userId);
+      if (response.data.success) {
+        setConversationInitialized(true);
+        setError(null);
+        await loadMessages();
+      } else {
+        setError(response.data.error || 'Failed to initialize conversation');
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to initialize conversation');
+    }
+  };
+
+  const handleSendMessage = async (e) => {
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
+    if (!newMessage.trim()) return;
+
+    const messageText = newMessage.trim();
+    setNewMessage(''); // Clear input immediately for better UX
+
+    try {
+      const response = await conversationApi.respond(targetId, messageText, userId);
+      // If response includes message data, add it immediately to the UI
+      if (response.data?.success && response.data?.data) {
+        const messageData = response.data.data;
+        const newMsg = {
+          text: messageData.text || messageText,
+          fromUser: messageData.fromUser !== undefined ? messageData.fromUser : true,
+          timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
+          mediaUrl: messageData.mediaDownloadUrl || null,
+          messageId: messageData.messageId,
+        };
+        // Add to messages list immediately
+        setMessages(prev => [...prev, newMsg]);
+      } else {
+        // Fallback: reload all messages if no message data in response
+        await loadMessages();
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to send message');
+      // Restore message text if sending failed
+      setNewMessage(messageText);
+    }
+  };
+
+  const [editText, setEditText] = useState('');
+  const [selectedMessageId, setSelectedMessageId] = useState(null);
+  const handleEditLast = async () => {
+    if (!editText.trim()) return;
+    
+    const messageText = editText.trim();
+    const msgId = selectedMessageId;
+    
+    setEditText('');
+    setSelectedMessageId(null);
+    
+    try {
+      let response;
+      if (msgId) {
+        response = await conversationApi.edit(targetId, userId, msgId, messageText);
+      } else {
+        response = await conversationApi.editLast(targetId, userId, messageText);
+      }
+      
+      // If response includes updated message data, update it in the UI
+      if (response.data?.success && response.data?.data) {
+        const messageData = response.data.data;
+        const updatedMsg = {
+          text: messageData.text || messageText,
+          fromUser: messageData.fromUser !== undefined ? messageData.fromUser : true,
+          timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
+          mediaUrl: messageData.mediaDownloadUrl || null,
+          messageId: messageData.messageId,
+          edited: messageData.edited || true, // Mark as edited
+        };
+        
+        // Update the message in the messages list
+        setMessages(prev => prev.map(msg => 
+          msg.messageId === updatedMsg.messageId ? updatedMsg : msg
+        ));
+      } else {
+        // Fallback: update locally and reload
+        setMessages(prev => prev.map(msg => 
+          msg.messageId === msgId ? { ...msg, text: messageText, edited: true } : msg
+        ));
+        setTimeout(loadMessages, 300);
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to edit message');
+      // Restore edit state if editing failed
+      setSelectedMessageId(msgId);
+      setEditText(messageText);
+    }
+  };
+
+  const loadMessages = async () => {
+    try {
+      const resp = await conversationApi.getMessages(targetId, userId, 100);
+      if (resp.data?.success) {
+        const rows = resp.data.data || [];
+        setMessages(
+          rows.map((r) => ({
+            text: r.text || '',
+            fromUser: !!r.fromUser,
+            timestamp: r.timestamp ? new Date(r.timestamp) : new Date(),
+            mediaUrl: r.mediaDownloadUrl || null,
+            messageId: r.messageId,
+            hasMedia: r.hasMedia || false,
+            fileName: r.fileName || null,
+            mimeType: r.mimeType || null,
+            edited: r.edited || false, // Preserve edited flag from database or API
+          }))
+        );
+      }
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const handleDelete = async (messageId) => {
+    try {
+      await conversationApi.delete(targetId, userId, messageId);
+      setMessages(prev => prev.filter(m => m.messageId !== messageId));
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to delete message');
+    }
+  };
+
+  if (loading) {
+    return <div className="spinner"></div>;
+  }
+
+  if (error && !target) {
+    return (
+      <div className="container">
+        <div className="alert alert-error">{error}</div>
+        <button className="btn btn-secondary" onClick={() => navigate('/targets')}>
+          Back to Targets
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="conversation-view">
+      <div className="container">
+        <div className="header">
+          <button className="btn btn-secondary" onClick={() => navigate('/targets')}>
+            ← Back
+          </button>
+          <h1>Conversation with {target?.name}</h1>
+        </div>
+
+        {error && <div className="alert alert-error">{error}</div>}
+
+        {!conversationInitialized ? (
+          <div className="goal-form-container">
+            <h2>Set Conversation Goal</h2>
+            <form onSubmit={handleInitializeConversation} className="goal-form">
+              <div className="form-group">
+                <label htmlFor="context">Context (Optional)</label>
+                <textarea
+                  id="context"
+                  name="context"
+                  value={goalData.context}
+                  onChange={handleGoalChange}
+                  placeholder="Recent situation/detail to guide the tone (optional)"
+                  rows="4"
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="desiredOutcome">Desired Outcome *</label>
+                <textarea
+                  id="desiredOutcome"
+                  name="desiredOutcome"
+                  value={goalData.desiredOutcome}
+                  onChange={handleGoalChange}
+                  required
+                  placeholder="What do you want to achieve? (e.g., 'Arrange a romantic date', 'Secure investment')"
+                  rows="3"
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="meetingContext">Meeting Context (Optional)</label>
+                <textarea
+                  id="meetingContext"
+                  name="meetingContext"
+                  value={goalData.meetingContext}
+                  onChange={handleGoalChange}
+                  placeholder="Additional context about how you met, where, when, etc."
+                  rows="3"
+                />
+              </div>
+
+              {/* Historical connector selection */}
+              <div className="form-group">
+                <label>Historical Connectors</label>
+                <p className="hint">
+                  By default ARIA will use chats from the target&apos;s primary connector.
+                  You can also include historical chats from other connectors.
+                </p>
+                <div className="connector-selector">
+                  <select
+                    value={selectedAccountIds[0] || ''}
+                    onChange={(e) => {
+                      const id = parseInt(e.target.value, 10);
+                      if (!isNaN(id)) {
+                        setSelectedAccountIds((prev) =>
+                          prev.includes(id) ? prev : [id, ...prev.filter((x) => x !== id)]
+                        );
+                      }
+                    }}
+                  >
+                    <option value="">Select primary connector</option>
+                    {platformAccounts.map((acc) => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.platform} {acc.username && `(@${acc.username})`} {acc.number && ` [${acc.number}]`}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="connector-checkboxes">
+                    {platformAccounts.map((acc) => (
+                      <label key={acc.id} className="connector-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={selectedAccountIds.includes(acc.id)}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setSelectedAccountIds((prev) => {
+                              if (checked) {
+                                return prev.includes(acc.id) ? prev : [...prev, acc.id];
+                              } else {
+                                return prev.filter((x) => x !== acc.id);
+                              }
+                            });
+                          }}
+                        />
+                        <span>
+                          {acc.platform} {acc.username && `(@${acc.username})`} {acc.number && ` [${acc.number}]`}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <button type="submit" className="btn btn-primary">
+                Initialize Conversation
+              </button>
+            </form>
+          </div>
+        ) : (
+          <div className="conversation-container">
+            <div className="toolbar" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+              <button
+                className="btn btn-secondary"
+                onClick={async () => {
+                  try {
+                    await conversationApi.end(targetId, userId);
+                    setConversationInitialized(false);
+                    navigate('/targets');
+                  } catch (err) {
+                    setError(err.response?.data?.error || err.message || 'Failed to end conversation');
+                  }
+                }}
+              >
+                End Conversation
+              </button>
+              <label className="btn btn-secondary" style={{ marginLeft: 8 }}>
+                Upload Media
+                <input
+                  type="file"
+                  accept="image/*,video/*,audio/*,application/pdf"
+                  style={{ display: 'none' }}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    try {
+                      const response = await conversationApi.sendMedia(targetId, userId, file);
+                      // If response includes message data, add it immediately to the UI
+                      if (response.data?.success && response.data?.data) {
+                        const messageData = response.data.data;
+                        const newMsg = {
+                          text: messageData.text || null,
+                          fromUser: messageData.fromUser !== undefined ? messageData.fromUser : true,
+                          timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
+                          mediaUrl: messageData.mediaDownloadUrl || null,
+                          messageId: messageData.messageId,
+                          hasMedia: messageData.hasMedia || true,
+                          fileName: messageData.fileName || null,
+                          mimeType: messageData.mimeType || null,
+                        };
+                        // Add to messages list immediately
+                        setMessages(prev => [...prev, newMsg]);
+                      } else {
+                        // Fallback: reload all messages if no message data in response
+                        await loadMessages();
+                      }
+                    } catch (err) {
+                      setError(err.response?.data?.error || err.message || 'Failed to send media');
+                    } finally {
+                      e.target.value = '';
+                    }
+                  }}
+                />
+              </label>
+            </div>
+            <div className="messages-container">
+              {messages.length === 0 ? (
+                <div className="empty-messages">
+                  <p>No messages yet. Start the conversation!</p>
+                </div>
+              ) : (
+                messages.map((msg, idx) => (
+                  <div key={idx} className={`message ${msg.fromUser ? 'from-user' : 'from-target'}`}>
+                    <div className="message-content">
+                      {msg.hasMedia || msg.mediaUrl ? (
+                        <div>
+                          {msg.mediaUrl && (msg.mediaUrl.match(/\.mp4$|video\//) || msg.mimeType?.match(/^video\//)) ? (
+                            <video src={msg.mediaUrl} controls style={{ maxWidth: '220px', borderRadius: 8 }} />
+                          ) : msg.mediaUrl && (msg.mediaUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) || msg.mimeType?.match(/^image\//)) ? (
+                            <img src={msg.mediaUrl} alt="sent" style={{ maxWidth: '220px', borderRadius: 8 }} />
+                          ) : (
+                            <div style={{ padding: '8px', border: '1px solid #ccc', borderRadius: 8 }}>
+                              📎 {msg.fileName || 'Media file'}
+                            </div>
+                          )}
+                          <div style={{ marginTop: 4 }}>
+                            <a 
+                              href={msg.mediaUrl || conversationApi.downloadMediaUrl(targetId, userId, msg.messageId)} 
+                              download={msg.fileName || 'media'}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              Download
+                            </a>
+                          </div>
+                        </div>
+                      ) : (
+                        msg.text
+                      )}
+                    </div>
+                    <div className="message-time" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                      {msg.edited && (
+                        <span style={{ fontSize: '11px', color: '#999', fontStyle: 'italic' }}>
+                          edited
+                        </span>
+                      )}
+                    </div>
+                    {msg.fromUser && msg.messageId !== undefined && (
+                      <div className="message-actions" style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => {
+                            setSelectedMessageId(msg.messageId);
+                            setEditText(msg.text || '');
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => handleDelete(msg.messageId)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Edit form - shows when a message is selected for editing */}
+            {selectedMessageId && (
+              <div className="edit-form-container" style={{ 
+                marginBottom: '10px', 
+                padding: '10px', 
+                backgroundColor: '#f0f0f0', 
+                borderRadius: '8px',
+                border: '1px solid #ddd'
+              }}>
+                <div style={{ marginBottom: '8px', fontWeight: 'bold' }}>
+                  Editing message:
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                    placeholder="Edit message..."
+                    className="message-input"
+                    style={{ flex: 1 }}
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={handleEditLast}
+                    className="btn btn-primary"
+                    disabled={!editText.trim()}
+                  >
+                    Save Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedMessageId(null);
+                      setEditText('');
+                    }}
+                    className="btn btn-secondary"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <form onSubmit={handleSendMessage} className="message-form">
+              <input
+                type="text"
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+                placeholder="Type a message..."
+                className="message-input"
+                disabled={selectedMessageId !== null}
+              />
+              <button 
+                type="button" 
+                onClick={handleSendMessage} 
+                className="btn btn-primary"
+                disabled={selectedMessageId !== null}
+              >
+                Send
+              </button>
+            </form>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default ConversationView;
+

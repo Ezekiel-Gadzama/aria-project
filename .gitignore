@@ -44,5 +44,10 @@ aria_session.session-journal
 chats_export.json
 media/
 
+### Telegram sessions ###
+Session/
+*.session
+*.session-journal
+
 ### Configuration files ###
 src/main/resources/config.properties

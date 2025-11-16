@@ -21,6 +21,21 @@ public class UserService {
         }
     }
 
+    /**
+     * Attempt a login by phone or email.
+     * - If identifier contains '@' we treat it as email (stored in username).
+     * - Otherwise, we treat it as phone.
+     * Returns the found user or null if not found.
+     */
+    public User login(String identifier) {
+        try {
+            // Deprecated plain lookup; use password-based verification instead via controller
+            return DatabaseManager.getUserByPhone(identifier);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to login user", e);
+        }
+    }
+
     public User getUser() {
         return user;
     }

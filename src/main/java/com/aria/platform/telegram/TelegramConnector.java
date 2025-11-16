@@ -14,6 +14,8 @@ public class TelegramConnector implements PlatformConnector {
     private final String apiId;
     private final String apiHash;
     private final String phoneNumber;
+    private final String username;
+    private final int platformAccountId;
     private boolean isConnected;
 
     // Updated constructor to accept parameters from UI
@@ -21,6 +23,26 @@ public class TelegramConnector implements PlatformConnector {
         this.apiId = apiId;
         this.apiHash = apiHash;
         this.phoneNumber = phoneNumber;
+        this.username = "";
+        this.isConnected = false;
+        this.platformAccountId = 0;
+    }
+
+    public TelegramConnector(String apiId, String apiHash, String phoneNumber, int platformAccountId) {
+        this.apiId = apiId;
+        this.apiHash = apiHash;
+        this.phoneNumber = phoneNumber;
+        this.username = "";
+        this.platformAccountId = platformAccountId;
+        this.isConnected = false;
+    }
+
+    public TelegramConnector(String apiId, String apiHash, String phoneNumber, String username, int platformAccountId) {
+        this.apiId = apiId;
+        this.apiHash = apiHash;
+        this.phoneNumber = phoneNumber;
+        this.username = username != null ? username : "";
+        this.platformAccountId = platformAccountId;
         this.isConnected = false;
     }
 
@@ -29,6 +51,8 @@ public class TelegramConnector implements PlatformConnector {
         this.apiId = "";
         this.apiHash = "";
         this.phoneNumber = "";
+        this.username = "";
+        this.platformAccountId = 0;
         this.isConnected = false;
     }
 
@@ -42,7 +66,7 @@ public class TelegramConnector implements PlatformConnector {
         System.out.println("Running telegram python code to get chat history");
         try {
             ProcessBuilder processBuilder = new ProcessBuilder(
-                    "python",
+                    "python3",
                     "scripts/telethon/chat_ingestor.py"
             );
 
@@ -50,6 +74,10 @@ public class TelegramConnector implements PlatformConnector {
             env.put("TELEGRAM_API_ID", this.apiId);
             env.put("TELEGRAM_API_HASH", this.apiHash);
             env.put("TELEGRAM_PHONE", this.phoneNumber);
+            env.put("TELEGRAM_USERNAME", this.username);
+            env.put("PLATFORM_ACCOUNT_ID", String.valueOf(this.platformAccountId));
+            env.put("TELETHON_LOCK_PATH", "/app/telethon_send.lock");
+            env.put("TELETHON_SESSION_PATH", buildSessionPath(this.username, this.phoneNumber));
 
             processBuilder.directory(Paths.get("").toAbsolutePath().toFile());
             processBuilder.redirectErrorStream(true);
@@ -79,14 +107,38 @@ public class TelegramConnector implements PlatformConnector {
 
     @Override
     public boolean sendMessage(String target, String message) {
+        SendMessageResult result = sendMessageAndGetResult(target, message);
+        return result != null && result.success;
+    }
+
+    /**
+     * Result class for sending messages
+     */
+    public static class SendMessageResult {
+        public final Long messageId;
+        public final Long peerId;
+        public final boolean success;
+        
+        public SendMessageResult(Long messageId, Long peerId, boolean success) {
+            this.messageId = messageId;
+            this.peerId = peerId;
+            this.success = success;
+        }
+    }
+
+    /**
+     * Send a message and return the Telegram message ID and peer ID
+     * @return The result containing message ID and peer ID, or null if sending failed
+     */
+    public SendMessageResult sendMessageAndGetResult(String target, String message) {
         if (!isConfigured()) {
             System.err.println("Telegram connector not configured");
-            return false;
+            return null;
         }
 
         try {
             ProcessBuilder processBuilder = new ProcessBuilder(
-                    "python",
+                    "python3",
                     "scripts/telethon/message_sender.py",
                     target,
                     message
@@ -96,21 +148,235 @@ public class TelegramConnector implements PlatformConnector {
             env.put("TELEGRAM_API_ID", this.apiId);
             env.put("TELEGRAM_API_HASH", this.apiHash);
             env.put("TELEGRAM_PHONE", this.phoneNumber);
+            env.put("TELEGRAM_USERNAME", this.username);
+            env.put("PLATFORM_ACCOUNT_ID", String.valueOf(this.platformAccountId));
+            env.put("TELETHON_LOCK_PATH", "/app/telethon_send.lock");
+            env.put("TELETHON_SESSION_PATH", buildSessionPath(this.username, this.phoneNumber));
 
             processBuilder.directory(Paths.get("").toAbsolutePath().toFile());
             processBuilder.redirectErrorStream(true);
 
             Process process = processBuilder.start();
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("Python: " + line);
+                    output.append(line).append("\n");
+                }
+            }
             int exitCode = process.waitFor();
+            
+            // Parse JSON output from Python to extract message ID and peer ID
+            if (exitCode == 0 && output.toString().contains("\"messageId\"")) {
+                try {
+                    String jsonLine = output.toString().lines()
+                        .filter(l -> l.trim().startsWith("{"))
+                        .findFirst()
+                        .orElse(null);
+                    if (jsonLine != null) {
+                        com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(jsonLine).getAsJsonObject();
+                        if (json.has("messageId")) {
+                            long msgId = json.get("messageId").getAsLong();
+                            Long peerId = null;
+                            if (json.has("peerId") && !json.get("peerId").isJsonNull()) {
+                                peerId = json.get("peerId").getAsLong();
+                            }
+                            System.out.println("Extracted message ID: " + msgId + ", peer ID: " + peerId);
+                            return new SendMessageResult(msgId, peerId, true);
+                        }
+                    }
+                } catch (Exception e) {
+                    System.err.println("Error parsing message result from Python output: " + e.getMessage());
+                }
+            }
 
+            // If no message ID found but exit code is 0, assume success but return null result
+            return exitCode == 0 ? new SendMessageResult(-1L, null, true) : null;
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    public boolean sendMedia(String target, String filePath) {
+        SendMessageResult result = sendMediaAndGetResult(target, filePath);
+        return result != null && result.success;
+    }
+
+    /**
+     * Send media and return the Telegram message ID and peer ID
+     * @return The result containing message ID and peer ID, or null if sending failed
+     */
+    public SendMessageResult sendMediaAndGetResult(String target, String filePath) {
+        if (!isConfigured()) {
+            System.err.println("Telegram connector not configured");
+            return null;
+        }
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                    "python3",
+                    "scripts/telethon/media_sender.py",
+                    target,
+                    filePath
+            );
+            Map<String, String> env = processBuilder.environment();
+            env.put("TELEGRAM_API_ID", this.apiId);
+            env.put("TELEGRAM_API_HASH", this.apiHash);
+            env.put("TELEGRAM_PHONE", this.phoneNumber);
+            env.put("TELEGRAM_USERNAME", this.username);
+            env.put("PLATFORM_ACCOUNT_ID", String.valueOf(this.platformAccountId));
+            env.put("TELETHON_LOCK_PATH", "/app/telethon_send.lock");
+            env.put("TELETHON_SESSION_PATH", buildSessionPath(this.username, this.phoneNumber));
+
+            processBuilder.directory(Paths.get("").toAbsolutePath().toFile());
+            processBuilder.redirectErrorStream(true);
+
+            Process process = processBuilder.start();
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("Python: " + line);
+                    output.append(line).append("\n");
+                }
+            }
+            int exitCode = process.waitFor();
+            
+            // Parse JSON output from Python to extract message ID and peer ID
+            if (exitCode == 0 && output.toString().contains("\"messageId\"")) {
+                try {
+                    String jsonLine = output.toString().lines()
+                        .filter(l -> l.trim().startsWith("{"))
+                        .findFirst()
+                        .orElse(null);
+                    if (jsonLine != null) {
+                        com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(jsonLine).getAsJsonObject();
+                        if (json.has("messageId")) {
+                            long msgId = json.get("messageId").getAsLong();
+                            Long peerId = null;
+                            if (json.has("peerId") && !json.get("peerId").isJsonNull()) {
+                                peerId = json.get("peerId").getAsLong();
+                            }
+                            System.out.println("Extracted media message ID: " + msgId + ", peer ID: " + peerId);
+                            return new SendMessageResult(msgId, peerId, true);
+                        }
+                    }
+                } catch (Exception e) {
+                    System.err.println("Error parsing media message result from Python output: " + e.getMessage());
+                }
+            }
+
+            // If no message ID found but exit code is 0, assume success but return null result
+            return exitCode == 0 ? new SendMessageResult(-1L, null, true) : null;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    public boolean editMessage(String target, int messageId, String newText) {
+        if (!isConfigured()) {
+            System.err.println("Telegram connector not configured");
+            return false;
+        }
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                    "python3",
+                    "scripts/telethon/message_editor.py",
+                    target,
+                    String.valueOf(messageId),
+                    newText
+            );
+            Map<String, String> env = processBuilder.environment();
+            env.put("TELEGRAM_API_ID", this.apiId);
+            env.put("TELEGRAM_API_HASH", this.apiHash);
+            env.put("TELEGRAM_PHONE", this.phoneNumber);
+            env.put("TELEGRAM_USERNAME", this.username);
+            env.put("PLATFORM_ACCOUNT_ID", String.valueOf(this.platformAccountId));
+            env.put("TELETHON_LOCK_PATH", "/app/telethon_send.lock");
+            env.put("TELETHON_SESSION_PATH", buildSessionPath(this.username, this.phoneNumber));
+
+            processBuilder.directory(Paths.get("").toAbsolutePath().toFile());
+            processBuilder.redirectErrorStream(true);
+
+            Process process = processBuilder.start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("Python: " + line);
+                }
+            }
+            int exitCode = process.waitFor();
             return exitCode == 0;
-
         } catch (Exception e) {
             e.printStackTrace();
             return false;
         }
     }
 
+    public boolean deleteMessage(String target, int messageId) {
+        if (!isConfigured()) {
+            System.err.println("Telegram connector not configured");
+            return false;
+        }
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                    "python3",
+                    "scripts/telethon/message_deleter.py",
+                    target,
+                    String.valueOf(messageId)
+            );
+            Map<String, String> env = processBuilder.environment();
+            env.put("TELEGRAM_API_ID", this.apiId);
+            env.put("TELEGRAM_API_HASH", this.apiHash);
+            env.put("TELEGRAM_PHONE", this.phoneNumber);
+            env.put("TELEGRAM_USERNAME", this.username);
+            env.put("PLATFORM_ACCOUNT_ID", String.valueOf(this.platformAccountId));
+            env.put("TELETHON_LOCK_PATH", "/app/telethon_send.lock");
+            env.put("TELETHON_SESSION_PATH", buildSessionPath(this.username, this.phoneNumber));
+
+            processBuilder.directory(Paths.get("").toAbsolutePath().toFile());
+            processBuilder.redirectErrorStream(true);
+
+            Process process = processBuilder.start();
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("Python: " + line);
+                    output.append(line).append("\n");
+                }
+            }
+            int exitCode = process.waitFor();
+            
+            // Check if output indicates success
+            String fullOutput = output.toString();
+            boolean hasSuccess = fullOutput.contains("Deleted message") || fullOutput.contains("deleted");
+            boolean hasError = fullOutput.toLowerCase().contains("error") || (exitCode != 0 && !hasSuccess);
+            
+            if (hasError) {
+                System.err.println("Delete message failed. Exit code: " + exitCode + ", Output: " + fullOutput);
+                return false;
+            }
+            
+            return exitCode == 0 || hasSuccess;
+        } catch (Exception e) {
+            System.err.println("Exception in deleteMessage: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    private String buildSessionPath(String username, String phone) {
+        String userPart = (username != null && !username.isBlank()) ? username : (phone != null ? phone : "unknown");
+        if (userPart.startsWith("@")) userPart = userPart.substring(1);
+        userPart = userPart.replaceAll("[^A-Za-z0-9_@+]", "_");
+        // Directory per user, with session file inside that directory.
+        // Telethon will append ".session" automatically to this base path.
+        return "Session/telegramConnector/user_" + userPart + "/user_" + userPart;
+    }
     private void parseChatExport() {
         TelethonBridge bridge = new TelethonBridge();
         Map<String, List<Message>> chats = bridge.parseChatExport();

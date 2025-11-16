@@ -22,6 +22,8 @@ public class StyleExtractor {
         profile.setPreferredOpening(extractOpeningPattern(conversation));
         profile.setResponseTimeAverage(calculateAvgResponseTime(conversation));
         profile.setMessageLengthAverage(calculateAvgMessageLength(conversation));
+        profile.setQuestionRate(calculateQuestionRate(conversation));
+        profile.setEngagementLevel(calculateEngagementLevel(conversation));
 
         return profile;
     }
@@ -158,7 +160,6 @@ public class StyleExtractor {
         return totalLength / conversation.size();
     }
 
-    // Additional style metrics
     private double calculateEngagementLevel(List<Message> conversation) {
         if (conversation.isEmpty()) return 0.5;
 
@@ -172,7 +173,7 @@ public class StyleExtractor {
                 })
                 .count();
 
-        return (double) engagingMessages / conversation.size();
+        return Math.min(1.0, (double) engagingMessages / conversation.size() * 2);
     }
 
     private double calculateQuestionRate(List<Message> conversation) {
@@ -183,6 +184,6 @@ public class StyleExtractor {
                 .filter(msg -> msg.getContent().contains("?"))
                 .count();
 
-        return (double) questionMessages / conversation.size();
+        return Math.min(1.0, (double) questionMessages / conversation.size());
     }
 }

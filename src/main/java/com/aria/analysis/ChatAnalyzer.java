@@ -2,6 +2,7 @@
 
 package com.aria.analysis;
 
+import com.aria.ai.OpenAIClient;
 import com.aria.core.model.Message;
 import com.aria.core.model.ChatProfile;
 import java.util.List;
@@ -12,8 +13,8 @@ public class ChatAnalyzer {
     private final SuccessScorer successScorer;
     private final StyleExtractor styleExtractor;
 
-    public ChatAnalyzer() {
-        this.successScorer = new SuccessScorer();
+    public ChatAnalyzer(OpenAIClient openAIClient) {
+        this.successScorer = new SuccessScorer(openAIClient);
         this.styleExtractor = new StyleExtractor();
     }
 

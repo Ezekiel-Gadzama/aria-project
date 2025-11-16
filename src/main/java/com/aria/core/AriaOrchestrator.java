@@ -1,6 +1,7 @@
 package com.aria.core;
 
 import com.aria.analysis.ChatAnalyzer;
+import com.aria.analysis.ChatCategorizationService;
 import com.aria.core.model.ConversationGoal;
 import com.aria.core.model.TargetUser;
 import com.aria.ai.OpenAIClient;
@@ -8,7 +9,6 @@ import com.aria.ai.ResponseGenerator;
 import com.aria.core.strategy.AdvancedResponseStrategy;
 import com.aria.platform.PlatformConnector;
 import com.aria.platform.Platform;
-import com.aria.platform.telegram.TelegramConnector;
 import com.aria.core.strategy.ResponseStrategy;
 import com.aria.core.strategy.StrategyFactory;
 import java.util.Map;
@@ -24,10 +24,12 @@ public class AriaOrchestrator {
     private ConversationGoal currentGoal;
     private TargetUser currentTargetUser; // Store the target user
     private UserService userService;
+    private ChatCategorizationService categorizationService;
 
     public AriaOrchestrator(UserService userService) {
         this.openAIClient = new OpenAIClient();
         this.responseGenerator = new ResponseGenerator(openAIClient);
+        this.categorizationService = new ChatCategorizationService(openAIClient);
         this.responseStrategy = StrategyFactory.createStrategy(
                 StrategyFactory.StrategyType.BASIC,
                 responseGenerator
@@ -55,7 +57,7 @@ public class AriaOrchestrator {
         this.responseStrategy = StrategyFactory.createStrategy(
                 StrategyFactory.StrategyType.ADVANCED,
                 responseGenerator,
-                new ChatAnalyzer()
+                new ChatAnalyzer(openAIClient)
         );
 
         this.responseStrategy.initialize(goal, targetUser);
@@ -99,7 +101,37 @@ public class AriaOrchestrator {
     public void startChatIngestion() {
         if (platformConnector != null) {
             platformConnector.ingestChatHistory();
+            
+            // After ingestion, categorize dialogs with success scores
+            // For incremental updates, only categorize dialogs with new messages
+            // For first-time ingestion, categorize all dialogs
+            try {
+                int userId = getCurrentUserId();
+                if (userId > 0) {
+                    System.out.println("Starting categorization of ingested chats...");
+                    // Categorize all dialogs (will re-categorize ones with new messages)
+                    // This ensures success scores are updated for chats with new messages
+                    categorizationService.categorizeAllDialogs(userId);
+                }
+            } catch (Exception e) {
+                System.err.println("Error categorizing chats after ingestion: " + e.getMessage());
+                e.printStackTrace();
+            }
         }
+    }
+
+    /**
+     * Start chat ingestion for a specific connector (used for platform registration/login flows).
+     */
+    public void startChatIngestion(PlatformConnector connector) {
+        this.platformConnector = connector;
+        startChatIngestion();
+    }
+    
+    private int getCurrentUserId() {
+        // TODO: Implement to get current user ID
+        // For now, return 1 as default
+        return 1;
     }
 
     public String getConversationHistory() {

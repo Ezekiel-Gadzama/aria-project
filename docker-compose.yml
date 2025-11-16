@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: aria-postgres
+    environment:
+      POSTGRES_DB: aria
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Ezekiel(23)
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  aria-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aria-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/aria
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: Ezekiel(23)
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      UNDETECTABLE_AI_API_KEY: ${UNDETECTABLE_AI_API_KEY}
+      ARIA_ENCRYPTION_KEY: ${ARIA_ENCRYPTION_KEY:-YXJpYS1kZWZhdWx0LWRldi1rZXktMzItYnl0ZXMhISE=}  # Base64-encoded 32-byte key (default dev key: "aria-default-dev-key-32-bytes!!!")
+    volumes:
+      - ./media:/app/media
+      - ./scripts:/app/scripts
+      # Legacy single-session file (not used by new per-account sessions, kept for backward compatibility)
+      - ./aria_session.session:/app/aria_session.session
+      # Map per-account Telethon sessions to the host so you can see/manage them
+      - ./Session:/app/Session
+    ports:
+      - "8080:8080"
+    stdin_open: true
+    tty: true
+
+volumes:
+  postgres_data:
+

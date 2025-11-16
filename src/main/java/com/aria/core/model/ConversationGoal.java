@@ -4,6 +4,10 @@ public class ConversationGoal {
     private String context;
     private String desiredOutcome;
     private String meetingContext;
+    // Optional: list of platform_account IDs whose historical chats should be included
+    private java.util.List<Integer> includedPlatformAccountIds;
+    // Fixed profile data captured at Target creation (JSON string)
+    private String profileJson;
 
     // Constructors
     public ConversationGoal() {
@@ -39,5 +43,21 @@ public class ConversationGoal {
 
     public void setMeetingContext(String meetingContext) {
         this.meetingContext = meetingContext;
+    }
+
+    public java.util.List<Integer> getIncludedPlatformAccountIds() {
+        return includedPlatformAccountIds;
+    }
+
+    public void setIncludedPlatformAccountIds(java.util.List<Integer> includedPlatformAccountIds) {
+        this.includedPlatformAccountIds = includedPlatformAccountIds;
+    }
+
+    public String getProfileJson() {
+        return profileJson;
+    }
+
+    public void setProfileJson(String profileJson) {
+        this.profileJson = profileJson;
     }
 }

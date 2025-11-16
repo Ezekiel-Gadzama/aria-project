@@ -11,6 +11,7 @@ public class Message {
     private LocalDateTime timestamp;
     private boolean isFromUser;
     private MessageType type;
+    private boolean hasMedia;
 
     public enum MessageType {
         TEXT, IMAGE, LINK, EMOJI
@@ -74,5 +75,13 @@ public class Message {
 
     public void setType(MessageType type) {
         this.type = type;
+    }
+
+    public boolean isHasMedia() {
+        return hasMedia;
+    }
+
+    public void setHasMedia(boolean hasMedia) {
+        this.hasMedia = hasMedia;
     }
 }
