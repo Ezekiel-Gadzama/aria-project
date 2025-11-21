@@ -1,6 +1,10 @@
 package com.aria.api.config;
 
+import jakarta.servlet.MultipartConfigElement;
+import org.springframework.boot.web.servlet.MultipartConfigFactory;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.util.unit.DataSize;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
@@ -39,6 +43,21 @@ public class WebConfig implements WebMvcConfigurer {
         registry.addViewController("/targets").setViewName("forward:/index.html");
         registry.addViewController("/platforms").setViewName("forward:/index.html");
         registry.addViewController("/conversations").setViewName("forward:/index.html");
+    }
+
+    /**
+     * Configure multipart file upload settings (up to 200 MB)
+     */
+    @Bean
+    public MultipartConfigElement multipartConfigElement() {
+        MultipartConfigFactory factory = new MultipartConfigFactory();
+        // Allow up to 200 MB per file
+        factory.setMaxFileSize(DataSize.ofMegabytes(200));
+        // Allow up to 200 MB per request (file + form data)
+        factory.setMaxRequestSize(DataSize.ofMegabytes(200));
+        // Files larger than 10 MB will be written to disk during upload
+        factory.setFileSizeThreshold(DataSize.ofMegabytes(10));
+        return factory.createMultipartConfig();
     }
 }
 

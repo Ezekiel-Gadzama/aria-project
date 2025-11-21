@@ -76,6 +76,16 @@ export const conversationApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
+  replaceMedia: (targetUserId, userId, messageId, file, caption) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (caption) {
+      form.append('caption', caption);
+    }
+    return api.post(`/conversations/replaceMedia?targetUserId=${targetUserId}&userId=${userId}&messageId=${messageId}`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
 };
 
 // Platform API

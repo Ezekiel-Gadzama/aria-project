@@ -167,7 +167,51 @@ function ConversationView({ userId = 1 }) {
   const [editText, setEditText] = useState('');
   const [selectedMessageId, setSelectedMessageId] = useState(null);
   const [selectedMessageHasMedia, setSelectedMessageHasMedia] = useState(false);
+  const [pendingMediaReplacement, setPendingMediaReplacement] = useState(null); // { file, preview }
   const handleEditLast = async () => {
+    // If we have pending media replacement, replace the media instead of just editing text
+    if (pendingMediaReplacement) {
+      const messageText = editText.trim() || null;
+      const file = pendingMediaReplacement.file;
+      const msgId = selectedMessageId;
+      
+      setEditText('');
+      setSelectedMessageId(null);
+      setPendingMediaReplacement(null);
+      
+      try {
+        const response = await conversationApi.replaceMedia(targetId, userId, msgId, file, messageText);
+        if (response.data?.success && response.data?.data) {
+          const messageData = response.data.data;
+          const updatedMsg = {
+            text: messageData.text || messageText || null,
+            fromUser: messageData.fromUser !== undefined ? messageData.fromUser : true,
+            timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
+            mediaUrl: messageData.mediaDownloadUrl || null,
+            messageId: messageData.messageId,
+            hasMedia: messageData.hasMedia || true,
+            fileName: messageData.fileName || null,
+            mimeType: messageData.mimeType || null,
+            edited: true,
+          };
+          // Replace the old message with the new one
+          setMessages(prev => prev.map(msg => 
+            msg.messageId === msgId ? updatedMsg : msg
+          ));
+        } else {
+          await loadMessages();
+        }
+      } catch (err) {
+        setError(err.response?.data?.error || err.message || 'Failed to replace media');
+        // Restore state if replacement failed
+        setPendingMediaReplacement({ file, preview: pendingMediaReplacement.preview });
+        setSelectedMessageId(msgId);
+        setEditText(messageText || '');
+      }
+      return;
+    }
+    
+    // Regular text edit (no media replacement)
     // Allow empty text for media messages (to remove caption)
     if (!selectedMessageHasMedia && !editText.trim()) return;
     
@@ -204,9 +248,16 @@ function ConversationView({ userId = 1 }) {
         // Update the message in the messages list, preserving media info
         setMessages(prev => prev.map(msg => {
           if (msg.messageId === updatedMsg.messageId) {
-            // Preserve media info if editing a media message
-            if (msg.hasMedia && updatedMsg.hasMedia) {
-              return { ...updatedMsg, mediaUrl: msg.mediaUrl || updatedMsg.mediaUrl };
+            // Preserve media info if the original message had media
+            // This ensures media shows even if backend doesn't return hasMedia=true
+            if (msg.hasMedia || msg.mediaUrl) {
+              return { 
+                ...updatedMsg, 
+                hasMedia: true, // Ensure hasMedia is true if original had media
+                mediaUrl: updatedMsg.mediaUrl || msg.mediaUrl, // Use new URL if available, otherwise keep old
+                fileName: updatedMsg.fileName || msg.fileName,
+                mimeType: updatedMsg.mimeType || msg.mimeType
+              };
             }
             return updatedMsg;
           }
@@ -492,6 +543,7 @@ function ConversationView({ userId = 1 }) {
                             setSelectedMessageId(msg.messageId);
                             setEditText(msg.text || '');
                             setSelectedMessageHasMedia(msg.hasMedia || false);
+                            setPendingMediaReplacement(null); // Clear any pending replacement
                           }}
                         >
                           Edit
@@ -521,12 +573,53 @@ function ConversationView({ userId = 1 }) {
                 <div style={{ marginBottom: '8px', fontWeight: 'bold' }}>
                   Editing message:
                 </div>
+                {selectedMessageHasMedia && (
+                  <div style={{ marginBottom: '8px' }}>
+                    <label className="btn btn-secondary" style={{ marginRight: '8px' }}>
+                      Replace Media
+                      <input
+                        type="file"
+                        accept="image/*,video/*,audio/*,application/pdf"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const preview = URL.createObjectURL(file);
+                          setPendingMediaReplacement({ file, preview });
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                    {pendingMediaReplacement && (
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => {
+                          if (pendingMediaReplacement.preview) {
+                            URL.revokeObjectURL(pendingMediaReplacement.preview);
+                          }
+                          setPendingMediaReplacement(null);
+                        }}
+                      >
+                        Remove New Media
+                      </button>
+                    )}
+                    {pendingMediaReplacement && (
+                      <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: 4 }}>
+                        {pendingMediaReplacement.preview && pendingMediaReplacement.file.type.startsWith('image/') ? (
+                          <img src={pendingMediaReplacement.preview} alt="Preview" style={{ maxWidth: '100px', maxHeight: '100px', borderRadius: 4 }} />
+                        ) : (
+                          <span>📎 {pendingMediaReplacement.file.name}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                   <input
                     type="text"
                     value={editText}
                     onChange={(e) => setEditText(e.target.value)}
-                    placeholder="Edit message..."
+                    placeholder={selectedMessageHasMedia ? "Edit caption (optional)..." : "Edit message..."}
                     className="message-input"
                     style={{ flex: 1 }}
                     autoFocus
@@ -535,15 +628,19 @@ function ConversationView({ userId = 1 }) {
                     type="button"
                     onClick={handleEditLast}
                     className="btn btn-primary"
-                    disabled={!selectedMessageHasMedia && !editText.trim()}
+                    disabled={!selectedMessageHasMedia && !editText.trim() && !pendingMediaReplacement}
                   >
-                    Save Edit
+                    {pendingMediaReplacement ? 'Replace Media' : 'Save Edit'}
                   </button>
                   <button
                     type="button"
                     onClick={() => {
                       setSelectedMessageId(null);
                       setEditText('');
+                      setPendingMediaReplacement(null);
+                      if (pendingMediaReplacement?.preview) {
+                        URL.revokeObjectURL(pendingMediaReplacement.preview);
+                      }
                     }}
                     className="btn btn-secondary"
                   >
