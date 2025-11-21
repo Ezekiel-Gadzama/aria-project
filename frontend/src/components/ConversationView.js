@@ -19,6 +19,7 @@ function ConversationView({ userId = 1 }) {
   const [conversationInitialized, setConversationInitialized] = useState(false);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
+  const [pendingMedia, setPendingMedia] = useState(null); // { file, preview }
 
   useEffect(() => {
     loadTarget();
@@ -98,42 +99,80 @@ function ConversationView({ userId = 1 }) {
 
   const handleSendMessage = async (e) => {
     if (e && typeof e.preventDefault === 'function') e.preventDefault();
-    if (!newMessage.trim()) return;
+    
+    // If we have pending media, send media with text; otherwise send text only
+    if (pendingMedia) {
+      const messageText = newMessage.trim() || null;
+      const file = pendingMedia.file;
+      setNewMessage('');
+      setPendingMedia(null); // Clear pending media immediately for better UX
 
-    const messageText = newMessage.trim();
-    setNewMessage(''); // Clear input immediately for better UX
-
-    try {
-      const response = await conversationApi.respond(targetId, messageText, userId);
-      // If response includes message data, add it immediately to the UI
-      if (response.data?.success && response.data?.data) {
-        const messageData = response.data.data;
-        const newMsg = {
-          text: messageData.text || messageText,
-          fromUser: messageData.fromUser !== undefined ? messageData.fromUser : true,
-          timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
-          mediaUrl: messageData.mediaDownloadUrl || null,
-          messageId: messageData.messageId,
-        };
-        // Add to messages list immediately
-        setMessages(prev => [...prev, newMsg]);
-      } else {
-        // Fallback: reload all messages if no message data in response
-        await loadMessages();
+      try {
+        const response = await conversationApi.sendMediaWithText(targetId, userId, file, messageText);
+        if (response.data?.success && response.data?.data) {
+          const messageData = response.data.data;
+          const newMsg = {
+            text: messageData.text || messageText || null,
+            fromUser: messageData.fromUser !== undefined ? messageData.fromUser : true,
+            timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
+            mediaUrl: messageData.mediaDownloadUrl || null,
+            messageId: messageData.messageId,
+            hasMedia: messageData.hasMedia || true,
+            fileName: messageData.fileName || null,
+            mimeType: messageData.mimeType || null,
+          };
+          setMessages(prev => [...prev, newMsg]);
+        } else {
+          await loadMessages();
+        }
+      } catch (err) {
+        setError(err.response?.data?.error || err.message || 'Failed to send media');
+        // Restore state if sending failed
+        setPendingMedia({ file, preview: pendingMedia.preview });
+        setNewMessage(messageText || '');
       }
-    } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Failed to send message');
-      // Restore message text if sending failed
-      setNewMessage(messageText);
+    } else {
+      // Send text-only message
+      if (!newMessage.trim()) return;
+
+      const messageText = newMessage.trim();
+      setNewMessage(''); // Clear input immediately for better UX
+
+      try {
+        const response = await conversationApi.respond(targetId, messageText, userId);
+        // If response includes message data, add it immediately to the UI
+        if (response.data?.success && response.data?.data) {
+          const messageData = response.data.data;
+          const newMsg = {
+            text: messageData.text || messageText,
+            fromUser: messageData.fromUser !== undefined ? messageData.fromUser : true,
+            timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
+            mediaUrl: messageData.mediaDownloadUrl || null,
+            messageId: messageData.messageId,
+          };
+          // Add to messages list immediately
+          setMessages(prev => [...prev, newMsg]);
+        } else {
+          // Fallback: reload all messages if no message data in response
+          await loadMessages();
+        }
+      } catch (err) {
+        setError(err.response?.data?.error || err.message || 'Failed to send message');
+        // Restore message text if sending failed
+        setNewMessage(messageText);
+      }
     }
   };
 
   const [editText, setEditText] = useState('');
   const [selectedMessageId, setSelectedMessageId] = useState(null);
+  const [selectedMessageHasMedia, setSelectedMessageHasMedia] = useState(false);
   const handleEditLast = async () => {
-    if (!editText.trim()) return;
+    // Allow empty text for media messages (to remove caption)
+    if (!selectedMessageHasMedia && !editText.trim()) return;
     
-    const messageText = editText.trim();
+    // For media messages, allow empty text to remove caption; for text messages, trim it
+    const messageText = selectedMessageHasMedia ? editText : editText.trim();
     const msgId = selectedMessageId;
     
     setEditText('');
@@ -151,18 +190,28 @@ function ConversationView({ userId = 1 }) {
       if (response.data?.success && response.data?.data) {
         const messageData = response.data.data;
         const updatedMsg = {
-          text: messageData.text || messageText,
+          text: messageData.text || messageText || null,
           fromUser: messageData.fromUser !== undefined ? messageData.fromUser : true,
           timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
           mediaUrl: messageData.mediaDownloadUrl || null,
           messageId: messageData.messageId,
           edited: messageData.edited || true, // Mark as edited
+          hasMedia: messageData.hasMedia || false,
+          fileName: messageData.fileName || null,
+          mimeType: messageData.mimeType || null,
         };
         
-        // Update the message in the messages list
-        setMessages(prev => prev.map(msg => 
-          msg.messageId === updatedMsg.messageId ? updatedMsg : msg
-        ));
+        // Update the message in the messages list, preserving media info
+        setMessages(prev => prev.map(msg => {
+          if (msg.messageId === updatedMsg.messageId) {
+            // Preserve media info if editing a media message
+            if (msg.hasMedia && updatedMsg.hasMedia) {
+              return { ...updatedMsg, mediaUrl: msg.mediaUrl || updatedMsg.mediaUrl };
+            }
+            return updatedMsg;
+          }
+          return msg;
+        }));
       } else {
         // Fallback: update locally and reload
         setMessages(prev => prev.map(msg => 
@@ -359,38 +408,33 @@ function ConversationView({ userId = 1 }) {
                   type="file"
                   accept="image/*,video/*,audio/*,application/pdf"
                   style={{ display: 'none' }}
-                  onChange={async (e) => {
+                  onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (!file) return;
-                    try {
-                      const response = await conversationApi.sendMedia(targetId, userId, file);
-                      // If response includes message data, add it immediately to the UI
-                      if (response.data?.success && response.data?.data) {
-                        const messageData = response.data.data;
-                        const newMsg = {
-                          text: messageData.text || null,
-                          fromUser: messageData.fromUser !== undefined ? messageData.fromUser : true,
-                          timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
-                          mediaUrl: messageData.mediaDownloadUrl || null,
-                          messageId: messageData.messageId,
-                          hasMedia: messageData.hasMedia || true,
-                          fileName: messageData.fileName || null,
-                          mimeType: messageData.mimeType || null,
-                        };
-                        // Add to messages list immediately
-                        setMessages(prev => [...prev, newMsg]);
-                      } else {
-                        // Fallback: reload all messages if no message data in response
-                        await loadMessages();
-                      }
-                    } catch (err) {
-                      setError(err.response?.data?.error || err.message || 'Failed to send media');
-                    } finally {
-                      e.target.value = '';
-                    }
+                    
+                    // Create preview URL
+                    const preview = URL.createObjectURL(file);
+                    setPendingMedia({ file, preview });
+                    
+                    // Clear file input
+                    e.target.value = '';
                   }}
                 />
               </label>
+              {pendingMedia && (
+                <button
+                  className="btn btn-secondary"
+                  style={{ marginLeft: 8 }}
+                  onClick={() => {
+                    setPendingMedia(null);
+                    if (pendingMedia.preview) {
+                      URL.revokeObjectURL(pendingMedia.preview);
+                    }
+                  }}
+                >
+                  Remove Media
+                </button>
+              )}
             </div>
             <div className="messages-container">
               {messages.length === 0 ? (
@@ -410,6 +454,11 @@ function ConversationView({ userId = 1 }) {
                           ) : (
                             <div style={{ padding: '8px', border: '1px solid #ccc', borderRadius: 8 }}>
                               📎 {msg.fileName || 'Media file'}
+                            </div>
+                          )}
+                          {msg.text && (
+                            <div style={{ marginTop: '8px' }}>
+                              {msg.text}
                             </div>
                           )}
                           <div style={{ marginTop: 4 }}>
@@ -442,6 +491,7 @@ function ConversationView({ userId = 1 }) {
                           onClick={() => {
                             setSelectedMessageId(msg.messageId);
                             setEditText(msg.text || '');
+                            setSelectedMessageHasMedia(msg.hasMedia || false);
                           }}
                         >
                           Edit
@@ -485,7 +535,7 @@ function ConversationView({ userId = 1 }) {
                     type="button"
                     onClick={handleEditLast}
                     className="btn btn-primary"
-                    disabled={!editText.trim()}
+                    disabled={!selectedMessageHasMedia && !editText.trim()}
                   >
                     Save Edit
                   </button>
@@ -503,12 +553,28 @@ function ConversationView({ userId = 1 }) {
               </div>
             )}
 
+            {pendingMedia && (
+              <div style={{ marginBottom: '0.5rem', padding: '0.5rem', background: '#f0f0f0', borderRadius: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  {pendingMedia.preview && pendingMedia.file.type.startsWith('image/') ? (
+                    <img src={pendingMedia.preview} alt="Preview" style={{ maxWidth: '100px', maxHeight: '100px', borderRadius: 4 }} />
+                  ) : (
+                    <div style={{ padding: '8px', background: '#fff', borderRadius: 4 }}>
+                      📎 {pendingMedia.file.name}
+                    </div>
+                  )}
+                  <span style={{ flex: 1, fontSize: '0.9rem', color: '#666' }}>
+                    {pendingMedia.file.name} ({(pendingMedia.file.size / 1024).toFixed(1)} KB)
+                  </span>
+                </div>
+              </div>
+            )}
             <form onSubmit={handleSendMessage} className="message-form">
               <input
                 type="text"
                 value={newMessage}
                 onChange={(e) => setNewMessage(e.target.value)}
-                placeholder="Type a message..."
+                placeholder={pendingMedia ? "Add a caption (optional)..." : "Type a message..."}
                 className="message-input"
                 disabled={selectedMessageId !== null}
               />
@@ -516,9 +582,9 @@ function ConversationView({ userId = 1 }) {
                 type="button" 
                 onClick={handleSendMessage} 
                 className="btn btn-primary"
-                disabled={selectedMessageId !== null}
+                disabled={selectedMessageId !== null || (!pendingMedia && !newMessage.trim())}
               >
-                Send
+                {pendingMedia ? 'Send Media' : 'Send'}
               </button>
             </form>
           </div>

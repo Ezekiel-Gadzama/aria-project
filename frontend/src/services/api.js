@@ -66,6 +66,16 @@ export const conversationApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
+  sendMediaWithText: (targetUserId, userId, file, caption) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (caption) {
+      form.append('caption', caption);
+    }
+    return api.post(`/conversations/sendMedia?targetUserId=${targetUserId}&userId=${userId}`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
 };
 
 // Platform API

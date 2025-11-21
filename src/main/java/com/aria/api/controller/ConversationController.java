@@ -624,9 +624,8 @@ public class ConversationController {
     ) {
         try {
             int currentUserId = userId != null ? userId : 1;
-            if (newText == null || newText.trim().isEmpty()) {
-                return ResponseEntity.badRequest().body(ApiResponse.error("New text is required"));
-            }
+            // Allow empty text for media messages (to remove caption)
+            // We'll check if the message has media later
 
             DatabaseManager databaseManager = new DatabaseManager();
             TargetUserService targetUserService = new TargetUserService(databaseManager);
@@ -687,16 +686,56 @@ public class ConversationController {
                     return ResponseEntity.badRequest().body(ApiResponse.error("No outgoing messages to edit"));
                 }
 
+                // Check if message has media first (declare outside try blocks)
+                boolean hasMedia = false;
+                String fileName = null;
+                String mimeType = null;
+                
+                // Check if message has media before editing
+                try (java.sql.PreparedStatement checkPs = conn.prepareStatement(
+                        "SELECT m.has_media FROM messages m WHERE m.dialog_id = ? AND m.message_id = ?")) {
+                    checkPs.setInt(1, dialogsRowId);
+                    checkPs.setInt(2, lastMsgId);
+                    try (java.sql.ResultSet rs = checkPs.executeQuery()) {
+                        if (rs.next()) {
+                            hasMedia = rs.getBoolean(1);
+                        }
+                    }
+                }
+                
+                // Allow empty text only for media messages (to remove caption)
+                if (!hasMedia && (newText == null || newText.trim().isEmpty())) {
+                    return ResponseEntity.badRequest().body(ApiResponse.error("New text is required for non-media messages"));
+                }
+
                 // Call connector to edit
                 com.aria.platform.PlatformConnector connector =
                         com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
                 if (connector instanceof com.aria.platform.telegram.TelegramConnector tg) {
-                    boolean ok = tg.editMessage(selected.getUsername(), lastMsgId, newText);
+                    boolean ok = tg.editMessage(selected.getUsername(), lastMsgId, newText != null ? newText : "");
                     if (ok) {
+                        // If it has media, get media metadata
+                        if (hasMedia) {
+                            try (java.sql.PreparedStatement mediaPs = conn.prepareStatement(
+                                    "SELECT me.file_name, me.mime_type FROM media me " +
+                                    "JOIN messages m ON me.message_id = m.id " +
+                                    "WHERE m.dialog_id = ? AND m.message_id = ? LIMIT 1")) {
+                                mediaPs.setInt(1, dialogsRowId);
+                                mediaPs.setInt(2, lastMsgId);
+                                try (java.sql.ResultSet rs = mediaPs.executeQuery()) {
+                                    if (rs.next()) {
+                                        fileName = rs.getString(1);
+                                        mimeType = rs.getString(2);
+                                    }
+                                }
+                            }
+                        }
+                        
                         // Update the message in the database after successful edit in Telegram (encrypt it like saveMessage does)
                         try (java.sql.PreparedStatement ps = conn.prepareStatement(
                                 "UPDATE messages SET text = ? WHERE dialog_id = ? AND message_id = ?")) {
-                            String encryptedText = com.aria.storage.SecureStorage.encrypt(newText);
+                            String encryptedText = newText != null && !newText.isEmpty() ? 
+                                com.aria.storage.SecureStorage.encrypt(newText) : null;
                             ps.setString(1, encryptedText);
                             ps.setInt(2, dialogsRowId);
                             ps.setInt(3, lastMsgId);
@@ -710,10 +749,15 @@ public class ConversationController {
                         java.util.Map<String, Object> messageData = new java.util.HashMap<>();
                         messageData.put("messageId", lastMsgId);
                         messageData.put("fromUser", true);
-                        messageData.put("text", newText);
+                        messageData.put("text", newText != null && !newText.isEmpty() ? newText : null);
                         messageData.put("edited", true);
                         messageData.put("timestamp", System.currentTimeMillis());
-                        messageData.put("hasMedia", false);
+                        messageData.put("hasMedia", hasMedia);
+                        if (hasMedia) {
+                            messageData.put("fileName", fileName);
+                            messageData.put("mimeType", mimeType);
+                            messageData.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + lastMsgId);
+                        }
                         
                         return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
                     } else {
@@ -758,7 +802,57 @@ public class ConversationController {
             com.aria.platform.PlatformConnector connector =
                     com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
             if (connector instanceof com.aria.platform.telegram.TelegramConnector tg) {
-                boolean ok = tg.editMessage(selected.getUsername(), messageId, newText);
+                // Check if message has media first (declare outside try blocks)
+                boolean hasMedia = false;
+                String fileName = null;
+                String mimeType = null;
+                
+                // Check if message has media before editing
+                try (java.sql.Connection checkConn = java.sql.DriverManager.getConnection(
+                        System.getenv("DATABASE_URL") != null
+                                ? System.getenv("DATABASE_URL")
+                                : "jdbc:postgresql://localhost:5432/aria",
+                        System.getenv("DATABASE_USER") != null
+                                ? System.getenv("DATABASE_USER")
+                                : "postgres",
+                        System.getenv("DATABASE_PASSWORD") != null
+                                ? System.getenv("DATABASE_PASSWORD")
+                                : "Ezekiel(23)")) {
+                    
+                    Integer dialogsRowId = null;
+                    try (java.sql.PreparedStatement ps = checkConn.prepareStatement(
+                            "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' AND name = ? ORDER BY id DESC LIMIT 1")) {
+                        ps.setInt(1, currentUserId);
+                        ps.setInt(2, selected.getPlatformId());
+                        ps.setString(3, targetUser.getName());
+                        try (java.sql.ResultSet rs = ps.executeQuery()) {
+                            if (rs.next()) dialogsRowId = rs.getInt(1);
+                        }
+                    }
+                    
+                    if (dialogsRowId != null) {
+                        try (java.sql.PreparedStatement checkPs = checkConn.prepareStatement(
+                                "SELECT m.has_media FROM messages m WHERE m.dialog_id = ? AND m.message_id = ?")) {
+                            checkPs.setInt(1, dialogsRowId);
+                            checkPs.setInt(2, messageId);
+                            try (java.sql.ResultSet rs = checkPs.executeQuery()) {
+                                if (rs.next()) {
+                                    hasMedia = rs.getBoolean(1);
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    // Log but continue - we'll check again after editing
+                    System.err.println("Warning: Failed to check if message has media: " + e.getMessage());
+                }
+                
+                // Allow empty text only for media messages (to remove caption)
+                if (!hasMedia && (newText == null || newText.trim().isEmpty())) {
+                    return ResponseEntity.badRequest().body(ApiResponse.error("New text is required for non-media messages"));
+                }
+                
+                boolean ok = tg.editMessage(selected.getUsername(), messageId, newText != null ? newText : "");
                 if (ok) {
                     // Update the message in the database after successful edit in Telegram
                     try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
@@ -784,11 +878,41 @@ public class ConversationController {
                             }
                         }
                         
-                        // Update message text in database (encrypt it like saveMessage does)
+                        // Re-check if message has media (in case first check failed)
                         if (dialogsRowId != null) {
+                            try (java.sql.PreparedStatement checkPs = conn.prepareStatement(
+                                    "SELECT m.has_media FROM messages m WHERE m.dialog_id = ? AND m.message_id = ?")) {
+                                checkPs.setInt(1, dialogsRowId);
+                                checkPs.setInt(2, messageId);
+                                try (java.sql.ResultSet rs = checkPs.executeQuery()) {
+                                    if (rs.next()) {
+                                        hasMedia = rs.getBoolean(1);
+                                    }
+                                }
+                            }
+                            
+                            // If it has media, get media metadata
+                            if (hasMedia) {
+                                try (java.sql.PreparedStatement mediaPs = conn.prepareStatement(
+                                        "SELECT me.file_name, me.mime_type FROM media me " +
+                                        "JOIN messages m ON me.message_id = m.id " +
+                                        "WHERE m.dialog_id = ? AND m.message_id = ? LIMIT 1")) {
+                                    mediaPs.setInt(1, dialogsRowId);
+                                    mediaPs.setInt(2, messageId);
+                                    try (java.sql.ResultSet rs = mediaPs.executeQuery()) {
+                                        if (rs.next()) {
+                                            fileName = rs.getString(1);
+                                            mimeType = rs.getString(2);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Update message text in database (encrypt it like saveMessage does)
                             try (java.sql.PreparedStatement ps = conn.prepareStatement(
                                     "UPDATE messages SET text = ? WHERE dialog_id = ? AND message_id = ?")) {
-                                String encryptedText = com.aria.storage.SecureStorage.encrypt(newText);
+                                String encryptedText = newText != null && !newText.isEmpty() ? 
+                                    com.aria.storage.SecureStorage.encrypt(newText) : null;
                                 ps.setString(1, encryptedText);
                                 ps.setInt(2, dialogsRowId);
                                 ps.setInt(3, messageId);
@@ -804,10 +928,15 @@ public class ConversationController {
                     java.util.Map<String, Object> messageData = new java.util.HashMap<>();
                     messageData.put("messageId", messageId);
                     messageData.put("fromUser", true);
-                    messageData.put("text", newText);
+                    messageData.put("text", newText != null && !newText.isEmpty() ? newText : null);
                     messageData.put("edited", true);
                     messageData.put("timestamp", System.currentTimeMillis());
-                    messageData.put("hasMedia", false);
+                    messageData.put("hasMedia", hasMedia);
+                    if (hasMedia) {
+                        messageData.put("fileName", fileName);
+                        messageData.put("mimeType", mimeType);
+                        messageData.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + messageId);
+                    }
                     
                     return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
                 } else {
@@ -937,7 +1066,8 @@ public class ConversationController {
     public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> sendMedia(
             @RequestParam("targetUserId") Integer targetUserId,
             @RequestParam(value = "userId", required = false) Integer userId,
-            @org.springframework.web.bind.annotation.RequestPart("file") org.springframework.web.multipart.MultipartFile file
+            @org.springframework.web.bind.annotation.RequestPart("file") org.springframework.web.multipart.MultipartFile file,
+            @org.springframework.web.bind.annotation.RequestParam(value = "caption", required = false) String caption
     ) {
         try {
             int currentUserId = userId != null ? userId : 1;
@@ -1030,7 +1160,7 @@ public class ConversationController {
                 com.aria.platform.telegram.TelegramConnector connector =
                         (com.aria.platform.telegram.TelegramConnector)
                         com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
-                sendResult = connector.sendMediaAndGetResult(selected.getUsername(), absoluteMediaPath);
+                sendResult = connector.sendMediaAndGetResult(selected.getUsername(), absoluteMediaPath, caption);
             } else {
                 return ResponseEntity.badRequest().body(ApiResponse.error("Media sending not yet supported for platform: " + platform));
             }
@@ -1111,7 +1241,7 @@ public class ConversationController {
                             dialogRowId,
                             telegramMessageId,
                             "me",
-                            null, // No text for media-only messages
+                            caption != null && !caption.isEmpty() ? caption : null, // Save caption if provided
                             now,
                             true // hasMedia
                         );
@@ -1158,7 +1288,7 @@ public class ConversationController {
             java.util.Map<String, Object> messageData = new java.util.HashMap<>();
             messageData.put("messageId", telegramMessageId.intValue());
             messageData.put("fromUser", true);
-            messageData.put("text", null);
+            messageData.put("text", caption != null && !caption.isEmpty() ? caption : null);
             messageData.put("timestamp", System.currentTimeMillis());
             messageData.put("hasMedia", true);
             messageData.put("fileName", fileName);

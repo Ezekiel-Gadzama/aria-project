@@ -207,9 +207,19 @@ public class TelegramConnector implements PlatformConnector {
 
     /**
      * Send media and return the Telegram message ID and peer ID
+     * @param caption Optional caption text to send with the media
      * @return The result containing message ID and peer ID, or null if sending failed
      */
     public SendMessageResult sendMediaAndGetResult(String target, String filePath) {
+        return sendMediaAndGetResult(target, filePath, null);
+    }
+
+    /**
+     * Send media with caption and return the Telegram message ID and peer ID
+     * @param caption Optional caption text to send with the media
+     * @return The result containing message ID and peer ID, or null if sending failed
+     */
+    public SendMessageResult sendMediaAndGetResult(String target, String filePath, String caption) {
         if (!isConfigured()) {
             System.err.println("Telegram connector not configured");
             return null;
@@ -219,7 +229,8 @@ public class TelegramConnector implements PlatformConnector {
                     "python3",
                     "scripts/telethon/media_sender.py",
                     target,
-                    filePath
+                    filePath,
+                    caption != null && !caption.isEmpty() ? caption : ""
             );
             Map<String, String> env = processBuilder.environment();
             env.put("TELEGRAM_API_ID", this.apiId);

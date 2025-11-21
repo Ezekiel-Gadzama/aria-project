@@ -11,7 +11,7 @@ api_id = os.getenv('TELEGRAM_API_ID')
 api_hash = os.getenv('TELEGRAM_API_HASH')
 phone = os.getenv('TELEGRAM_PHONE')
 
-async def send_media(target_username, file_path):
+async def send_media(target_username, file_path, caption=None):
     session_path = os.getenv('TELETHON_SESSION_PATH', 'aria_session')
     try:
         pathlib.Path(session_path).parent.mkdir(parents=True, exist_ok=True)
@@ -40,7 +40,8 @@ async def send_media(target_username, file_path):
             uname = '@' + uname
         
         entity = await client.get_entity(uname)
-        sent_msg = await client.send_file(entity, file_path)
+        # Send media with optional caption
+        sent_msg = await client.send_file(entity, file_path, caption=caption if caption else None)
         
         # Print message ID and peer ID for Java to parse and save to database
         if sent_msg and hasattr(sent_msg, 'id'):
@@ -64,15 +65,16 @@ async def send_media(target_username, file_path):
         await client.disconnect()
 
 if __name__ == '__main__':
-    if len(sys.argv) == 3:
+    if len(sys.argv) >= 3:
         target = sys.argv[1]
         path = sys.argv[2]
+        caption = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
         if not os.path.exists(path):
             print("File not found:", path)
             sys.exit(1)
-        asyncio.run(send_media(target, path))
+        asyncio.run(send_media(target, path, caption))
     else:
-        print("Usage: python media_sender.py <username> <file_path>")
+        print("Usage: python media_sender.py <username> <file_path> [caption]")
         sys.exit(1)
 
 
