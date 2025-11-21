@@ -10,6 +10,7 @@ function TargetManagement({ userId = 1 }) {
   const [platformAccounts, setPlatformAccounts] = useState([]); // concrete accounts
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [onlineStatus, setOnlineStatus] = useState({}); // { targetId: true/false }
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
@@ -26,6 +27,37 @@ function TargetManagement({ userId = 1 }) {
     loadPlatforms();
     loadPlatformAccounts();
   }, []);
+
+  // Poll for online status of all targets
+  useEffect(() => {
+    if (targets.length === 0) return;
+
+    const checkOnlineStatus = async () => {
+      const statuses = {};
+      await Promise.all(
+        targets.map(async (target) => {
+          try {
+            const response = await targetApi.checkOnlineStatus(target.id, userId);
+            if (response.data?.success) {
+              statuses[target.id] = response.data.data === true;
+            }
+          } catch (err) {
+            // Silently fail - online status is not critical
+            statuses[target.id] = false;
+          }
+        })
+      );
+      setOnlineStatus(statuses);
+    };
+
+    // Check immediately
+    checkOnlineStatus();
+
+    // Then check every 30 seconds
+    const interval = setInterval(checkOnlineStatus, 30000);
+
+    return () => clearInterval(interval);
+  }, [targets, userId]);
 
   const loadTargets = async () => {
     try {
@@ -282,7 +314,28 @@ function TargetManagement({ userId = 1 }) {
             targets.map((target) => (
               <div key={target.id} className="card">
                 <div className="card-header">
-                  <h3 className="card-title">{target.name}</h3>
+                  <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    {target.name}
+                    {onlineStatus[target.id] ? (
+                      <span className="online-indicator" title="Online" style={{ 
+                        display: 'inline-block',
+                        width: '8px',
+                        height: '8px',
+                        borderRadius: '50%',
+                        backgroundColor: '#4caf50',
+                        boxShadow: '0 0 0 2px rgba(76, 175, 80, 0.3)',
+                        animation: 'pulse 2s infinite'
+                      }}></span>
+                    ) : (
+                      <span className="offline-indicator" title="Offline" style={{ 
+                        display: 'inline-block',
+                        width: '8px',
+                        height: '8px',
+                        borderRadius: '50%',
+                        backgroundColor: '#999'
+                      }}></span>
+                    )}
+                  </h3>
                   <button
                     className="btn btn-danger btn-sm"
                     onClick={() => handleDelete(target.id)}

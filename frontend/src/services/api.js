@@ -23,6 +23,7 @@ export const targetApi = {
   getById: (id, userId) => api.get(`/targets/${id}?userId=${userId}`),
   create: (targetData, userId) => api.post(`/targets?userId=${userId}`, targetData),
   delete: (id, userId) => api.delete(`/targets/${id}?userId=${userId}`),
+  checkOnlineStatus: (id, userId) => api.get(`/targets/${id}/online?userId=${userId}`),
 };
 
 // Conversation API

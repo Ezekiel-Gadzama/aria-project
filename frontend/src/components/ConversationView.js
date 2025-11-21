@@ -20,6 +20,7 @@ function ConversationView({ userId = 1 }) {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [pendingMedia, setPendingMedia] = useState(null); // { file, preview }
+  const [targetOnline, setTargetOnline] = useState(false); // Online status of target user
 
   useEffect(() => {
     loadTarget();
@@ -446,9 +447,17 @@ function ConversationView({ userId = 1 }) {
           </div>
         ) : (
           <div className="conversation-container">
-            <div className="toolbar" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+            <div className="conversation-header">
+              <h2>
+                {target?.name || 'Conversation'}
+                {targetOnline ? (
+                  <span className="online-indicator" title="Online"></span>
+                ) : (
+                  <span className="offline-indicator" title="Offline"></span>
+                )}
+              </h2>
               <button
-                className="btn btn-secondary"
+                className="btn btn-secondary btn-sm"
                 onClick={async () => {
                   try {
                     await conversationApi.end(targetId, userId);
@@ -461,6 +470,8 @@ function ConversationView({ userId = 1 }) {
               >
                 End Conversation
               </button>
+            </div>
+            <div className="toolbar" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
               <label className="btn btn-secondary" style={{ marginLeft: 8 }}>
                 Upload Media
                 <input
@@ -507,20 +518,20 @@ function ConversationView({ userId = 1 }) {
                       {msg.hasMedia || msg.mediaUrl ? (
                         <div>
                           {msg.mediaUrl && (msg.mediaUrl.match(/\.mp4$|video\//) || msg.mimeType?.match(/^video\//)) ? (
-                            <video src={msg.mediaUrl} controls style={{ maxWidth: '220px', borderRadius: 8 }} />
+                            <video src={msg.mediaUrl} controls style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6 }} />
                           ) : msg.mediaUrl && (msg.mediaUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) || msg.mimeType?.match(/^image\//)) ? (
-                            <img src={msg.mediaUrl} alt="sent" style={{ maxWidth: '220px', borderRadius: 8 }} />
+                            <img src={msg.mediaUrl} alt="sent" style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6, objectFit: 'contain' }} />
                           ) : (
-                            <div style={{ padding: '8px', border: '1px solid #ccc', borderRadius: 8 }}>
+                            <div style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: 6, fontSize: '0.85rem' }}>
                               📎 {msg.fileName || 'Media file'}
                             </div>
                           )}
                           {msg.text && (
-                            <div style={{ marginTop: '8px' }}>
+                            <div style={{ marginTop: '4px', fontSize: '0.9rem' }}>
                               {msg.text}
                             </div>
                           )}
-                          <div style={{ marginTop: 4 }}>
+                          <div style={{ marginTop: 2, fontSize: '0.75rem' }}>
                             <a 
                               href={msg.mediaUrl || conversationApi.downloadMediaUrl(targetId, userId, msg.messageId)} 
                               download={msg.fileName || 'media'}
@@ -535,18 +546,19 @@ function ConversationView({ userId = 1 }) {
                         msg.text
                       )}
                     </div>
-                    <div className="message-time" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                    <div className="message-time" style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', marginTop: '0.2rem' }}>
+                      <span>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                       {msg.edited && (
-                        <span style={{ fontSize: '11px', color: '#999', fontStyle: 'italic' }}>
-                          edited
+                        <span style={{ fontSize: '0.65rem', color: '#999', fontStyle: 'italic' }}>
+                          (edited)
                         </span>
                       )}
                     </div>
                     {msg.fromUser && msg.messageId !== undefined && (
-                      <div className="message-actions" style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                      <div className="message-actions" style={{ display: 'flex', gap: 4, marginTop: 2 }}>
                         <button
                           className="btn btn-secondary btn-sm"
+                          style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem' }}
                           onClick={() => {
                             setSelectedMessageId(msg.messageId);
                             setEditText(msg.text || '');
@@ -558,6 +570,7 @@ function ConversationView({ userId = 1 }) {
                         </button>
                         <button
                           className="btn btn-secondary btn-sm"
+                          style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem' }}
                           onClick={() => handleDelete(msg.messageId)}
                         >
                           Delete
@@ -659,16 +672,16 @@ function ConversationView({ userId = 1 }) {
             )}
 
             {pendingMedia && (
-              <div style={{ marginBottom: '0.5rem', padding: '0.5rem', background: '#f0f0f0', borderRadius: 8 }}>
+              <div style={{ marginBottom: '0.5rem', padding: '0.4rem 0.5rem', background: '#f0f0f0', borderRadius: 6, fontSize: '0.85rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   {pendingMedia.preview && pendingMedia.file.type.startsWith('image/') ? (
-                    <img src={pendingMedia.preview} alt="Preview" style={{ maxWidth: '100px', maxHeight: '100px', borderRadius: 4 }} />
+                    <img src={pendingMedia.preview} alt="Preview" style={{ maxWidth: '60px', maxHeight: '60px', borderRadius: 4 }} />
                   ) : (
-                    <div style={{ padding: '8px', background: '#fff', borderRadius: 4 }}>
+                    <div style={{ padding: '4px 6px', background: '#fff', borderRadius: 4, fontSize: '0.8rem' }}>
                       📎 {pendingMedia.file.name}
                     </div>
                   )}
-                  <span style={{ flex: 1, fontSize: '0.9rem', color: '#666' }}>
+                  <span style={{ flex: 1, fontSize: '0.85rem', color: '#666' }}>
                     {pendingMedia.file.name} ({(pendingMedia.file.size / 1024).toFixed(1)} KB)
                   </span>
                 </div>

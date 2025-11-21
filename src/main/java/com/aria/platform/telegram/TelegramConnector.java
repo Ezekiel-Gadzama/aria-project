@@ -488,6 +488,60 @@ public class TelegramConnector implements PlatformConnector {
         return isConnected;
     }
 
+    /**
+     * Check if a user is online on Telegram
+     * @param target Target username
+     * @return true if user is online, false otherwise
+     */
+    public boolean checkUserOnline(String target) {
+        if (!isConfigured()) {
+            System.err.println("Telegram connector not configured");
+            return false;
+        }
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                    "python3",
+                    "scripts/telethon/online_checker.py",
+                    target
+            );
+            Map<String, String> env = processBuilder.environment();
+            env.put("TELEGRAM_API_ID", this.apiId);
+            env.put("TELEGRAM_API_HASH", this.apiHash);
+            env.put("TELEGRAM_PHONE", this.phoneNumber);
+            env.put("TELEGRAM_USERNAME", this.username);
+            env.put("PLATFORM_ACCOUNT_ID", String.valueOf(this.platformAccountId));
+            env.put("TELETHON_SESSION_PATH", buildSessionPath(this.username, this.phoneNumber));
+
+            processBuilder.directory(Paths.get("").toAbsolutePath().toFile());
+            processBuilder.redirectErrorStream(true);
+
+            Process process = processBuilder.start();
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("Python: " + line);
+                    output.append(line).append("\n");
+                }
+            }
+            int exitCode = process.waitFor();
+            
+            // Check output for "true" or "false"
+            String outputStr = output.toString().trim();
+            if (outputStr.contains("true")) {
+                return true;
+            } else if (outputStr.contains("false")) {
+                return false;
+            }
+            
+            // Default to false if unclear
+            return false;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
     private boolean isConfigured() {
         return apiId != null && !apiId.isEmpty() &&
                 apiHash != null && !apiHash.isEmpty() &&

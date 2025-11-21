@@ -201,5 +201,59 @@ public class TargetController {
                 .body(ApiResponse.error("Error deleting target: " + e.getMessage()));
         }
     }
+
+    /**
+     * Check if a target user is online
+     * GET /api/targets/{id}/online?userId=1
+     */
+    @GetMapping("/{id}/online")
+    public ResponseEntity<ApiResponse<Boolean>> checkOnlineStatus(
+            @PathVariable("id") Integer id,
+            @RequestParam(value = "userId", required = false) Integer userId) {
+        try {
+            int currentUserId = userId != null ? userId : 1;
+            DatabaseManager databaseManager = new DatabaseManager();
+            TargetUserService targetUserService = new TargetUserService(databaseManager);
+            
+            // Get target user
+            List<TargetUser> targets = targetUserService.getTargetUsersByUserId(currentUserId);
+            TargetUser target = targets.stream()
+                .filter(t -> t.getTargetId() == id)
+                .findFirst()
+                .orElse(null);
+            
+            if (target == null) {
+                return ResponseEntity.notFound().build();
+            }
+
+            com.aria.platform.UserPlatform selected = target.getSelectedPlatform();
+            if (selected == null) {
+                return ResponseEntity.ok(ApiResponse.success(false));
+            }
+
+            // Only Telegram supports online status checking
+            if (selected.getPlatform() != Platform.TELEGRAM) {
+                return ResponseEntity.ok(ApiResponse.success(false));
+            }
+
+            // Get platform account
+            DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(selected.getPlatformId());
+            if (acc == null) {
+                return ResponseEntity.ok(ApiResponse.success(false));
+            }
+
+            // Check online status using Telegram connector
+            com.aria.platform.telegram.TelegramConnector connector =
+                    (com.aria.platform.telegram.TelegramConnector)
+                    com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
+            
+            boolean isOnline = connector.checkUserOnline(selected.getUsername());
+            
+            return ResponseEntity.ok(ApiResponse.success(isOnline));
+        } catch (Exception e) {
+            // On error, assume offline
+            return ResponseEntity.ok(ApiResponse.success(false));
+        }
+    }
 }
 
