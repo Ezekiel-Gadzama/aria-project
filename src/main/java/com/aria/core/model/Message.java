@@ -12,6 +12,7 @@ public class Message {
     private boolean isFromUser;
     private MessageType type;
     private boolean hasMedia;
+    private Long referenceId; // ID of the message this message is replying to
 
     public enum MessageType {
         TEXT, IMAGE, LINK, EMOJI
@@ -83,5 +84,13 @@ public class Message {
 
     public void setHasMedia(boolean hasMedia) {
         this.hasMedia = hasMedia;
+    }
+
+    public Long getReferenceId() {
+        return referenceId;
+    }
+
+    public void setReferenceId(Long referenceId) {
+        this.referenceId = referenceId;
     }
 }

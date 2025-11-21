@@ -116,15 +116,15 @@ def save_dialog(user_id, dialog_id, name, type_, message_count, media_count):
         return result[0] if result else None
 
 
-def save_message(dialog_id, message_id, sender, text, timestamp, has_media, raw_json):
+def save_message(dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id=None):
     sql = """
-        INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, raw_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+        INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
         ON CONFLICT (dialog_id, message_id) DO NOTHING
         RETURNING id
     """
     with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, (dialog_id, message_id, sender, text, timestamp, has_media, raw_json))
+        cur.execute(sql, (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id))
         result = cur.fetchone()
         return result[0] if result else None
 
@@ -336,7 +336,34 @@ async def ingest_chat_history():
 
     total_messages, total_media_downloaded = 0, 0
 
+    # Check for priority target username (for immediate ingestion of target user's messages)
+    priority_target_username = os.getenv('PRIORITY_TARGET_USERNAME', '').lstrip('@').lower()
+    priority_dialog = None
+    other_dialogs = []
+    
+    # Separate priority dialog from others
     for dialog in dialogs:
+        if dialog.is_user:
+            entity = dialog.entity
+            # Check if this is the priority target
+            if priority_target_username:
+                dialog_username = getattr(entity, 'username', '').lower() if hasattr(entity, 'username') else ''
+                dialog_name_lower = dialog.name.lower()
+                if dialog_username == priority_target_username or dialog_name_lower == priority_target_username:
+                    priority_dialog = dialog
+                    safe_print(f"Found priority target dialog: {dialog.name}")
+                    continue
+            other_dialogs.append(dialog)
+        else:
+            other_dialogs.append(dialog)
+    
+    # Process priority dialog first if it exists
+    dialogs_to_process = []
+    if priority_dialog:
+        dialogs_to_process.append(priority_dialog)
+    dialogs_to_process.extend(other_dialogs)
+
+    for dialog in dialogs_to_process:
         # Yield to sender if lock appears while processing each dialog
         await _disconnect_if_sending(client)
         if not await client.is_user_authorized():
@@ -381,6 +408,10 @@ async def ingest_chat_history():
             last_message_id = get_last_message_id(dialog_id)
             has_new_messages = False
             
+            # Check if this is the priority target dialog (for first-time ingestion, limit to 80 messages)
+            # This ensures we have enough messages even if some are deleted (UI displays last 50)
+            is_priority_target = (priority_dialog and dialog == priority_dialog)
+            
             if last_message_id:
                 safe_print(f"  Resuming from message ID {last_message_id} (incremental update)")
                 # Robust incremental: loop with reconnect on disconnect and database lock retry
@@ -400,10 +431,16 @@ async def ingest_chat_history():
                             sender = "me" if message.out else safe_chat_name
                             has_media = message.media is not None
                             raw_json = json.dumps(message.to_dict(), default=str)
+                            
+                            # Extract reference_id from reply_to if present
+                            reference_id = None
+                            if hasattr(message, 'reply_to') and message.reply_to:
+                                if hasattr(message.reply_to, 'reply_to_msg_id') and message.reply_to.reply_to_msg_id:
+                                    reference_id = message.reply_to.reply_to_msg_id
 
                             msg_id = save_message(
                                 dialog_id, message.id, sender, message.text,
-                                message.date, has_media, raw_json
+                                message.date, has_media, raw_json, reference_id
                             )
                             if msg_id:  # Only count if message was actually saved (not duplicate)
                                 message_count += 1
@@ -436,49 +473,170 @@ async def ingest_chat_history():
                         # Not a disconnect/db lock issue; re-raise
                         raise
             else:
-                safe_print(f"  First time ingestion (all messages)")
-                # Robust full ingestion with reconnect on disconnect and database lock retry
-                resume_from_id = 0
-                while True:
-                    try:
-                        async for message in client.iter_messages(dialog.entity, limit=200, offset_id=resume_from_id):
-                            await _disconnect_if_sending(client)
-                            await _ensure_connected(client)
+                # For priority target on first ingestion:
+                # Phase 1: Get last 80 messages immediately (for UI display)
+                # Phase 2: Continue with full ingestion from beginning
+                # For other dialogs, get all messages (limit=200 per batch)
+                if is_priority_target:
+                    safe_print(f"  Priority target: First getting last 80 messages for immediate display")
+                    # Phase 1: Get last 80 messages
+                    messages_processed_phase1 = 0
+                    oldest_message_id_phase1 = None
+                    while True:
+                        try:
+                            async for message in client.iter_messages(dialog.entity, limit=80, offset_id=0):
+                                if messages_processed_phase1 >= 80:
+                                    break
+                                await _disconnect_if_sending(client)
+                                await _ensure_connected(client)
 
-                            has_new_messages = True
-                            sender = "me" if message.out else safe_chat_name
-                            has_media = message.media is not None
-                            raw_json = json.dumps(message.to_dict(), default=str)
+                                has_new_messages = True
+                                sender = "me" if message.out else safe_chat_name
+                                has_media = message.media is not None
+                                raw_json = json.dumps(message.to_dict(), default=str)
+                                
+                                # Extract reference_id from reply_to if present
+                                reference_id = None
+                                if hasattr(message, 'reply_to') and message.reply_to:
+                                    if hasattr(message.reply_to, 'reply_to_msg_id') and message.reply_to.reply_to_msg_id:
+                                        reference_id = message.reply_to.reply_to_msg_id
 
-                            msg_id = save_message(
-                                dialog_id, message.id, sender, message.text,
-                                message.date, has_media, raw_json
-                            )
-                            if msg_id:  # Only count if message was actually saved
-                                message_count += 1
+                                msg_id = save_message(
+                                    dialog_id, message.id, sender, message.text,
+                                    message.date, has_media, raw_json, reference_id
+                                )
+                                if msg_id:
+                                    message_count += 1
+                                    messages_processed_phase1 += 1
+                                    if oldest_message_id_phase1 is None or message.id < oldest_message_id_phase1:
+                                        oldest_message_id_phase1 = message.id
 
-                            if has_media and msg_id:
-                                media_info = await download_media(client, message, dialog.name, message.id)
-                                if media_info:
-                                    save_media(
-                                        msg_id, media_info["type"], media_info["file_path"],
-                                        media_info["file_name"], media_info["file_size"], media_info["mime_type"]
-                                    )
-                                    media_count += 1
-                                    total_media_downloaded += 1
+                                if has_media and msg_id:
+                                    media_info = await download_media(client, message, dialog.name, message.id)
+                                    if media_info:
+                                        save_media(
+                                            msg_id, media_info["type"], media_info["file_path"],
+                                            media_info["file_name"], media_info["file_size"], media_info["mime_type"]
+                                        )
+                                        media_count += 1
+                                        total_media_downloaded += 1
 
-                            if message.id > resume_from_id:
-                                resume_from_id = message.id
-                        break
-                    except Exception as e:
-                        if "Cannot send requests while disconnected" in str(e) or "disconnected" in str(e).lower():
-                            await _ensure_connected(client)
-                            continue
-                        # If database locked, wait and retry
-                        if "database is locked" in str(e).lower():
-                            await asyncio.sleep(0.2)
-                            continue
-                        raise
+                                if messages_processed_phase1 >= 80:
+                                    break
+                            break
+                        except Exception as e:
+                            if "Cannot send requests while disconnected" in str(e) or "disconnected" in str(e).lower():
+                                await _ensure_connected(client)
+                                continue
+                            if "database is locked" in str(e).lower():
+                                await asyncio.sleep(0.2)
+                                continue
+                            raise
+                    
+                    safe_print(f"  Priority target: Phase 1 complete (80 messages). Now continuing with full history from beginning")
+                    # Phase 2: Continue with full ingestion from the oldest message we got
+                    # This ensures we get the complete history
+                    resume_from_id = oldest_message_id_phase1 if oldest_message_id_phase1 else 0
+                    while True:
+                        try:
+                            async for message in client.iter_messages(dialog.entity, limit=200, offset_id=resume_from_id):
+                                await _disconnect_if_sending(client)
+                                await _ensure_connected(client)
+
+                                # Skip messages we already processed in phase 1
+                                if oldest_message_id_phase1 and message.id >= oldest_message_id_phase1:
+                                    continue
+
+                                has_new_messages = True
+                                sender = "me" if message.out else safe_chat_name
+                                has_media = message.media is not None
+                                raw_json = json.dumps(message.to_dict(), default=str)
+                                
+                                # Extract reference_id from reply_to if present
+                                reference_id = None
+                                if hasattr(message, 'reply_to') and message.reply_to:
+                                    if hasattr(message.reply_to, 'reply_to_msg_id') and message.reply_to.reply_to_msg_id:
+                                        reference_id = message.reply_to.reply_to_msg_id
+
+                                msg_id = save_message(
+                                    dialog_id, message.id, sender, message.text,
+                                    message.date, has_media, raw_json, reference_id
+                                )
+                                if msg_id:
+                                    message_count += 1
+
+                                if has_media and msg_id:
+                                    media_info = await download_media(client, message, dialog.name, message.id)
+                                    if media_info:
+                                        save_media(
+                                            msg_id, media_info["type"], media_info["file_path"],
+                                            media_info["file_name"], media_info["file_size"], media_info["mime_type"]
+                                        )
+                                        media_count += 1
+                                        total_media_downloaded += 1
+
+                                if message.id > resume_from_id:
+                                    resume_from_id = message.id
+                            break
+                        except Exception as e:
+                            if "Cannot send requests while disconnected" in str(e) or "disconnected" in str(e).lower():
+                                await _ensure_connected(client)
+                                continue
+                            if "database is locked" in str(e).lower():
+                                await asyncio.sleep(0.2)
+                                continue
+                            raise
+                    safe_print(f"  Priority target: Full ingestion complete")
+                else:
+                    # For non-priority dialogs, get all messages normally
+                    safe_print(f"  First time ingestion (all messages)")
+                    # Robust full ingestion with reconnect on disconnect and database lock retry
+                    resume_from_id = 0
+                    while True:
+                        try:
+                            async for message in client.iter_messages(dialog.entity, limit=200, offset_id=resume_from_id):
+                                await _disconnect_if_sending(client)
+                                await _ensure_connected(client)
+
+                                has_new_messages = True
+                                sender = "me" if message.out else safe_chat_name
+                                has_media = message.media is not None
+                                raw_json = json.dumps(message.to_dict(), default=str)
+                                
+                                # Extract reference_id from reply_to if present
+                                reference_id = None
+                                if hasattr(message, 'reply_to') and message.reply_to:
+                                    if hasattr(message.reply_to, 'reply_to_msg_id') and message.reply_to.reply_to_msg_id:
+                                        reference_id = message.reply_to.reply_to_msg_id
+
+                                msg_id = save_message(
+                                    dialog_id, message.id, sender, message.text,
+                                    message.date, has_media, raw_json, reference_id
+                                )
+                                if msg_id:
+                                    message_count += 1
+
+                                if has_media and msg_id:
+                                    media_info = await download_media(client, message, dialog.name, message.id)
+                                    if media_info:
+                                        save_media(
+                                            msg_id, media_info["type"], media_info["file_path"],
+                                            media_info["file_name"], media_info["file_size"], media_info["mime_type"]
+                                        )
+                                        media_count += 1
+                                        total_media_downloaded += 1
+
+                                if message.id > resume_from_id:
+                                    resume_from_id = message.id
+                            break
+                        except Exception as e:
+                            if "Cannot send requests while disconnected" in str(e) or "disconnected" in str(e).lower():
+                                await _ensure_connected(client)
+                                continue
+                            if "database is locked" in str(e).lower():
+                                await asyncio.sleep(0.2)
+                                continue
+                            raise
             
             # If this dialog has new messages, mark it for re-categorization
             # (This will be handled by Java code after ingestion completes)

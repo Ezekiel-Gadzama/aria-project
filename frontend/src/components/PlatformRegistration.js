@@ -109,6 +109,18 @@ function PlatformRegistration({ userId = 1 }) {
       return (
         <>
           <div className="form-group">
+            <label htmlFor="accountName">Account Name (Optional)</label>
+            <input
+              type="text"
+              id="accountName"
+              name="accountName"
+              value={credentials.accountName || ''}
+              onChange={handleCredentialChange}
+              placeholder="e.g., Ezekiel (leave empty to get from Telegram)"
+            />
+            <small className="hint">If not provided, will be fetched from your Telegram account</small>
+          </div>
+          <div className="form-group">
             <label htmlFor="username">Telegram Username *</label>
             <input
               type="text"

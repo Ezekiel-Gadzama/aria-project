@@ -445,8 +445,13 @@ public class AutomatedConversationManager {
                 prompt.append("Example ").append(i + 1).append(":\n");
                 
                 // Include FULL conversation (not just last 15 messages)
+                prompt.append("Note: Messages with 'reference_id' are replies to the message with that ID.\n");
                 for (Message msg : example) {
                     if (msg.getContent() != null && !msg.getContent().trim().isEmpty()) {
+                        prompt.append("[ID: ").append(msg.getId()).append("] ");
+                        if (msg.getReferenceId() != null) {
+                            prompt.append("[REPLY TO ID: ").append(msg.getReferenceId()).append("] ");
+                        }
                         prompt.append(msg.isFromUser() ? "You" : "Them").append(": ")
                               .append(msg.getContent()).append("\n");
                     }
@@ -475,8 +480,14 @@ public class AutomatedConversationManager {
 
         // Add FULL conversation history (not just last 10 messages)
         prompt.append("Current Conversation:\n");
+        prompt.append("Note: If a message has a 'reference_id', it means that message is replying to the message with that ID.\n");
+        prompt.append("Each message is identified by its 'id' field. When a message has a 'reference_id', it is replying to the message with that ID.\n\n");
         for (Message msg : state.messages) {
             if (msg.getContent() != null && !msg.getContent().trim().isEmpty()) {
+                prompt.append("[ID: ").append(msg.getId()).append("] ");
+                if (msg.getReferenceId() != null) {
+                    prompt.append("[REPLY TO ID: ").append(msg.getReferenceId()).append("] ");
+                }
                 prompt.append(msg.isFromUser() ? "You" : "Them").append(": ")
                       .append(msg.getContent()).append("\n");
             }

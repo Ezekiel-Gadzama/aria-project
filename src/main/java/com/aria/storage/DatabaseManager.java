@@ -155,7 +155,8 @@ public class DatabaseManager {
                     text TEXT,
                     timestamp TIMESTAMPTZ,
                     has_media BOOLEAN DEFAULT FALSE,
-                    raw_json JSONB
+                    raw_json JSONB,
+                    reference_id BIGINT
                 )
             """;
 
@@ -250,6 +251,10 @@ public class DatabaseManager {
             stmt.execute("CREATE UNIQUE INDEX IF NOT EXISTS messages_dialog_message_uidx ON messages(dialog_id, message_id)");
             // Ensure raw_json column exists for Python ingestor compatibility
             stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS raw_json JSONB");
+            // Ensure reference_id column exists for message replies
+            stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS reference_id BIGINT");
+            // Ensure account_name column exists in platform_accounts
+            stmt.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS account_name TEXT");
             stmt.execute(createMediaTable);
             stmt.execute(createTargetUsersTable);
             stmt.execute(createTargetUserPlatformsTable);
@@ -422,21 +427,23 @@ public class DatabaseManager {
         public final String number;
         public final String apiId;
         public final String apiHash;
+        public final String accountName; // Display name for the account (e.g., "Ezekiel")
 
         public PlatformAccount(int id, String platform, String username, String number,
-                               String apiId, String apiHash) {
+                               String apiId, String apiHash, String accountName) {
             this.id = id;
             this.platform = platform;
             this.username = username;
             this.number = number;
             this.apiId = apiId;
             this.apiHash = apiHash;
+            this.accountName = accountName;
         }
     }
 
     public static List<PlatformAccount> getPlatformAccountsForUser(int userId) throws SQLException {
         String sql = """
-            SELECT id, platform, username, number, api_id, api_hash
+            SELECT id, platform, username, number, api_id, api_hash, account_name
             FROM platform_accounts
             WHERE user_id = ?
             ORDER BY platform, username
@@ -453,7 +460,8 @@ public class DatabaseManager {
                         rs.getString("username"),
                         rs.getString("number"),
                         rs.getString("api_id"),
-                        rs.getString("api_hash")
+                        rs.getString("api_hash"),
+                        rs.getString("account_name")
                     ));
                 }
             }
@@ -463,7 +471,7 @@ public class DatabaseManager {
 
     public static PlatformAccount getPlatformAccountById(int accountId) throws SQLException {
         String sql = """
-            SELECT id, platform, username, number, api_id, api_hash
+            SELECT id, platform, username, number, api_id, api_hash, account_name
             FROM platform_accounts
             WHERE id = ?
         """;
@@ -473,12 +481,13 @@ public class DatabaseManager {
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     return new PlatformAccount(
-                            rs.getInt("id"),
-                            rs.getString("platform"),
-                            rs.getString("username"),
-                            rs.getString("number"),
-                            rs.getString("api_id"),
-                            rs.getString("api_hash")
+                        rs.getInt("id"),
+                        rs.getString("platform"),
+                        rs.getString("username"),
+                        rs.getString("number"),
+                        rs.getString("api_id"),
+                        rs.getString("api_hash"),
+                        rs.getString("account_name")
                     );
                 }
             }
@@ -503,18 +512,19 @@ public class DatabaseManager {
     public static int savePlatformAccount(
             int userId, String platform, String username, String number,
             String apiId, String apiHash, String password,
-            String accessToken, String refreshToken) throws SQLException {
+            String accessToken, String refreshToken, String accountName) throws SQLException {
 
         String sql = """
             INSERT INTO platform_accounts
-                (user_id, platform, username, number, api_id, api_hash, password, access_token, refresh_token)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (user_id, platform, username, number, api_id, api_hash, password, access_token, refresh_token, account_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (user_id, platform, username, number) DO UPDATE
             SET api_id = EXCLUDED.api_id,
                 api_hash = EXCLUDED.api_hash,
                 password = EXCLUDED.password,
                 access_token = EXCLUDED.access_token,
-                refresh_token = EXCLUDED.refresh_token
+                refresh_token = EXCLUDED.refresh_token,
+                account_name = COALESCE(EXCLUDED.account_name, platform_accounts.account_name)
             RETURNING id
         """;
 
@@ -529,6 +539,7 @@ public class DatabaseManager {
             pstmt.setString(7, password);
             pstmt.setString(8, accessToken);
             pstmt.setString(9, refreshToken);
+            pstmt.setString(10, accountName);
 
             ResultSet rs = pstmt.executeQuery();
             if (rs.next()) {
@@ -651,10 +662,20 @@ public class DatabaseManager {
 
     public static int saveMessage(int dialogId, long messageId, String sender,
                                   String text, LocalDateTime timestamp, boolean hasMedia) throws SQLException {
+        return saveMessage(dialogId, messageId, sender, text, timestamp, hasMedia, null);
+    }
+
+    public static int saveMessage(int dialogId, long messageId, String sender,
+                                  String text, LocalDateTime timestamp, boolean hasMedia, Long referenceId) throws SQLException {
         String sql = """
-            INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT (dialog_id, message_id) DO NOTHING
+            INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, reference_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (dialog_id, message_id) DO UPDATE SET
+                sender = EXCLUDED.sender,
+                text = EXCLUDED.text,
+                timestamp = EXCLUDED.timestamp,
+                has_media = EXCLUDED.has_media,
+                reference_id = EXCLUDED.reference_id
             RETURNING id
         """;
         try (Connection conn = getConnection();
@@ -665,6 +686,7 @@ public class DatabaseManager {
             pstmt.setString(4, text != null ? SecureStorage.encrypt(text) : null);
             pstmt.setObject(5, timestamp);
             pstmt.setBoolean(6, hasMedia);
+            pstmt.setObject(7, referenceId);
 
             ResultSet rs = pstmt.executeQuery();
             if (rs.next()) {

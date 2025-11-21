@@ -10,6 +10,7 @@ public class PlatformAccountDTO {
     private String platform;
     private String username;
     private String number;
+    private String accountName;
 
     public PlatformAccountDTO() {}
 
@@ -18,6 +19,7 @@ public class PlatformAccountDTO {
         this.platform = acc.platform;
         this.username = acc.username;
         this.number = acc.number;
+        this.accountName = acc.accountName;
     }
 
     public int getId() {
@@ -50,6 +52,14 @@ public class PlatformAccountDTO {
 
     public void setNumber(String number) {
         this.number = number;
+    }
+
+    public String getAccountName() {
+        return accountName;
+    }
+
+    public void setAccountName(String accountName) {
+        this.accountName = accountName;
     }
 }
 

@@ -58,12 +58,21 @@ public class TelegramConnector implements PlatformConnector {
 
     @Override
     public void ingestChatHistory() {
+        ingestChatHistory(null);
+    }
+
+    /**
+     * Ingest chat history, optionally with priority target username
+     * @param priorityTargetUsername Optional username of target to ingest first (last 50 messages)
+     */
+    public void ingestChatHistory(String priorityTargetUsername) {
         if (!isConfigured()) {
             System.err.println("Telegram connector not configured properly");
             return;
         }
 
-        System.out.println("Running telegram python code to get chat history");
+        System.out.println("Running telegram python code to get chat history" + 
+            (priorityTargetUsername != null ? " (priority target: " + priorityTargetUsername + ")" : ""));
         try {
             ProcessBuilder processBuilder = new ProcessBuilder(
                     "python3",
@@ -78,6 +87,9 @@ public class TelegramConnector implements PlatformConnector {
             env.put("PLATFORM_ACCOUNT_ID", String.valueOf(this.platformAccountId));
             env.put("TELETHON_LOCK_PATH", "/app/telethon_send.lock");
             env.put("TELETHON_SESSION_PATH", buildSessionPath(this.username, this.phoneNumber));
+            if (priorityTargetUsername != null && !priorityTargetUsername.isEmpty()) {
+                env.put("PRIORITY_TARGET_USERNAME", priorityTargetUsername);
+            }
 
             processBuilder.directory(Paths.get("").toAbsolutePath().toFile());
             processBuilder.redirectErrorStream(true);
@@ -131,18 +143,40 @@ public class TelegramConnector implements PlatformConnector {
      * @return The result containing message ID and peer ID, or null if sending failed
      */
     public SendMessageResult sendMessageAndGetResult(String target, String message) {
+        return sendMessageAndGetResult(target, message, null);
+    }
+
+    /**
+     * Send a message (optionally as a reply) and return the Telegram message ID and peer ID
+     * @param target Target username
+     * @param message Message text
+     * @param replyToMessageId Telegram message ID to reply to (null if not a reply)
+     * @return The result containing message ID and peer ID, or null if sending failed
+     */
+    public SendMessageResult sendMessageAndGetResult(String target, String message, Long replyToMessageId) {
         if (!isConfigured()) {
             System.err.println("Telegram connector not configured");
             return null;
         }
 
         try {
-            ProcessBuilder processBuilder = new ProcessBuilder(
-                    "python3",
-                    "scripts/telethon/message_sender.py",
-                    target,
-                    message
-            );
+            ProcessBuilder processBuilder;
+            if (replyToMessageId != null && replyToMessageId > 0) {
+                processBuilder = new ProcessBuilder(
+                        "python3",
+                        "scripts/telethon/message_sender.py",
+                        target,
+                        message,
+                        String.valueOf(replyToMessageId)
+                );
+            } else {
+                processBuilder = new ProcessBuilder(
+                        "python3",
+                        "scripts/telethon/message_sender.py",
+                        target,
+                        message
+                );
+            }
 
             Map<String, String> env = processBuilder.environment();
             env.put("TELEGRAM_API_ID", this.apiId);
@@ -220,18 +254,42 @@ public class TelegramConnector implements PlatformConnector {
      * @return The result containing message ID and peer ID, or null if sending failed
      */
     public SendMessageResult sendMediaAndGetResult(String target, String filePath, String caption) {
+        return sendMediaAndGetResult(target, filePath, caption, null);
+    }
+
+    /**
+     * Send media (optionally as a reply) with caption and return the Telegram message ID and peer ID
+     * @param target Target username
+     * @param filePath Path to media file
+     * @param caption Optional caption text to send with the media
+     * @param replyToMessageId Telegram message ID to reply to (null if not a reply)
+     * @return The result containing message ID and peer ID, or null if sending failed
+     */
+    public SendMessageResult sendMediaAndGetResult(String target, String filePath, String caption, Long replyToMessageId) {
         if (!isConfigured()) {
             System.err.println("Telegram connector not configured");
             return null;
         }
         try {
-            ProcessBuilder processBuilder = new ProcessBuilder(
-                    "python3",
-                    "scripts/telethon/media_sender.py",
-                    target,
-                    filePath,
-                    caption != null && !caption.isEmpty() ? caption : ""
-            );
+            ProcessBuilder processBuilder;
+            if (replyToMessageId != null && replyToMessageId > 0) {
+                processBuilder = new ProcessBuilder(
+                        "python3",
+                        "scripts/telethon/media_sender.py",
+                        target,
+                        filePath,
+                        caption != null && !caption.isEmpty() ? caption : "",
+                        String.valueOf(replyToMessageId)
+                );
+            } else {
+                processBuilder = new ProcessBuilder(
+                        "python3",
+                        "scripts/telethon/media_sender.py",
+                        target,
+                        filePath,
+                        caption != null && !caption.isEmpty() ? caption : ""
+                );
+            }
             Map<String, String> env = processBuilder.environment();
             env.put("TELEGRAM_API_ID", this.apiId);
             env.put("TELEGRAM_API_HASH", this.apiHash);
@@ -489,14 +547,24 @@ public class TelegramConnector implements PlatformConnector {
     }
 
     /**
-     * Check if a user is online on Telegram
+     * Check if a user is online on Telegram and get last active time
      * @param target Target username
-     * @return true if user is online, false otherwise
+     * @return OnlineStatus containing online status and last active time
      */
-    public boolean checkUserOnline(String target) {
+    public static class OnlineStatus {
+        public final boolean online;
+        public final String lastActive;
+        
+        public OnlineStatus(boolean online, String lastActive) {
+            this.online = online;
+            this.lastActive = lastActive;
+        }
+    }
+    
+    public OnlineStatus checkUserOnline(String target) {
         if (!isConfigured()) {
             System.err.println("Telegram connector not configured");
-            return false;
+            return new OnlineStatus(false, "unknown");
         }
         try {
             ProcessBuilder processBuilder = new ProcessBuilder(
@@ -526,19 +594,35 @@ public class TelegramConnector implements PlatformConnector {
             }
             int exitCode = process.waitFor();
             
-            // Check output for "true" or "false"
+            // Parse JSON output
             String outputStr = output.toString().trim();
-            if (outputStr.contains("true")) {
-                return true;
-            } else if (outputStr.contains("false")) {
-                return false;
+            try {
+                String jsonLine = outputStr.lines()
+                    .filter(l -> l.trim().startsWith("{"))
+                    .findFirst()
+                    .orElse(null);
+                if (jsonLine != null) {
+                    com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(jsonLine).getAsJsonObject();
+                    boolean online = json.has("online") && json.get("online").getAsBoolean();
+                    String lastActive = json.has("lastActive") ? json.get("lastActive").getAsString() : "unknown";
+                    return new OnlineStatus(online, lastActive);
+                }
+            } catch (Exception e) {
+                System.err.println("Error parsing online status JSON: " + e.getMessage());
             }
             
-            // Default to false if unclear
-            return false;
+            // Fallback: check for "true" or "false" in output
+            if (outputStr.contains("\"online\":true") || outputStr.contains("true")) {
+                return new OnlineStatus(true, "online");
+            } else if (outputStr.contains("\"online\":false") || outputStr.contains("false")) {
+                return new OnlineStatus(false, "offline");
+            }
+            
+            // Default to offline if unclear
+            return new OnlineStatus(false, "unknown");
         } catch (Exception e) {
             e.printStackTrace();
-            return false;
+            return new OnlineStatus(false, "unknown");
         }
     }
 

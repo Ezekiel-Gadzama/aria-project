@@ -151,7 +151,7 @@ public class ConversationController {
                 }
 
                 try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                        "SELECT m.message_id, m.sender, m.text, m.timestamp, m.has_media, " +
+                        "SELECT m.message_id, m.sender, m.text, m.timestamp, m.has_media, m.reference_id, " +
                                 "(SELECT id FROM media WHERE message_id = m.id LIMIT 1) as media_id " +
                                 "FROM messages m WHERE m.dialog_id = ? " +
                                 "ORDER BY m.message_id DESC LIMIT ?")) {
@@ -165,7 +165,14 @@ public class ConversationController {
                             row.put("text", rs.getString(3));
                             row.put("timestamp", rs.getTimestamp(4) != null ? rs.getTimestamp(4).getTime() : null);
                             row.put("hasMedia", rs.getBoolean(5));
-                            Object mediaId = rs.getObject(6);
+                            
+                            // Get reference_id (column 6)
+                            Long referenceId = (Long) rs.getObject(6);
+                            if (referenceId != null && !rs.wasNull()) {
+                                row.put("referenceId", referenceId);
+                            }
+                            // Get media_id (column 7 - subquery result)
+                            Object mediaId = rs.getObject(7);
                             if (mediaId != null) {
                                 row.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + rs.getInt(1));
                                 
@@ -467,7 +474,8 @@ public class ConversationController {
     public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> generateResponse(
             @RequestParam(value = "targetUserId") Integer targetUserId,
             @RequestBody String incomingMessage,
-            @RequestParam(value = "userId", required = false) Integer userId) {
+            @RequestParam(value = "userId", required = false) Integer userId,
+            @RequestParam(value = "referenceId", required = false) Long referenceId) {
         try {
             int currentUserId = userId != null ? userId : 1;
             
@@ -499,7 +507,7 @@ public class ConversationController {
                 com.aria.platform.telegram.TelegramConnector connector =
                         (com.aria.platform.telegram.TelegramConnector)
                         com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
-                sendResult = connector.sendMessageAndGetResult(selected.getUsername(), incomingMessage);
+                sendResult = connector.sendMessageAndGetResult(selected.getUsername(), incomingMessage, referenceId);
             } else {
                 return ResponseEntity.badRequest().body(ApiResponse.error("Sending not yet supported for platform: " + selected.getPlatform()));
             }
@@ -581,7 +589,8 @@ public class ConversationController {
                             "me",
                             incomingMessage,
                             now,
-                            false // hasMedia
+                            false, // hasMedia
+                            referenceId // reference_id for replies
                         );
                         System.out.println("Saved sent message to database: messageId=" + telegramMessageId + ", dialogId=" + dialogRowId);
                     } catch (Exception e) {
@@ -1086,7 +1095,8 @@ public class ConversationController {
             @RequestParam("targetUserId") Integer targetUserId,
             @RequestParam(value = "userId", required = false) Integer userId,
             @org.springframework.web.bind.annotation.RequestPart("file") org.springframework.web.multipart.MultipartFile file,
-            @org.springframework.web.bind.annotation.RequestParam(value = "caption", required = false) String caption
+            @org.springframework.web.bind.annotation.RequestParam(value = "caption", required = false) String caption,
+            @org.springframework.web.bind.annotation.RequestParam(value = "referenceId", required = false) Long referenceId
     ) {
         try {
             int currentUserId = userId != null ? userId : 1;
@@ -1179,7 +1189,7 @@ public class ConversationController {
                 com.aria.platform.telegram.TelegramConnector connector =
                         (com.aria.platform.telegram.TelegramConnector)
                         com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
-                sendResult = connector.sendMediaAndGetResult(selected.getUsername(), absoluteMediaPath, caption);
+                sendResult = connector.sendMediaAndGetResult(selected.getUsername(), absoluteMediaPath, caption, referenceId);
             } else {
                 return ResponseEntity.badRequest().body(ApiResponse.error("Media sending not yet supported for platform: " + platform));
             }
@@ -1262,7 +1272,8 @@ public class ConversationController {
                             "me",
                             caption != null && !caption.isEmpty() ? caption : null, // Save caption if provided
                             now,
-                            true // hasMedia
+                            true, // hasMedia
+                            referenceId // reference_id for replies
                         );
                         System.out.println("Saved sent media message to database: messageId=" + telegramMessageId + ", dialogId=" + dialogRowId);
                         

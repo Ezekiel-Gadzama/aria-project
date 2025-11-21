@@ -22,6 +22,7 @@ export const targetApi = {
   getAll: (userId) => api.get(`/targets?userId=${userId}`),
   getById: (id, userId) => api.get(`/targets/${id}?userId=${userId}`),
   create: (targetData, userId) => api.post(`/targets?userId=${userId}`, targetData),
+  update: (id, targetData, userId) => api.put(`/targets/${id}?userId=${userId}`, targetData),
   delete: (id, userId) => api.delete(`/targets/${id}?userId=${userId}`),
   checkOnlineStatus: (id, userId) => api.get(`/targets/${id}/online?userId=${userId}`),
 };
@@ -30,12 +31,20 @@ export const targetApi = {
 export const conversationApi = {
   initialize: (targetUserId, goal, userId) => 
     api.post(`/conversations/initialize?targetUserId=${targetUserId}&userId=${userId}`, goal),
-  respond: (targetUserId, message, userId) =>
-    api.post(
-      `/conversations/respond?targetUserId=${targetUserId}&userId=${userId}`,
+  respond: (targetUserId, message, userId, referenceId) => {
+    const params = new URLSearchParams({
+      targetUserId,
+      userId: userId || 1,
+    });
+    if (referenceId) {
+      params.append('referenceId', referenceId);
+    }
+    return api.post(
+      `/conversations/respond?${params.toString()}`,
       message,
       { headers: { 'Content-Type': 'text/plain' } }
-    ),
+    );
+  },
   getMessages: (targetUserId, userId, limit = 100) =>
     api.get(`/conversations/messages?targetUserId=${targetUserId}&userId=${userId}&limit=${limit}`),
   downloadMediaUrl: (targetUserId, userId, messageId) =>
@@ -67,13 +76,20 @@ export const conversationApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
-  sendMediaWithText: (targetUserId, userId, file, caption) => {
+  sendMediaWithText: (targetUserId, userId, file, caption, referenceId) => {
     const form = new FormData();
     form.append('file', file);
     if (caption) {
       form.append('caption', caption);
     }
-    return api.post(`/conversations/sendMedia?targetUserId=${targetUserId}&userId=${userId}`, form, {
+    const params = new URLSearchParams({
+      targetUserId,
+      userId: userId || 1,
+    });
+    if (referenceId) {
+      params.append('referenceId', referenceId);
+    }
+    return api.post(`/conversations/sendMedia?${params.toString()}`, form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },

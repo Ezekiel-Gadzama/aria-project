@@ -16,6 +16,18 @@ public class TargetUserDTO {
     private String meetingContext;
     private String contextDetails;
     private Integer platformAccountId;
+    private String platformAccountUsername; // Username of the platform account (e.g., @Gadzama23)
+    private String platformAccountName; // Display name of the platform account (e.g., Ezekiel)
+    
+    // ChatProfile fields for communication preferences
+    private Double humorLevel;
+    private Double formalityLevel;
+    private Double empathyLevel;
+    private Double responseTimeAverage;
+    private Double messageLengthAverage;
+    private Double questionRate;
+    private Double engagementLevel;
+    private String preferredOpening;
 
     // Constructors
     public TargetUserDTO() {}
@@ -103,6 +115,87 @@ public class TargetUserDTO {
 
     public void setPlatformAccountId(Integer platformAccountId) {
         this.platformAccountId = platformAccountId;
+    }
+
+    public String getPlatformAccountUsername() {
+        return platformAccountUsername;
+    }
+
+    public void setPlatformAccountUsername(String platformAccountUsername) {
+        this.platformAccountUsername = platformAccountUsername;
+    }
+
+    public String getPlatformAccountName() {
+        return platformAccountName;
+    }
+
+    public void setPlatformAccountName(String platformAccountName) {
+        this.platformAccountName = platformAccountName;
+    }
+
+    // ChatProfile getters and setters
+    public Double getHumorLevel() {
+        return humorLevel;
+    }
+
+    public void setHumorLevel(Double humorLevel) {
+        this.humorLevel = humorLevel;
+    }
+
+    public Double getFormalityLevel() {
+        return formalityLevel;
+    }
+
+    public void setFormalityLevel(Double formalityLevel) {
+        this.formalityLevel = formalityLevel;
+    }
+
+    public Double getEmpathyLevel() {
+        return empathyLevel;
+    }
+
+    public void setEmpathyLevel(Double empathyLevel) {
+        this.empathyLevel = empathyLevel;
+    }
+
+    public Double getResponseTimeAverage() {
+        return responseTimeAverage;
+    }
+
+    public void setResponseTimeAverage(Double responseTimeAverage) {
+        this.responseTimeAverage = responseTimeAverage;
+    }
+
+    public Double getMessageLengthAverage() {
+        return messageLengthAverage;
+    }
+
+    public void setMessageLengthAverage(Double messageLengthAverage) {
+        this.messageLengthAverage = messageLengthAverage;
+    }
+
+    public Double getQuestionRate() {
+        return questionRate;
+    }
+
+    public void setQuestionRate(Double questionRate) {
+        this.questionRate = questionRate;
+    }
+
+    public Double getEngagementLevel() {
+        return engagementLevel;
+    }
+
+    public void setEngagementLevel(Double engagementLevel) {
+        this.engagementLevel = engagementLevel;
+    }
+
+    public String getPreferredOpening() {
+        return preferredOpening;
+    }
+
+    public void setPreferredOpening(String preferredOpening) {
+        this.preferredOpening = preferredOpening;
     }
 }
 

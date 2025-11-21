@@ -15,7 +15,7 @@ api_hash = os.getenv('TELEGRAM_API_HASH')
 phone = os.getenv('TELEGRAM_PHONE')
 
 
-async def send_message(target_username, message):
+async def send_message(target_username, message, reply_to_message_id=None):
     # Create priority lock so ingestion yields (shared absolute path)
     lock_env = os.getenv("TELETHON_LOCK_PATH", "/app/telethon_send.lock")
     lock_path = pathlib.Path(lock_env)
@@ -86,12 +86,29 @@ async def send_message(target_username, message):
                     continue
                 raise
 
+        # Get the message to reply to if reply_to_message_id is provided
+        reply_to = None
+        if reply_to_message_id is not None:
+            try:
+                # Get the message history to find the message we're replying to
+                messages = await client.get_messages(entity, limit=100)
+                for msg in messages:
+                    if msg.id == reply_to_message_id:
+                        reply_to = msg
+                        break
+            except Exception as e:
+                # If we can't find the message, continue without reply
+                print(f"Warning: Could not find message {reply_to_message_id} to reply to: {e}")
+
         # Send with retry if DB lock happens during send
         send_attempts = 10
         sent_msg = None
         for i in range(send_attempts):
             try:
-                sent_msg = await client.send_message(entity, message)
+                if reply_to:
+                    sent_msg = await client.send_message(entity, message, reply_to=reply_to)
+                else:
+                    sent_msg = await client.send_message(entity, message)
                 break
             except Exception as e:
                 if "database is locked" in str(e).lower() and i < send_attempts - 1:
@@ -130,13 +147,14 @@ if __name__ == '__main__':
     # For testing
     import sys
 
-    if len(sys.argv) == 3:
+    if len(sys.argv) >= 3:
         target = sys.argv[1]
         msg = sys.argv[2]
-        ok = asyncio.run(send_message(target, msg))
+        reply_to = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+        ok = asyncio.run(send_message(target, msg, reply_to))
         import sys as _sys
         _sys.exit(0 if ok else 1)
     else:
-        print("Usage: python message_sender.py <username> <message>")
+        print("Usage: python message_sender.py <username> <message> [reply_to_message_id]")
         import sys as _sys
         _sys.exit(1)

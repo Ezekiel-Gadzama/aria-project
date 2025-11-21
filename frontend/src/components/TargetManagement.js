@@ -10,8 +10,11 @@ function TargetManagement({ userId = 1 }) {
   const [platformAccounts, setPlatformAccounts] = useState([]); // concrete accounts
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [onlineStatus, setOnlineStatus] = useState({}); // { targetId: true/false }
+  const [onlineStatus, setOnlineStatus] = useState({}); // { targetId: { online: boolean, lastActive: string } }
   const [showForm, setShowForm] = useState(false);
+  const [editingTarget, setEditingTarget] = useState(null); // Target being edited
+  const [showAdvanced, setShowAdvanced] = useState(false); // Show/hide advanced settings
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null); // Target ID to confirm delete
   const [formData, setFormData] = useState({
     name: '',
     username: '',
@@ -20,6 +23,14 @@ function TargetManagement({ userId = 1 }) {
     desiredOutcome: '',
     meetingContext: '',
     contextDetails: '',
+    humorLevel: 0.4,
+    formalityLevel: 0.5,
+    empathyLevel: 0.7,
+    responseTimeAverage: 120.0,
+    messageLengthAverage: 25.0,
+    questionRate: 0.3,
+    engagementLevel: 0.6,
+    preferredOpening: 'Hey! How are you doing?',
   });
 
   useEffect(() => {
@@ -39,11 +50,15 @@ function TargetManagement({ userId = 1 }) {
           try {
             const response = await targetApi.checkOnlineStatus(target.id, userId);
             if (response.data?.success) {
-              statuses[target.id] = response.data.data === true;
+              const data = response.data.data;
+              statuses[target.id] = {
+                online: data.online === true,
+                lastActive: data.lastActive || null
+              };
             }
           } catch (err) {
             // Silently fail - online status is not critical
-            statuses[target.id] = false;
+            statuses[target.id] = { online: false, lastActive: null };
           }
         })
       );
@@ -53,8 +68,8 @@ function TargetManagement({ userId = 1 }) {
     // Check immediately
     checkOnlineStatus();
 
-    // Then check every 30 seconds
-    const interval = setInterval(checkOnlineStatus, 30000);
+    // Then check every 5 seconds
+    const interval = setInterval(checkOnlineStatus, 5000);
 
     return () => clearInterval(interval);
   }, [targets, userId]);
@@ -98,7 +113,7 @@ function TargetManagement({ userId = 1 }) {
   };
 
   const handleChange = (e) => {
-    const { name, value, selectedOptions } = e.target;
+    const { name, value, type, selectedOptions } = e.target;
     if (name === 'platform' && selectedOptions && selectedOptions[0]) {
       const accountId = selectedOptions[0].getAttribute('data-account-id');
       setFormData({
@@ -107,9 +122,11 @@ function TargetManagement({ userId = 1 }) {
         platformAccountId: accountId ? parseInt(accountId, 10) : undefined,
       });
     } else {
+      // Handle range inputs (sliders) - convert to numbers
+      const newValue = type === 'range' ? parseFloat(value) : value;
       setFormData({
         ...formData,
-        [name]: value,
+        [name]: newValue,
       });
     }
   };
@@ -117,34 +134,56 @@ function TargetManagement({ userId = 1 }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const response = await targetApi.create(formData, userId);
+      let response;
+      if (editingTarget) {
+        // Update existing target
+        response = await targetApi.update(editingTarget.id, formData, userId);
+      } else {
+        // Create new target
+        response = await targetApi.create(formData, userId);
+      }
       if (response.data.success) {
         setShowForm(false);
-        setFormData({ name: '', username: '', platform: '', bio: '', desiredOutcome: '', meetingContext: '', contextDetails: '' });
+        setEditingTarget(null);
+        setShowAdvanced(false);
+        setFormData({ 
+          name: '', username: '', platform: '', bio: '', desiredOutcome: '', meetingContext: '', contextDetails: '',
+          humorLevel: 0.4, formalityLevel: 0.5, empathyLevel: 0.7, responseTimeAverage: 120.0,
+          messageLengthAverage: 25.0, questionRate: 0.3, engagementLevel: 0.6, preferredOpening: 'Hey! How are you doing?'
+        });
         loadTargets();
       } else {
-        setError(response.data.error || 'Failed to create target');
+        setError(response.data.error || `Failed to ${editingTarget ? 'update' : 'create'} target`);
       }
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Failed to create target');
+      setError(err.response?.data?.error || err.message || `Failed to ${editingTarget ? 'update' : 'create'} target`);
     }
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this target?')) {
-      return;
-    }
+    setConfirmDeleteId(id);
+  };
 
+  const performDelete = async () => {
+    if (!confirmDeleteId) return;
+    
     try {
-      const response = await targetApi.delete(id, userId);
+      const response = await targetApi.delete(confirmDeleteId, userId);
       if (response.data.success) {
+        setConfirmDeleteId(null);
         loadTargets();
       } else {
         setError(response.data.error || 'Failed to delete target');
+        setConfirmDeleteId(null);
       }
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to delete target');
+      setConfirmDeleteId(null);
     }
+  };
+
+  const cancelDelete = () => {
+    setConfirmDeleteId(null);
   };
 
   const handleStartConversation = (targetId) => {
@@ -162,9 +201,23 @@ function TargetManagement({ userId = 1 }) {
           <h1>Target Users</h1>
           <button 
             className="btn btn-primary" 
-            onClick={() => setShowForm(!showForm)}
+            onClick={() => {
+              if (showForm && !editingTarget) {
+                setShowForm(false);
+                setEditingTarget(null);
+                setShowAdvanced(false);
+              } else {
+                setShowForm(true);
+                setEditingTarget(null);
+                setFormData({
+                  name: '', username: '', platform: '', bio: '', desiredOutcome: '', meetingContext: '', contextDetails: '',
+                  humorLevel: 0.4, formalityLevel: 0.5, empathyLevel: 0.7, responseTimeAverage: 120.0,
+                  messageLengthAverage: 25.0, questionRate: 0.3, engagementLevel: 0.6, preferredOpening: 'Hey! How are you doing?'
+                });
+              }
+            }}
           >
-            {showForm ? 'Cancel' : '+ Add Target'}
+            {showForm && !editingTarget ? 'Cancel' : '+ Add Target'}
           </button>
         </div>
 
@@ -172,7 +225,7 @@ function TargetManagement({ userId = 1 }) {
 
         {showForm && (
           <div className="target-form-container">
-            <h2>Add New Target User</h2>
+            <h2>{editingTarget ? 'Edit Target User' : 'Add New Target User'}</h2>
             <form onSubmit={handleSubmit} className="target-form">
               <div className="form-group">
                 <label htmlFor="name">Name *</label>
@@ -240,11 +293,16 @@ function TargetManagement({ userId = 1 }) {
                   <option value="">Select account</option>
                   {platformAccounts
                     .filter((acc) => acc.platform === formData.platform)
-                    .map((acc) => (
-                      <option key={acc.id} value={acc.id}>
-                        {acc.username ? `@${String(acc.username).replace(/^@/, '')}` : acc.number || '(no username)'}
-                      </option>
-                    ))}
+                    .map((acc) => {
+                      const displayName = acc.accountName || (acc.username ? `@${String(acc.username).replace(/^@/, '')}` : acc.number || '(no username)');
+                      const usernamePart = acc.username ? `@${String(acc.username).replace(/^@/, '')}` : '';
+                      const displayText = acc.accountName && usernamePart ? `${acc.accountName} (${usernamePart})` : displayName;
+                      return (
+                        <option key={acc.id} value={acc.id}>
+                          {displayText}
+                        </option>
+                      );
+                    })}
                 </select>
               </div>
 
@@ -298,8 +356,136 @@ function TargetManagement({ userId = 1 }) {
                 />
               </div>
 
+              {/* Advanced Communication Settings */}
+              <div style={{ marginTop: '1.5rem', padding: '1rem', border: '1px solid #ddd', borderRadius: '8px', backgroundColor: '#f9f9f9' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                  <h4 style={{ margin: 0 }}>Advanced Communication Settings (Optional)</h4>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                  >
+                    {showAdvanced ? 'Hide' : 'Show'} Advanced
+                  </button>
+                </div>
+                
+                {showAdvanced && (
+                  <div>
+                    <div className="form-group">
+                      <label htmlFor="humorLevel">Humor Level: {(formData.humorLevel || 0).toFixed(1)}</label>
+                      <input
+                        type="range"
+                        id="humorLevel"
+                        name="humorLevel"
+                        min="0"
+                        max="1"
+                        step="0.1"
+                        value={formData.humorLevel || 0.4}
+                        onChange={handleChange}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="formalityLevel">Formality Level: {(formData.formalityLevel || 0).toFixed(1)}</label>
+                      <input
+                        type="range"
+                        id="formalityLevel"
+                        name="formalityLevel"
+                        min="0"
+                        max="1"
+                        step="0.1"
+                        value={formData.formalityLevel || 0.5}
+                        onChange={handleChange}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="empathyLevel">Empathy Level: {(formData.empathyLevel || 0).toFixed(1)}</label>
+                      <input
+                        type="range"
+                        id="empathyLevel"
+                        name="empathyLevel"
+                        min="0"
+                        max="1"
+                        step="0.1"
+                        value={formData.empathyLevel || 0.7}
+                        onChange={handleChange}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="responseTimeAverage">Response Time Average (seconds): {formData.responseTimeAverage || 120}</label>
+                      <input
+                        type="range"
+                        id="responseTimeAverage"
+                        name="responseTimeAverage"
+                        min="0"
+                        max="600"
+                        step="10"
+                        value={formData.responseTimeAverage || 120.0}
+                        onChange={handleChange}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="messageLengthAverage">Message Length Average (words): {formData.messageLengthAverage || 25}</label>
+                      <input
+                        type="range"
+                        id="messageLengthAverage"
+                        name="messageLengthAverage"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={formData.messageLengthAverage || 25.0}
+                        onChange={handleChange}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="questionRate">Question Rate: {(formData.questionRate || 0).toFixed(1)}</label>
+                      <input
+                        type="range"
+                        id="questionRate"
+                        name="questionRate"
+                        min="0"
+                        max="1"
+                        step="0.1"
+                        value={formData.questionRate || 0.3}
+                        onChange={handleChange}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="engagementLevel">Engagement Level: {(formData.engagementLevel || 0).toFixed(1)}</label>
+                      <input
+                        type="range"
+                        id="engagementLevel"
+                        name="engagementLevel"
+                        min="0"
+                        max="1"
+                        step="0.1"
+                        value={formData.engagementLevel}
+                        onChange={handleChange}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="preferredOpening">Preferred Opening</label>
+                      <input
+                        type="text"
+                        id="preferredOpening"
+                        name="preferredOpening"
+                        value={formData.preferredOpening}
+                        onChange={handleChange}
+                        placeholder="e.g., Hey! How are you doing?"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <button type="submit" className="btn btn-primary">
-                Create Target
+                {editingTarget ? 'Update Target' : 'Create Target'}
               </button>
             </form>
           </div>
@@ -316,7 +502,7 @@ function TargetManagement({ userId = 1 }) {
                 <div className="card-header">
                   <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     {target.name}
-                    {onlineStatus[target.id] ? (
+                    {onlineStatus[target.id]?.online ? (
                       <span className="online-indicator" title="Online" style={{ 
                         display: 'inline-block',
                         width: '8px',
@@ -327,13 +513,18 @@ function TargetManagement({ userId = 1 }) {
                         animation: 'pulse 2s infinite'
                       }}></span>
                     ) : (
-                      <span className="offline-indicator" title="Offline" style={{ 
+                      <span className="offline-indicator" title={onlineStatus[target.id]?.lastActive || "Offline"} style={{ 
                         display: 'inline-block',
                         width: '8px',
                         height: '8px',
                         borderRadius: '50%',
                         backgroundColor: '#999'
                       }}></span>
+                    )}
+                    {!onlineStatus[target.id]?.online && onlineStatus[target.id]?.lastActive && (
+                      <span style={{ fontSize: '0.75rem', color: '#666' }}>
+                        {onlineStatus[target.id].lastActive}
+                      </span>
                     )}
                   </h3>
                   <button
@@ -343,9 +534,63 @@ function TargetManagement({ userId = 1 }) {
                     Delete
                   </button>
                 </div>
+                {/* Delete Confirmation Modal */}
+                {confirmDeleteId === target.id && (
+                  <div className="modal-overlay" style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 1000
+                  }}>
+                    <div className="modal" style={{
+                      backgroundColor: 'white',
+                      padding: '2rem',
+                      borderRadius: '8px',
+                      maxWidth: '500px',
+                      width: '90%',
+                      boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+                    }}>
+                      <h3>Delete Target User</h3>
+                      <p>Are you sure you want to delete this target user?</p>
+                      <p style={{ color: '#d32f2f', fontWeight: 'bold' }}>This action cannot be undone.</p>
+                      <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem', justifyContent: 'flex-end' }}>
+                        <button
+                          className="btn btn-secondary"
+                          onClick={cancelDelete}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          className="btn btn-danger"
+                          onClick={performDelete}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 <div className="card-content">
                   <p><strong>Username:</strong> {target.username}</p>
-                  <p><strong>Platform:</strong> {target.platform}</p>
+                  <p>
+                    <strong>Platform:</strong> {target.platform}
+                    {target.platformAccountName && (
+                      <span style={{ marginLeft: '0.5rem' }}>
+                        <strong>Acct:</strong> {target.platformAccountName}
+                      </span>
+                    )}
+                    {!target.platformAccountName && target.platformAccountUsername && (
+                      <span style={{ marginLeft: '0.5rem' }}>
+                        <strong>Acct:</strong> {target.platformAccountUsername.startsWith('@') ? target.platformAccountUsername : '@' + target.platformAccountUsername}
+                      </span>
+                    )}
+                  </p>
                   {target.bio && <p><strong>Bio:</strong> {target.bio}</p>}
                 </div>
                 <div className="card-actions">
@@ -354,6 +599,35 @@ function TargetManagement({ userId = 1 }) {
                     onClick={() => handleStartConversation(target.id)}
                   >
                     Start Conversation
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ marginLeft: '0.5rem' }}
+                    onClick={() => {
+                      setEditingTarget(target);
+                      setShowAdvanced(true); // Show advanced settings when editing
+                      setFormData({
+                        name: target.name,
+                        username: target.username || '',
+                        platform: target.platform || '',
+                        platformAccountId: target.platformAccountId || undefined,
+                        bio: target.bio || '',
+                        desiredOutcome: target.desiredOutcome || '',
+                        meetingContext: target.meetingContext || '',
+                        contextDetails: target.contextDetails || '',
+                        humorLevel: target.humorLevel !== undefined ? target.humorLevel : 0.4,
+                        formalityLevel: target.formalityLevel !== undefined ? target.formalityLevel : 0.5,
+                        empathyLevel: target.empathyLevel !== undefined ? target.empathyLevel : 0.7,
+                        responseTimeAverage: target.responseTimeAverage !== undefined ? target.responseTimeAverage : 120.0,
+                        messageLengthAverage: target.messageLengthAverage !== undefined ? target.messageLengthAverage : 25.0,
+                        questionRate: target.questionRate !== undefined ? target.questionRate : 0.3,
+                        engagementLevel: target.engagementLevel !== undefined ? target.engagementLevel : 0.6,
+                        preferredOpening: target.preferredOpening || 'Hey! How are you doing?',
+                      });
+                      setShowForm(true);
+                    }}
+                  >
+                    Edit
                   </button>
                 </div>
               </div>

@@ -21,6 +21,8 @@ function ConversationView({ userId = 1 }) {
   const [newMessage, setNewMessage] = useState('');
   const [pendingMedia, setPendingMedia] = useState(null); // { file, preview }
   const [targetOnline, setTargetOnline] = useState(false); // Online status of target user
+  const [lastActive, setLastActive] = useState(null); // Last active time
+  const [replyingTo, setReplyingTo] = useState(null); // Message being replied to { messageId, text, fromUser }
 
   useEffect(() => {
     loadTarget();
@@ -38,6 +40,33 @@ function ConversationView({ userId = 1 }) {
       }
     })();
   }, [targetId]);
+
+  // Poll for online status when conversation is initialized
+  useEffect(() => {
+    if (!conversationInitialized || !target) return;
+    
+    const checkOnlineStatus = async () => {
+      try {
+        const response = await targetApi.checkOnlineStatus(targetId, userId);
+        if (response.data?.success) {
+          const data = response.data.data;
+          setTargetOnline(data.online === true);
+          setLastActive(data.lastActive || null);
+        }
+      } catch (err) {
+        // Silently fail - online status is not critical
+        console.error('Failed to check online status:', err);
+      }
+    };
+
+    // Check immediately
+    checkOnlineStatus();
+    
+    // Then check every 5 seconds
+    const interval = setInterval(checkOnlineStatus, 5000);
+    
+    return () => clearInterval(interval);
+  }, [conversationInitialized, target, targetId, userId]);
 
   const loadTarget = async () => {
     try {
@@ -109,7 +138,13 @@ function ConversationView({ userId = 1 }) {
       setPendingMedia(null); // Clear pending media immediately for better UX
 
       try {
-        const response = await conversationApi.sendMediaWithText(targetId, userId, file, messageText);
+        const response = await conversationApi.sendMediaWithText(
+          targetId, 
+          userId, 
+          file, 
+          messageText,
+          replyingTo?.messageId
+        );
         if (response.data?.success && response.data?.data) {
           const messageData = response.data.data;
           const newMsg = {
@@ -121,8 +156,10 @@ function ConversationView({ userId = 1 }) {
             hasMedia: messageData.hasMedia || true,
             fileName: messageData.fileName || null,
             mimeType: messageData.mimeType || null,
+            referenceId: replyingTo?.messageId || null,
           };
           setMessages(prev => [...prev, newMsg]);
+          setReplyingTo(null); // Clear reply after sending
         } else {
           await loadMessages();
         }
@@ -140,7 +177,12 @@ function ConversationView({ userId = 1 }) {
       setNewMessage(''); // Clear input immediately for better UX
 
       try {
-        const response = await conversationApi.respond(targetId, messageText, userId);
+        const response = await conversationApi.respond(
+          targetId, 
+          messageText, 
+          userId,
+          replyingTo?.messageId
+        );
         // If response includes message data, add it immediately to the UI
         if (response.data?.success && response.data?.data) {
           const messageData = response.data.data;
@@ -150,9 +192,11 @@ function ConversationView({ userId = 1 }) {
             timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
             mediaUrl: messageData.mediaDownloadUrl || null,
             messageId: messageData.messageId,
+            referenceId: replyingTo?.messageId || null,
           };
           // Add to messages list immediately
           setMessages(prev => [...prev, newMsg]);
+          setReplyingTo(null); // Clear reply after sending
         } else {
           // Fallback: reload all messages if no message data in response
           await loadMessages();
@@ -289,7 +333,8 @@ function ConversationView({ userId = 1 }) {
 
   const loadMessages = async () => {
     try {
-      const resp = await conversationApi.getMessages(targetId, userId, 100);
+      // Auto-load last 50 messages
+      const resp = await conversationApi.getMessages(targetId, userId, 50);
       if (resp.data?.success) {
         const rows = resp.data.data || [];
         setMessages(
@@ -303,11 +348,13 @@ function ConversationView({ userId = 1 }) {
             fileName: r.fileName || null,
             mimeType: r.mimeType || null,
             edited: r.edited || false, // Preserve edited flag from database or API
+            referenceId: r.referenceId || null, // Include reference_id for replies
           }))
         );
       }
     } catch (e) {
       // ignore
+      console.error('Failed to load messages:', e);
     }
   };
 
@@ -453,7 +500,12 @@ function ConversationView({ userId = 1 }) {
                 {targetOnline ? (
                   <span className="online-indicator" title="Online"></span>
                 ) : (
-                  <span className="offline-indicator" title="Offline"></span>
+                  <span className="offline-indicator" title={lastActive || "Offline"}></span>
+                )}
+                {!targetOnline && lastActive && (
+                  <span style={{ fontSize: '0.8rem', color: '#666', marginLeft: '0.5rem' }}>
+                    {lastActive}
+                  </span>
                 )}
               </h2>
               <button
@@ -512,9 +564,85 @@ function ConversationView({ userId = 1 }) {
                   <p>No messages yet. Start the conversation!</p>
                 </div>
               ) : (
-                messages.map((msg, idx) => (
-                  <div key={idx} className={`message ${msg.fromUser ? 'from-user' : 'from-target'}`}>
-                    <div className="message-content">
+                messages.map((msg, idx) => {
+                  // Find the message being replied to (if any)
+                  const repliedToMsg = msg.referenceId ? messages.find(m => m.messageId === msg.referenceId) : null;
+                  
+                  return (
+                  <div 
+                    key={idx} 
+                    className={`message ${msg.fromUser ? 'from-user' : 'from-target'}`}
+                    onTouchStart={(e) => {
+                      // Track touch start for swipe-to-reply
+                      if (!msg.fromUser) { // Only allow replying to target's messages
+                        e.touchStartY = e.touches[0].clientY;
+                      }
+                    }}
+                    onTouchEnd={(e) => {
+                      // Swipe up to reply
+                      if (!msg.fromUser && e.changedTouches[0]) {
+                        const touchEndY = e.changedTouches[0].clientY;
+                        const touchStartY = e.touchStartY;
+                        if (touchStartY && touchEndY < touchStartY - 50) { // Swipe up more than 50px
+                          setReplyingTo({
+                            messageId: msg.messageId,
+                            text: msg.text || (msg.hasMedia ? 'Media' : 'Message'),
+                            fromUser: msg.fromUser
+                          });
+                        }
+                      }
+                    }}
+                    style={{ 
+                      cursor: !msg.fromUser ? 'pointer' : 'default',
+                      position: 'relative'
+                    }}
+                  >
+                    {/* Reply indicator - show message being replied to */}
+                    {repliedToMsg && (
+                      <div 
+                        style={{ 
+                          padding: '4px 8px', 
+                          background: 'rgba(0,0,0,0.05)', 
+                          borderRadius: 4, 
+                          marginBottom: 4,
+                          fontSize: '0.75rem',
+                          borderLeft: '2px solid #667eea',
+                          cursor: 'pointer'
+                        }}
+                        onClick={() => {
+                          // Scroll to the referenced message
+                          const messageEl = document.querySelector(`[data-message-id="${msg.referenceId}"]`);
+                          if (messageEl) {
+                            messageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            // Highlight the message briefly
+                            messageEl.style.background = 'rgba(102, 126, 234, 0.2)';
+                            setTimeout(() => {
+                              messageEl.style.background = '';
+                            }, 1000);
+                          }
+                        }}
+                        title="Click to scroll to referenced message"
+                      >
+                        {repliedToMsg.fromUser ? 'You' : target?.name}: {repliedToMsg.text || (repliedToMsg.hasMedia ? 'Media' : 'Message')}
+                      </div>
+                    )}
+                    {!repliedToMsg && msg.referenceId && (
+                      <div 
+                        style={{ 
+                          padding: '4px 8px', 
+                          background: 'rgba(0,0,0,0.05)', 
+                          borderRadius: 4, 
+                          marginBottom: 4,
+                          fontSize: '0.75rem',
+                          borderLeft: '2px solid #999',
+                          fontStyle: 'italic',
+                          color: '#666'
+                        }}
+                      >
+                        Replying to a message not in recent 50 messages. Check message directly from {target?.platform || 'telegram'}
+                      </div>
+                    )}
+                    <div className="message-content" data-message-id={msg.messageId}>
                       {msg.hasMedia || msg.mediaUrl ? (
                         <div>
                           {msg.mediaUrl && (msg.mediaUrl.match(/\.mp4$|video\//) || msg.mimeType?.match(/^video\//)) ? (
@@ -575,10 +703,43 @@ function ConversationView({ userId = 1 }) {
                         >
                           Delete
                         </button>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem' }}
+                          onClick={() => {
+                            setReplyingTo({
+                              messageId: msg.messageId,
+                              text: msg.text || (msg.hasMedia ? 'Media' : 'Message'),
+                              fromUser: msg.fromUser
+                            });
+                          }}
+                          title="Reply to this message"
+                        >
+                          Reply
+                        </button>
+                      </div>
+                    )}
+                    {!msg.fromUser && (
+                      <div className="message-actions" style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem' }}
+                          onClick={() => {
+                            setReplyingTo({
+                              messageId: msg.messageId,
+                              text: msg.text || (msg.hasMedia ? 'Media' : 'Message'),
+                              fromUser: msg.fromUser
+                            });
+                          }}
+                          title="Reply to this message"
+                        >
+                          Reply
+                        </button>
                       </div>
                     )}
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
 
@@ -687,12 +848,40 @@ function ConversationView({ userId = 1 }) {
                 </div>
               </div>
             )}
+            {/* Reply indicator */}
+            {replyingTo && (
+              <div style={{ 
+                padding: '0.5rem 0.75rem', 
+                background: '#e3f2fd', 
+                borderRadius: 6, 
+                marginBottom: '0.5rem',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontSize: '0.85rem'
+              }}>
+                <div>
+                  <strong>Replying to:</strong> {replyingTo.text || (replyingTo.hasMedia ? 'Media' : 'Message')}
+                </div>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem' }}
+                  onClick={() => setReplyingTo(null)}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
             <form onSubmit={handleSendMessage} className="message-form">
               <input
                 type="text"
                 value={newMessage}
                 onChange={(e) => setNewMessage(e.target.value)}
-                placeholder={pendingMedia ? "Add a caption (optional)..." : "Type a message..."}
+                placeholder={replyingTo 
+                  ? `Replying to: ${replyingTo.text || 'message'}...` 
+                  : pendingMedia 
+                    ? "Add a caption (optional)..." 
+                    : "Type a message..."}
                 className="message-input"
                 disabled={selectedMessageId !== null}
               />

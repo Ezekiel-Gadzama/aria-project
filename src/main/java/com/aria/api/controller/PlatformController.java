@@ -92,17 +92,53 @@ public class PlatformController {
             String password = (String) creds.getOrDefault("password", "");
             String accessToken = (String) creds.getOrDefault("accessToken", "");
             String refreshToken = (String) creds.getOrDefault("refreshToken", "");
+            String accountName = (String) creds.getOrDefault("accountName", "");
+
+            // If account name not provided, get it from Telegram session
+            if ((accountName == null || accountName.trim().isEmpty()) && "TELEGRAM".equalsIgnoreCase(platform)) {
+                try {
+                    String sessionPath = buildSessionPath(username, number);
+                    ProcessBuilder pb = new ProcessBuilder("python3", "scripts/telethon/get_account_name.py");
+                    Map<String, String> env = pb.environment();
+                    env.put("TELEGRAM_API_ID", apiId);
+                    env.put("TELEGRAM_API_HASH", apiHash);
+                    env.put("TELEGRAM_PHONE", number);
+                    if (password != null && !password.isEmpty()) env.put("TELEGRAM_PASSWORD", password);
+                    env.put("TELETHON_SESSION_PATH", sessionPath);
+                    pb.redirectErrorStream(true);
+                    Process p = pb.start();
+                    StringBuilder output = new StringBuilder();
+                    try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                            new java.io.InputStreamReader(p.getInputStream()))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            output.append(line).append("\n");
+                        }
+                    }
+                    int exit = p.waitFor();
+                    if (exit == 0) {
+                        String outputStr = output.toString().trim();
+                        com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(outputStr).getAsJsonObject();
+                        if (json.has("account_name") && !json.get("account_name").isJsonNull()) {
+                            accountName = json.get("account_name").getAsString();
+                        }
+                    }
+                } catch (Exception e) {
+                    System.err.println("Warning: Failed to get account name from Telegram: " + e.getMessage());
+                    // Continue without account name
+                }
+            }
 
             // Persist platform account
             int accountId = DatabaseManager.savePlatformAccount(
-                currentUserId, platform.toUpperCase(), username, number, apiId, apiHash, password, accessToken, refreshToken
+                currentUserId, platform.toUpperCase(), username, number, apiId, apiHash, password, accessToken, refreshToken, accountName
             );
 
             // Create appropriate platform connector
             final Platform p = Platform.valueOf(platform.toUpperCase());
             final PlatformConnector connectorFinal;
             if (p == Platform.TELEGRAM) {
-                DatabaseManager.PlatformAccount acc = new DatabaseManager.PlatformAccount(accountId, p.name(), username, number, apiId, apiHash);
+                DatabaseManager.PlatformAccount acc = new DatabaseManager.PlatformAccount(accountId, p.name(), username, number, apiId, apiHash, accountName);
                 connectorFinal = com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
             } else {
                 connectorFinal = null;
