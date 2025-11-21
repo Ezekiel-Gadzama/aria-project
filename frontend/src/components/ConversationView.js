@@ -194,10 +194,18 @@ function ConversationView({ userId = 1 }) {
             mimeType: messageData.mimeType || null,
             edited: true,
           };
-          // Replace the old message with the new one
-          setMessages(prev => prev.map(msg => 
-            msg.messageId === msgId ? updatedMsg : msg
-          ));
+          // Update the message in place (it was edited, not replaced, so same messageId)
+          setMessages(prev => prev.map(msg => {
+            if (msg.messageId === msgId || msg.messageId === updatedMsg.messageId) {
+              // Preserve media info if it exists
+              return { 
+                ...updatedMsg, 
+                mediaUrl: updatedMsg.mediaUrl || msg.mediaUrl,
+                hasMedia: true
+              };
+            }
+            return msg;
+          }));
         } else {
           await loadMessages();
         }

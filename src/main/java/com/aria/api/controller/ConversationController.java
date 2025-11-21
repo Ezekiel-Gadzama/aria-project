@@ -1368,57 +1368,7 @@ public class ConversationController {
                 return ResponseEntity.badRequest().body(ApiResponse.error("Platform account not found"));
             }
 
-            // Delete the old message from Telegram first
-            com.aria.platform.telegram.TelegramConnector connector =
-                    (com.aria.platform.telegram.TelegramConnector)
-                    com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
-            
-            boolean deleted = connector.deleteMessage(selected.getUsername(), oldMessageId);
-            if (!deleted) {
-                // Log warning but continue - might have already been deleted
-                System.err.println("Warning: Failed to delete old message " + oldMessageId + " from Telegram, continuing with replacement");
-            }
-
-            // Delete the old message from database
-            try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
-                    System.getenv("DATABASE_URL") != null
-                            ? System.getenv("DATABASE_URL")
-                            : "jdbc:postgresql://localhost:5432/aria",
-                    System.getenv("DATABASE_USER") != null
-                            ? System.getenv("DATABASE_USER")
-                            : "postgres",
-                    System.getenv("DATABASE_PASSWORD") != null
-                            ? System.getenv("DATABASE_PASSWORD")
-                            : "Ezekiel(23)")) {
-                
-                // Find dialog row id
-                Integer dialogsRowId = null;
-                try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                        "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' AND name = ? ORDER BY id DESC LIMIT 1")) {
-                    ps.setInt(1, currentUserId);
-                    ps.setInt(2, selected.getPlatformId());
-                    ps.setString(3, targetUser.getName());
-                    try (java.sql.ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) dialogsRowId = rs.getInt(1);
-                    }
-                }
-                
-                // Delete old message from database
-                if (dialogsRowId != null) {
-                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                            "DELETE FROM messages WHERE dialog_id = ? AND message_id = ?")) {
-                        ps.setInt(1, dialogsRowId);
-                        ps.setInt(2, oldMessageId);
-                        ps.executeUpdate();
-                        System.out.println("Deleted old message from database: messageId=" + oldMessageId);
-                    }
-                }
-            } catch (Exception e) {
-                // Log but continue - we'll send the new message anyway
-                System.err.println("Warning: Failed to delete old message from database: " + e.getMessage());
-            }
-
-            // Now send the new media message (reuse sendMedia logic)
+            // Determine MIME type and file name
             String mimeType = file.getContentType();
             if (mimeType == null || mimeType.isEmpty()) {
                 mimeType = "application/octet-stream";
@@ -1450,7 +1400,7 @@ public class ConversationController {
             // Save uploaded file to media folder
             java.nio.file.Files.write(mediaFile, file.getBytes());
             
-            // Get absolute path for Telegram (for sending)
+            // Get absolute path for Telegram (for editing)
             String absoluteMediaPath = mediaFile.toAbsolutePath().toString().replace("\\", "/");
             
             // Create relative path for database storage
@@ -1465,18 +1415,20 @@ public class ConversationController {
                 mediaFilePath = mediaFilePath.substring(1);
             }
             
-            // Send new media using the absolute path
-            com.aria.platform.telegram.TelegramConnector.SendMessageResult sendResult = 
-                    connector.sendMediaAndGetResult(selected.getUsername(), absoluteMediaPath, caption);
-
-            if (sendResult == null || !sendResult.success || sendResult.messageId == null || sendResult.messageId < 0) {
-                return ResponseEntity.internalServerError().body(ApiResponse.error("Failed to send replacement media"));
+            // Edit the existing message in Telegram to replace media (using Telegram's edit functionality)
+            com.aria.platform.telegram.TelegramConnector connector =
+                    (com.aria.platform.telegram.TelegramConnector)
+                    com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
+            
+            boolean edited = connector.editMediaMessage(selected.getUsername(), oldMessageId, absoluteMediaPath, caption);
+            if (!edited) {
+                return ResponseEntity.internalServerError().body(ApiResponse.error("Failed to edit media message"));
             }
 
-            Long telegramMessageId = sendResult.messageId;
-            Long peerId = sendResult.peerId;
+            // Message was edited (not deleted/recreated), so messageId stays the same
+            // We use oldMessageId throughout since the message was edited in place
 
-            // Get or create dialog and save the new media message to the database
+            // Update the existing message in the database (message was edited, not deleted/recreated)
             Integer dialogRowId = null;
             try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
                     System.getenv("DATABASE_URL") != null
@@ -1489,7 +1441,7 @@ public class ConversationController {
                             ? System.getenv("DATABASE_PASSWORD")
                             : "Ezekiel(23)")) {
                 
-                // Find or create dialog
+                // Find dialog
                 try (java.sql.PreparedStatement ps = conn.prepareStatement(
                         "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' AND name = ? ORDER BY id DESC LIMIT 1")) {
                     ps.setInt(1, currentUserId);
@@ -1500,71 +1452,95 @@ public class ConversationController {
                     }
                 }
                 
-                // If not found by name, try by peer ID
-                if (dialogRowId == null && peerId != null && peerId > 0) {
+                if (dialogRowId != null) {
+                    // Update message text/caption in database
                     try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                            "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND dialog_id = ? LIMIT 1")) {
-                        ps.setInt(1, currentUserId);
-                        ps.setInt(2, selected.getPlatformId());
-                        ps.setLong(3, peerId);
-                        try (java.sql.ResultSet rs = ps.executeQuery()) {
-                            if (rs.next()) dialogRowId = rs.getInt(1);
-                        }
+                            "UPDATE messages SET text = ? WHERE dialog_id = ? AND message_id = ?")) {
+                        String encryptedText = caption != null && !caption.isEmpty() ? 
+                            com.aria.storage.SecureStorage.encrypt(caption) : null;
+                        ps.setString(1, encryptedText);
+                        ps.setInt(2, dialogRowId);
+                        ps.setInt(3, oldMessageId);
+                        ps.executeUpdate();
                     }
-                }
-                
-                // Save the new media message if we have a dialog
-                Integer internalMessageId = null;
-                if (dialogRowId != null && telegramMessageId > 0) {
-                    java.time.LocalDateTime now = java.time.LocalDateTime.now();
+                    
+                    // Update or insert media metadata
                     try {
-                        internalMessageId = DatabaseManager.saveMessage(
-                            dialogRowId,
-                            telegramMessageId,
-                            "me",
-                            caption != null && !caption.isEmpty() ? caption : null,
-                            now,
-                            true // hasMedia
-                        );
-                        System.out.println("Saved replacement media message to database: messageId=" + telegramMessageId + ", dialogId=" + dialogRowId);
-                        
-                        // Save media metadata
-                        if (internalMessageId != null) {
-                            try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                                    "INSERT INTO media (message_id, type, file_path, file_name, file_size, mime_type) " +
-                                    "VALUES (?, ?, ?, ?, ?, ?) " +
-                                    "ON CONFLICT DO NOTHING")) {
-                                ps.setInt(1, internalMessageId);
-                                ps.setString(2, "file");
-                                ps.setString(3, mediaFilePath);
-                                ps.setString(4, fileName);
-                                ps.setLong(5, file.getSize());
-                                ps.setString(6, mimeType);
-                                ps.executeUpdate();
+                        // Get the internal message ID
+                        Integer internalMessageId = null;
+                        try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                "SELECT id FROM messages WHERE dialog_id = ? AND message_id = ?")) {
+                            ps.setInt(1, dialogRowId);
+                            ps.setInt(2, oldMessageId);
+                            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                if (rs.next()) {
+                                    internalMessageId = rs.getInt(1);
+                                }
                             }
                         }
+                        
+                        if (internalMessageId != null) {
+                            // Update existing media record or insert new one
+                            String mediaType = "document";
+                            if (mimeType != null) {
+                                if (mimeType.startsWith("image/")) mediaType = "photo";
+                                else if (mimeType.startsWith("video/")) mediaType = "video";
+                                else if (mimeType.startsWith("audio/")) mediaType = "audio";
+                            }
+                            
+                            // Try to update existing media record
+                            try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                    "UPDATE media SET type = ?, file_path = ?, file_name = ?, file_size = ?, mime_type = ? " +
+                                    "WHERE message_id = ?")) {
+                                ps.setString(1, mediaType);
+                                ps.setString(2, mediaFilePath);
+                                ps.setString(3, fileName);
+                                ps.setLong(4, file.getSize());
+                                ps.setString(5, mimeType);
+                                ps.setInt(6, internalMessageId);
+                                int updated = ps.executeUpdate();
+                                
+                                // If no row was updated, insert new media record
+                                if (updated == 0) {
+                                    try (java.sql.PreparedStatement insertPs = conn.prepareStatement(
+                                            "INSERT INTO media (message_id, type, file_path, file_name, file_size, mime_type) " +
+                                            "VALUES (?, ?, ?, ?, ?, ?)")) {
+                                        insertPs.setInt(1, internalMessageId);
+                                        insertPs.setString(2, mediaType);
+                                        insertPs.setString(3, mediaFilePath);
+                                        insertPs.setString(4, fileName);
+                                        insertPs.setLong(5, file.getSize());
+                                        insertPs.setString(6, mimeType);
+                                        insertPs.executeUpdate();
+                                    }
+                                }
+                            }
+                            
+                            System.out.println("Updated media message in database: messageId=" + oldMessageId + ", dialogId=" + dialogRowId);
+                        }
                     } catch (Exception e) {
-                        System.err.println("Warning: Error saving replacement media message to database: " + e.getMessage());
+                        System.err.println("Warning: Error updating media metadata in database: " + e.getMessage());
                         e.printStackTrace();
                     }
                 }
 
-                // Return the new message data
+                // Return the updated message data (same messageId, edited)
                 java.util.Map<String, Object> messageData = new java.util.HashMap<>();
-                messageData.put("messageId", telegramMessageId.intValue());
+                messageData.put("messageId", oldMessageId); // Same message ID (was edited, not replaced)
                 messageData.put("fromUser", true);
                 messageData.put("text", caption != null && !caption.isEmpty() ? caption : null);
                 messageData.put("timestamp", System.currentTimeMillis());
                 messageData.put("hasMedia", true);
                 messageData.put("fileName", fileName);
                 messageData.put("mimeType", mimeType);
+                messageData.put("edited", true); // Mark as edited
                 if (dialogRowId != null) {
-                    messageData.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + telegramMessageId);
+                    messageData.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + oldMessageId);
                 }
 
-                return ResponseEntity.ok(ApiResponse.success("Media replaced", messageData));
+                return ResponseEntity.ok(ApiResponse.success("Media edited", messageData));
             } catch (Exception e) {
-                return ResponseEntity.internalServerError().body(ApiResponse.error("Error replacing media: " + e.getMessage()));
+                return ResponseEntity.internalServerError().body(ApiResponse.error("Error editing media: " + e.getMessage()));
             }
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body(ApiResponse.error("Error replacing media: " + e.getMessage()));

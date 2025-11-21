@@ -13,7 +13,7 @@ api_hash = os.getenv('TELEGRAM_API_HASH')
 phone = os.getenv('TELEGRAM_PHONE')
 
 
-async def edit_message(target_username: str, message_id: int, new_text: str):
+async def edit_message(target_username: str, message_id: int, new_text: str, file_path: str = None):
     # Priority lock (shared with ingestion)
     lock_env = os.getenv("TELETHON_LOCK_PATH", "/app/telethon_send.lock")
     lock_path = pathlib.Path(lock_env)
@@ -70,7 +70,12 @@ async def edit_message(target_username: str, message_id: int, new_text: str):
 
         for i in range(10):
             try:
-                await client.edit_message(entity, message_id, new_text)
+                # If file_path is provided, edit both media and text/caption
+                if file_path and os.path.exists(file_path):
+                    await client.edit_message(entity, message_id, file=file_path, text=new_text if new_text else None)
+                else:
+                    # Just edit text/caption
+                    await client.edit_message(entity, message_id, text=new_text)
                 break
             except Exception as e:
                 if "database is locked" in str(e).lower() and i < 9:
@@ -78,7 +83,10 @@ async def edit_message(target_username: str, message_id: int, new_text: str):
                     continue
                 raise
 
-        print(f"Edited message {message_id} in {uname}")
+        if file_path:
+            print(f"Edited media and text for message {message_id} in {uname}")
+        else:
+            print(f"Edited message {message_id} in {uname}")
         return True
     except Exception as e:
         print(f"Error editing message: {e}")
@@ -96,10 +104,23 @@ if __name__ == '__main__':
     if len(sys.argv) >= 4:
         target = sys.argv[1]
         msg_id = int(sys.argv[2])
-        new_text = " ".join(sys.argv[3:])
-        ok = asyncio.run(edit_message(target, msg_id, new_text))
+        # Check if 3rd argument is a file path (exists as file or starts with / or media/)
+        file_path_candidate = sys.argv[3]
+        # Simple heuristic: if it looks like a file path (contains /, starts with /, or starts with media/)
+        # AND the file exists, treat it as a file path
+        if ('/' in file_path_candidate or file_path_candidate.startswith('media') or 
+            os.path.exists(file_path_candidate)):
+            # Format: username message_id file_path [caption]
+            file_path = file_path_candidate
+            new_text = " ".join(sys.argv[4:]) if len(sys.argv) > 4 else ""
+            ok = asyncio.run(edit_message(target, msg_id, new_text, file_path))
+        else:
+            # Format: username message_id new_text
+            new_text = " ".join(sys.argv[3:])
+            ok = asyncio.run(edit_message(target, msg_id, new_text))
         sys.exit(0 if ok else 1)
     else:
         print("Usage: python message_editor.py <username> <message_id> <new text>")
+        print("   or: python message_editor.py <username> <message_id> <file_path> [caption]")
         sys.exit(1)
 

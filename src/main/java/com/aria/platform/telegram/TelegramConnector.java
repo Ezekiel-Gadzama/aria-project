@@ -327,6 +327,55 @@ public class TelegramConnector implements PlatformConnector {
         }
     }
 
+    /**
+     * Edit a media message by replacing the media file and/or caption
+     * @param target Target username
+     * @param messageId Telegram message ID to edit
+     * @param filePath Path to new media file
+     * @param caption New caption text (can be null/empty)
+     * @return true if successful
+     */
+    public boolean editMediaMessage(String target, int messageId, String filePath, String caption) {
+        if (!isConfigured()) {
+            System.err.println("Telegram connector not configured");
+            return false;
+        }
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                    "python3",
+                    "scripts/telethon/message_editor.py",
+                    target,
+                    String.valueOf(messageId),
+                    filePath,
+                    caption != null && !caption.isEmpty() ? caption : ""
+            );
+            Map<String, String> env = processBuilder.environment();
+            env.put("TELEGRAM_API_ID", this.apiId);
+            env.put("TELEGRAM_API_HASH", this.apiHash);
+            env.put("TELEGRAM_PHONE", this.phoneNumber);
+            env.put("TELEGRAM_USERNAME", this.username);
+            env.put("PLATFORM_ACCOUNT_ID", String.valueOf(this.platformAccountId));
+            env.put("TELETHON_LOCK_PATH", "/app/telethon_send.lock");
+            env.put("TELETHON_SESSION_PATH", buildSessionPath(this.username, this.phoneNumber));
+
+            processBuilder.directory(Paths.get("").toAbsolutePath().toFile());
+            processBuilder.redirectErrorStream(true);
+
+            Process process = processBuilder.start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("Python: " + line);
+                }
+            }
+            int exitCode = process.waitFor();
+            return exitCode == 0;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
     public boolean deleteMessage(String target, int messageId) {
         if (!isConfigured()) {
             System.err.println("Telegram connector not configured");
