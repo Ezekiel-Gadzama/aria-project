@@ -120,7 +120,12 @@ def save_message(dialog_id, message_id, sender, text, timestamp, has_media, raw_
     sql = """
         INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id)
         VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
-        ON CONFLICT (dialog_id, message_id) DO NOTHING
+        ON CONFLICT (dialog_id, message_id) DO UPDATE SET
+            timestamp = EXCLUDED.timestamp,
+            has_media = EXCLUDED.has_media,
+            raw_json = EXCLUDED.raw_json,
+            reference_id = EXCLUDED.reference_id
+            -- Note: We DON'T update text or sender here to preserve edits made through the app
         RETURNING id
     """
     with get_connection() as conn, conn.cursor() as cur:
@@ -313,21 +318,42 @@ async def ingest_chat_history():
     # Check if session file exists - if it does, connect without starting (won't trigger OTP)
     session_file = pathlib.Path(session_path + '.session')
     if session_file.exists():
-        try:
-            await client.connect()
-            # If already authorized, we're done - don't call start() which would trigger OTP
-            if await client.is_user_authorized():
-                safe_print("Using existing session file")
-            else:
-                # Session file exists but not authorized - need to start
-                await client.start(phone=phone)
-        except Exception as e:
-            # If connect fails, fall back to start
-            safe_print(f"Failed to connect to existing session: {e}")
-            await client.start(phone=phone)
+        # Retry connection with database lock handling
+        connect_attempts = 10
+        connected = False
+        for i in range(connect_attempts):
+            try:
+                await client.connect()
+                # If already authorized, we're done - don't call start() which would trigger OTP
+                if await client.is_user_authorized():
+                    safe_print("Using existing session file")
+                    connected = True
+                    break
+                else:
+                    # Session file exists but not authorized - this shouldn't happen if session is valid
+                    # Don't call start() as it will trigger OTP - just return error
+                    await client.disconnect()
+                    safe_print("Error: Session file exists but user is not authorized. Please re-register the platform.")
+                    return
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "database is locked" in error_msg and i < connect_attempts - 1:
+                    # Wait and retry for database locks
+                    await asyncio.sleep(0.1 * (i + 1))  # Exponential backoff
+                    continue
+                # If connect fails repeatedly, don't try to start - just return error
+                if i == connect_attempts - 1:
+                    safe_print(f"Error: Failed to connect to session after {connect_attempts} attempts: {e}")
+                    return
+                continue
+        
+        if not connected:
+            safe_print("Error: Could not connect to session file")
+            return
     else:
-        # No session file exists - need to start (will trigger OTP)
-        await client.start(phone=phone)
+        # No session file exists - cannot ingest without a valid session
+        safe_print("Error: No session file found. Please register the platform first.")
+        return
 
     safe_print("Connected. Fetching dialogs...")
     start_time = time.time()
@@ -341,15 +367,41 @@ async def ingest_chat_history():
 
     # Determine current (self) user id to skip self-chats (with retry for database locks)
     try:
-        me = await _retry_on_db_lock(client.get_me())
-        my_user_id = getattr(me, 'id', None)
+        # Retry get_me with database lock handling - create fresh coroutine each time
+        get_me_attempts = 10
+        me = None
+        for i in range(get_me_attempts):
+            try:
+                me = await client.get_me()  # Create fresh coroutine each time
+                break
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "database is locked" in error_msg and i < get_me_attempts - 1:
+                    await asyncio.sleep(0.1 * (i + 1))
+                    continue
+                if i == get_me_attempts - 1:
+                    raise
+        my_user_id = getattr(me, 'id', None) if me else None
     except Exception as e:
         safe_print(f"Warning: Could not get_me after retries: {e}")
         my_user_id = None
 
     # Get dialogs with retry for database locks
     try:
-        dialogs = await _retry_on_db_lock(client.get_dialogs())
+        # Retry get_dialogs with database lock handling - create fresh coroutine each time
+        get_dialogs_attempts = 10
+        dialogs = []
+        for i in range(get_dialogs_attempts):
+            try:
+                dialogs = await client.get_dialogs()  # Create fresh coroutine each time
+                break
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "database is locked" in error_msg and i < get_dialogs_attempts - 1:
+                    await asyncio.sleep(0.1 * (i + 1))
+                    continue
+                if i == get_dialogs_attempts - 1:
+                    raise
         safe_print(f"Found {len(dialogs)} dialogs.")
     except Exception as e:
         safe_print(f"Error fetching dialogs: {e}")
@@ -368,8 +420,10 @@ async def ingest_chat_history():
             entity = dialog.entity
             # Check if this is the priority target
             if priority_target_username:
-                dialog_username = getattr(entity, 'username', '').lower() if hasattr(entity, 'username') else ''
-                dialog_name_lower = dialog.name.lower()
+                # Safely get username - handle None case
+                username_attr = getattr(entity, 'username', None) if hasattr(entity, 'username') else None
+                dialog_username = (username_attr or '').lower() if username_attr else ''
+                dialog_name_lower = (dialog.name or '').lower() if dialog.name else ''
                 if dialog_username == priority_target_username or dialog_name_lower == priority_target_username:
                     priority_dialog = dialog
                     safe_print(f"Found priority target dialog: {dialog.name}")
@@ -385,7 +439,9 @@ async def ingest_chat_history():
     dialogs_to_process.extend(other_dialogs)
 
     for dialog in dialogs_to_process:
-        # Yield to sender if lock appears while processing each dialog
+        # Yield to sender/priority ingestion if lock appears while processing each dialog
+        # This pauses main ingestion when priority ingestion is running
+        await _wait_for_sender_priority(max_wait_ms=None)  # Wait indefinitely for priority ingestion to complete
         await _disconnect_if_sending(client)
         if not await client.is_user_authorized():
             await client.start(phone=phone)
@@ -438,11 +494,12 @@ async def ingest_chat_history():
                 # Robust incremental: loop with reconnect on disconnect and database lock retry
                 resume_from_id = last_message_id
                 while True:
-                    try:
-                        async for message in client.iter_messages(dialog.entity, limit=200, offset_id=resume_from_id):
-                            # Yield to sender; if we disconnect, outer except will handle
-                            await _disconnect_if_sending(client)
-                            await _ensure_connected(client)
+                        try:
+                            async for message in client.iter_messages(dialog.entity, limit=200, offset_id=resume_from_id):
+                                # Yield to sender/priority ingestion; if we disconnect, outer except will handle
+                                await _wait_for_sender_priority(max_wait_ms=100)  # Check for priority lock every 100ms
+                                await _disconnect_if_sending(client)
+                                await _ensure_connected(client)
 
                             # Stop if we reach messages older than or equal to last_message_id
                             if message.id <= last_message_id:
@@ -508,6 +565,8 @@ async def ingest_chat_history():
                             async for message in client.iter_messages(dialog.entity, limit=80, offset_id=0):
                                 if messages_processed_phase1 >= 80:
                                     break
+                                # Yield to priority ingestion if it's running
+                                await _wait_for_sender_priority(max_wait_ms=100)
                                 await _disconnect_if_sending(client)
                                 await _ensure_connected(client)
 
@@ -554,6 +613,43 @@ async def ingest_chat_history():
                                 continue
                             raise
                     
+                    # For priority targets: Also check for deleted messages after phase 1
+                    if is_priority_target:
+                        try:
+                            # Get all message IDs from Telegram (from the 80 we just fetched)
+                            telegram_message_ids_phase1 = set()
+                            async for msg in client.iter_messages(dialog.entity, limit=80, offset_id=0):
+                                telegram_message_ids_phase1.add(msg.id)
+                            
+                            # Get all message IDs from database for this dialog
+                            db_sql = "SELECT message_id FROM messages WHERE dialog_id = %s"
+                            with get_connection() as conn, conn.cursor() as cur:
+                                cur.execute(db_sql, (dialog_id,))
+                                db_message_ids = {row[0] for row in cur.fetchall()}
+                            
+                            # Find messages in database that don't exist in Telegram (were deleted)
+                            deleted_message_ids = db_message_ids - telegram_message_ids_phase1
+                            
+                            if deleted_message_ids:
+                                safe_print(f"  Priority target: Found {len(deleted_message_ids)} deleted message(s), removing from database...")
+                                for deleted_msg_id in deleted_message_ids:
+                                    # Get internal message ID to delete media
+                                    internal_sql = "SELECT id FROM messages WHERE dialog_id = %s AND message_id = %s"
+                                    cur.execute(internal_sql, (dialog_id, deleted_msg_id))
+                                    internal_result = cur.fetchone()
+                                    if internal_result:
+                                        internal_msg_id = internal_result[0]
+                                        # Delete media first (foreign key constraint)
+                                        media_delete_sql = "DELETE FROM media WHERE message_id = %s"
+                                        cur.execute(media_delete_sql, (internal_msg_id,))
+                                        # Delete message
+                                        msg_delete_sql = "DELETE FROM messages WHERE dialog_id = %s AND message_id = %s"
+                                        cur.execute(msg_delete_sql, (dialog_id, deleted_msg_id))
+                                conn.commit()
+                                safe_print(f"  Priority target: Removed {len(deleted_message_ids)} deleted message(s) from database")
+                        except Exception as e:
+                            safe_print(f"  Warning: Failed to check for deleted messages in priority target: {e}")
+                    
                     safe_print(f"  Priority target: Phase 1 complete (80 messages). Now continuing with full history from beginning")
                     # Phase 2: Continue with full ingestion from the oldest message we got
                     # This ensures we get the complete history
@@ -561,6 +657,8 @@ async def ingest_chat_history():
                     while True:
                         try:
                             async for message in client.iter_messages(dialog.entity, limit=200, offset_id=resume_from_id):
+                                # Yield to priority ingestion if it's running
+                                await _wait_for_sender_priority(max_wait_ms=100)
                                 await _disconnect_if_sending(client)
                                 await _ensure_connected(client)
 
@@ -616,6 +714,8 @@ async def ingest_chat_history():
                     while True:
                         try:
                             async for message in client.iter_messages(dialog.entity, limit=200, offset_id=resume_from_id):
+                                # Yield to priority ingestion if it's running
+                                await _wait_for_sender_priority(max_wait_ms=100)
                                 await _disconnect_if_sending(client)
                                 await _ensure_connected(client)
 

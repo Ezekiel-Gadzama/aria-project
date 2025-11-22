@@ -51,6 +51,8 @@ export const conversationApi = {
     `${API_BASE_URL}/conversations/media/download?targetUserId=${targetUserId}&userId=${userId}&messageId=${messageId}`,
   ingest: (platform, userId) => 
     api.post(`/conversations/ingest?platform=${platform}&userId=${userId}`),
+  ingestTarget: (targetUserId, userId) =>
+    api.post(`/conversations/ingestTarget?targetUserId=${targetUserId}&userId=${userId}`),
   end: (targetUserId, userId) =>
     api.post(`/conversations/end?targetUserId=${targetUserId}&userId=${userId}`),
   isActive: (targetUserId, userId) =>

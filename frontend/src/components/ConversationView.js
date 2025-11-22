@@ -75,7 +75,7 @@ function ConversationView({ userId = 1 }) {
     return () => clearInterval(interval);
   }, [conversationInitialized, target, targetId, userId]);
 
-  // Poll for new messages when conversation is initialized
+  // Poll for new messages and trigger priority ingestion every 5 seconds
   useEffect(() => {
     if (!conversationInitialized || !targetId || isOperationInProgress) return; // Don't poll if operation is in progress
     
@@ -86,6 +86,20 @@ function ConversationView({ userId = 1 }) {
       }
       
       try {
+        // Trigger priority ingestion every 5 seconds to sync with Telegram
+        // This will check for new messages and delete messages that no longer exist in Telegram
+        // Only trigger if not already running (backend will check and skip if already running)
+        try {
+          await conversationApi.ingestTarget(targetId, userId);
+        } catch (ingestErr) {
+          // Ignore ingestion errors - it's a background process
+          // The backend will skip if ingestion is already running
+          if (ingestErr.response?.status !== 200) {
+            console.warn('Priority ingestion failed:', ingestErr);
+          }
+        }
+        
+        // Then fetch messages from database
         const resp = await conversationApi.getMessages(targetId, userId, 50);
         if (resp.data?.success) {
           const rows = resp.data.data || [];
@@ -186,12 +200,13 @@ function ConversationView({ userId = 1 }) {
     // Poll immediately (to check for new messages)
     pollForNewMessages();
     
-    // Then poll every 3 seconds for new messages (only if no operation in progress)
+    // Then poll every 5 seconds for new messages (only if no operation in progress)
+    // This also triggers priority ingestion to sync with Telegram
     const messageInterval = setInterval(() => {
       if (!isOperationInProgress) {
         pollForNewMessages();
       }
-    }, 3000);
+    }, 5000); // Changed to 5 seconds to give ingestion time to complete
     
     return () => clearInterval(messageInterval);
   }, [conversationInitialized, targetId, userId, isOperationInProgress]); // Include isOperationInProgress to pause/resume polling

@@ -1487,6 +1487,76 @@ public class ConversationController {
     }
 
     /**
+     * Trigger priority ingestion for a specific target user conversation
+     * POST /api/conversations/ingestTarget?targetUserId=123&userId=1
+     * This will prioritize ingesting this target's messages and check for deletions
+     */
+    @PostMapping("/ingestTarget")
+    public ResponseEntity<ApiResponse<String>> ingestTargetConversation(
+            @RequestParam("targetUserId") Integer targetUserId,
+            @RequestParam(value = "userId", required = false) Integer userId) {
+        try {
+            int currentUserId = userId != null ? userId : 1;
+            DatabaseManager databaseManager = new DatabaseManager();
+            TargetUserService targetUserService = new TargetUserService(databaseManager);
+            TargetUser targetUser = targetUserService.getTargetUserById(targetUserId);
+            if (targetUser == null) {
+                return ResponseEntity.badRequest().body(ApiResponse.error("Target user not found"));
+            }
+            
+            com.aria.platform.UserPlatform selected = targetUser.getSelectedPlatform();
+            if (selected == null || selected.getPlatform() != com.aria.platform.Platform.TELEGRAM) {
+                return ResponseEntity.badRequest().body(ApiResponse.error("Priority ingestion only supported for Telegram for now"));
+            }
+            
+            DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(selected.getPlatformId());
+            if (acc == null) {
+                return ResponseEntity.badRequest().body(ApiResponse.error("Platform account not found"));
+            }
+            
+            // Use ConnectorRegistry to get or create connector
+            com.aria.platform.telegram.TelegramConnector connector = 
+                (com.aria.platform.telegram.TelegramConnector) 
+                com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
+            
+            if (connector == null) {
+                return ResponseEntity.internalServerError().body(ApiResponse.error("Failed to create connector"));
+            }
+            
+            // Get target username for priority ingestion
+            String targetUsername = selected.getUsername();
+            if (targetUsername != null && targetUsername.startsWith("@")) {
+                targetUsername = targetUsername.substring(1);
+            } else if (targetUsername == null || targetUsername.isBlank()) {
+                targetUsername = targetUser.getName(); // Fallback to name
+            }
+            
+            final String finalTargetUsername = targetUsername;
+            
+            // Priority ingestion runs independently - it doesn't need to check if main ingestion is running
+            // It's lightweight (just 80 messages) and should run every 5 seconds
+            // Trigger priority ingestion in background thread (non-blocking)
+            // This runs every 5 seconds and always re-ingests the last 80 messages
+            // to check for new messages and deletions
+            new Thread(() -> {
+                try {
+                    System.out.println("Starting priority ingestion for target user conversation: " + finalTargetUsername);
+                    connector.ingestPriorityTarget(finalTargetUsername, acc);
+                    System.out.println("Priority ingestion completed for target user: " + finalTargetUsername);
+                } catch (Exception e) {
+                    System.err.println("Error in priority ingestion for target user: " + e.getMessage());
+                    e.printStackTrace();
+                }
+            }, "priority-ingest-target-" + finalTargetUsername).start();
+            
+            return ResponseEntity.ok(ApiResponse.success("Priority ingestion started for target user", null));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError()
+                .body(ApiResponse.error("Error starting priority ingestion: " + e.getMessage()));
+        }
+    }
+
+    /**
      * Send media to target via platform connector (Telegram supported)
      * POST /api/conversations/sendMedia?targetUserId=123&userId=1
      * multipart/form-data: file

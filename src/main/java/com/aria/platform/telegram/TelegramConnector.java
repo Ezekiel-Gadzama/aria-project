@@ -62,6 +62,61 @@ public class TelegramConnector implements PlatformConnector {
     }
 
     /**
+     * Priority ingestion: Always re-ingest last 80 messages and check for deletions.
+     * This runs every 5 seconds when a conversation is open.
+     * @param targetUsername Username of target to ingest (last 80 messages)
+     * @param account Platform account information
+     */
+    public void ingestPriorityTarget(String targetUsername, com.aria.storage.DatabaseManager.PlatformAccount account) {
+        if (!isConfigured()) {
+            System.err.println("Telegram connector not configured properly");
+            return;
+        }
+
+        System.out.println("Running priority ingestion for target: " + targetUsername);
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                    "python3",
+                    "scripts/telethon/priority_ingestor.py",
+                    targetUsername
+            );
+
+            Map<String, String> env = processBuilder.environment();
+            env.put("TELEGRAM_API_ID", this.apiId);
+            env.put("TELEGRAM_API_HASH", this.apiHash);
+            env.put("TELEGRAM_PHONE", this.phoneNumber);
+            env.put("TELEGRAM_USERNAME", this.username);
+            env.put("PLATFORM_ACCOUNT_ID", String.valueOf(this.platformAccountId));
+            env.put("TELETHON_SESSION_PATH", buildSessionPath(this.username, this.phoneNumber));
+            // Database config
+            env.put("DB_HOST", System.getenv("DB_HOST") != null ? System.getenv("DB_HOST") : "aria-postgres");
+            env.put("DB_PORT", System.getenv("DB_PORT") != null ? System.getenv("DB_PORT") : "5432");
+            env.put("DATABASE_NAME", System.getenv("DATABASE_NAME") != null ? System.getenv("DATABASE_NAME") : "aria");
+            env.put("DATABASE_USER", System.getenv("DATABASE_USER") != null ? System.getenv("DATABASE_USER") : "postgres");
+            env.put("DATABASE_PASSWORD", System.getenv("DATABASE_PASSWORD") != null ? System.getenv("DATABASE_PASSWORD") : "Ezekiel(23)");
+
+            processBuilder.directory(Paths.get("").toAbsolutePath().toFile());
+            processBuilder.redirectErrorStream(true);
+
+            Process process = processBuilder.start();
+
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                System.out.println("Python (priority): " + line);
+            }
+
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                System.err.println("Priority ingestion script failed with exit code: " + exitCode);
+            }
+        } catch (Exception e) {
+            System.err.println("Error running priority ingestion: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    /**
      * Ingest chat history, optionally with priority target username
      * @param priorityTargetUsername Optional username of target to ingest first (last 50 messages)
      */

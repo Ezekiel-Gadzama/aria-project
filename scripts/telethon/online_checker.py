@@ -49,11 +49,16 @@ def format_last_active(status):
     else:
         return "offline"
 
-async def _retry_on_db_lock(coro, max_retries=10, delay=0.1):
-    """Retry a coroutine on database lock errors with exponential backoff"""
+async def _retry_on_db_lock(coro_func, max_retries=10, delay=0.1):
+    """Retry a coroutine function on database lock errors with exponential backoff"""
     for attempt in range(max_retries):
         try:
-            return await coro
+            # Call the coroutine function (not await it - we await it here)
+            if callable(coro_func):
+                return await coro_func()
+            else:
+                # If it's already a coroutine object, await it directly
+                return await coro_func
         except Exception as e:
             if "database is locked" in str(e).lower() and attempt < max_retries - 1:
                 wait_time = delay * (2 ** attempt)
@@ -72,55 +77,67 @@ async def check_user_online(target_username):
     # Check if session file exists - if it does, connect without starting (won't trigger OTP)
     session_file = pathlib.Path(session_path + '.session')
     if session_file.exists():
-        try:
-            # Use retry logic for database locks
-            await _retry_on_db_lock(client.connect())
-            # If already authorized, we're done - don't call start() which would trigger OTP
-            if not await _retry_on_db_lock(client.is_user_authorized()):
-                # Session exists but not authorized - this shouldn't happen if session is valid
-                # Don't call start() as it will trigger OTP - just return an error
-                await client.disconnect()
-                result = {
-                    "online": False,
-                    "lastActive": "Session file exists but user is not authorized. Please re-register the platform."
-                }
-                print(json.dumps(result))
-                return False
-        except Exception as e:
-            # If connect fails, don't fall back to start() - session might be locked
-            # Just return error instead of triggering OTP
-            error_msg = str(e).lower()
-            if "database is locked" in error_msg:
-                # Database is locked, wait a bit and try once more
-                await asyncio.sleep(0.1)
-                try:
-                    await client.connect()
-                    if await client.is_user_authorized():
-                        pass  # Continue with authorized session
-                    else:
-                        await client.disconnect()
-                        result = {
-                            "online": False,
-                            "lastActive": "Session not authorized. Please re-register the platform."
-                        }
-                        print(json.dumps(result))
-                        return False
-                except Exception:
-                    # Still locked or failed, return error
+        # Retry connection with database lock handling - don't reuse coroutines
+        connect_attempts = 10
+        connected = False
+        for i in range(connect_attempts):
+            try:
+                await client.connect()
+                connected = True
+                break
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "database is locked" in error_msg and i < connect_attempts - 1:
+                    await asyncio.sleep(0.1 * (i + 1))  # Exponential backoff
+                    continue
+                if i == connect_attempts - 1:
+                    # Last attempt failed
                     result = {
                         "online": False,
-                        "lastActive": f"Session database is locked. Please try again later."
+                        "lastActive": f"Failed to connect to session after {connect_attempts} attempts: {str(e)}"
                     }
                     print(json.dumps(result))
                     return False
-            else:
-                # Other error - don't try to start, just return error
-                result = {
-                    "online": False,
-                    "lastActive": f"Failed to connect to session: {str(e)}"
-                }
-                print(json.dumps(result))
-                return False
+        
+        if not connected:
+            result = {
+                "online": False,
+                "lastActive": "Failed to connect to session"
+            }
+            print(json.dumps(result))
+            return False
+        
+        # Check if authorized - retry with database lock handling
+        auth_attempts = 10
+        authorized = False
+        for i in range(auth_attempts):
+            try:
+                authorized = await client.is_user_authorized()
+                break
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "database is locked" in error_msg and i < auth_attempts - 1:
+                    await asyncio.sleep(0.1 * (i + 1))
+                    continue
+                if i == auth_attempts - 1:
+                    await client.disconnect()
+                    result = {
+                        "online": False,
+                        "lastActive": f"Failed to check authorization: {str(e)}"
+                    }
+                    print(json.dumps(result))
+                    return False
+        
+        if not authorized:
+            # Session exists but not authorized - this shouldn't happen if session is valid
+            # Don't call start() as it will trigger OTP - just return an error
+            await client.disconnect()
+            result = {
+                "online": False,
+                "lastActive": "Session file exists but user is not authorized. Please re-register the platform."
+            }
+            print(json.dumps(result))
+            return False
     else:
         # No session file exists - cannot check online status without a valid session
         result = {
