@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { userApi } from '../services/api';
+import Modal from './Modal';
 import './ApiKeyManagement.css';
 
 function ApiKeyManagement({ userId = 1 }) {
@@ -11,6 +12,10 @@ function ApiKeyManagement({ userId = 1 }) {
   const [showCreateKey, setShowCreateKey] = useState(false);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeySecret, setNewKeySecret] = useState(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
+  const [showCreditsModal, setShowCreditsModal] = useState(false);
+  const [showSubscriptionModal, setShowSubscriptionModal] = useState(false);
+  const [copiedSecret, setCopiedSecret] = useState(false);
 
   useEffect(() => {
     loadApiKeys();
@@ -20,10 +25,10 @@ function ApiKeyManagement({ userId = 1 }) {
 
   const loadApiKeys = async () => {
     try {
-      // TODO: Implement API endpoint
-      // const response = await userApi.getApiKeys(userId);
-      // setApiKeys(response.data.data || []);
-      setApiKeys([]);
+      const response = await userApi.getApiKeys(userId);
+      if (response.data?.success) {
+        setApiKeys(response.data.data || []);
+      }
     } catch (err) {
       setError(err.message || 'Failed to load API keys');
     } finally {
@@ -33,10 +38,10 @@ function ApiKeyManagement({ userId = 1 }) {
 
   const loadCredits = async () => {
     try {
-      // TODO: Implement API endpoint
-      // const response = await userApi.getCredits(userId);
-      // setCredits(response.data.data || 0);
-      setCredits(0);
+      const response = await userApi.getCredits(userId);
+      if (response.data?.success) {
+        setCredits(response.data.data?.credits || 0);
+      }
     } catch (err) {
       console.error('Failed to load credits:', err);
     }
@@ -44,10 +49,10 @@ function ApiKeyManagement({ userId = 1 }) {
 
   const loadSubscription = async () => {
     try {
-      // TODO: Implement API endpoint
-      // const response = await userApi.getSubscription(userId);
-      // setSubscription(response.data.data);
-      setSubscription(null);
+      const response = await userApi.getSubscription(userId);
+      if (response.data?.success) {
+        setSubscription(response.data.data);
+      }
     } catch (err) {
       console.error('Failed to load subscription:', err);
     }
@@ -56,62 +61,68 @@ function ApiKeyManagement({ userId = 1 }) {
   const handleCreateKey = async (e) => {
     e.preventDefault();
     try {
-      // TODO: Implement API endpoint
-      // const response = await userApi.createApiKey(userId, { name: newKeyName });
-      // if (response.data.success) {
-      //   setNewKeySecret(response.data.data.secret);
-      //   setNewKeyName('');
-      //   loadApiKeys();
-      // }
-      
-      // Mock implementation
-      const mockKey = {
-        id: Date.now(),
-        name: newKeyName,
-        key: 'aria_' + Math.random().toString(36).substring(2, 15),
-        secret: 'aria_secret_' + Math.random().toString(36).substring(2, 15),
-        createdAt: new Date().toISOString(),
-        isActive: true
-      };
-      setNewKeySecret(mockKey.secret);
-      setApiKeys([...apiKeys, mockKey]);
-      setNewKeyName('');
+      const response = await userApi.createApiKey(userId, { name: newKeyName });
+      if (response.data?.success) {
+        setNewKeySecret(response.data.data.secret);
+        setNewKeyName('');
+        setCopiedSecret(false);
+        loadApiKeys();
+      } else {
+        setError(response.data?.error || 'Failed to create API key');
+      }
     } catch (err) {
-      setError(err.message || 'Failed to create API key');
+      setError(err.response?.data?.error || err.message || 'Failed to create API key');
     }
   };
 
   const handleDeleteKey = async (keyId) => {
-    if (!window.confirm('Are you sure you want to delete this API key?')) return;
     try {
-      // TODO: Implement API endpoint
-      // await userApi.deleteApiKey(userId, keyId);
+      await userApi.deleteApiKey(userId, keyId);
       setApiKeys(apiKeys.filter(k => k.id !== keyId));
+      setShowDeleteConfirm(null);
     } catch (err) {
-      setError(err.message || 'Failed to delete API key');
+      setError(err.response?.data?.error || err.message || 'Failed to delete API key');
+      setShowDeleteConfirm(null);
     }
   };
 
   const handleSubscribe = async () => {
     try {
-      // TODO: Implement payment integration (Stripe)
-      // For now, show subscription modal
-      if (window.confirm('Subscribe to ARIAssistance for $5/month?\n\nPayment integration (Stripe) coming soon!\n\nThis would:\n1. Open Stripe checkout\n2. Set up recurring payment\n3. Activate subscription')) {
-        // In production, this would call the subscription API
-        // await userApi.subscribe(userId);
-        alert('Subscription payment integration will be implemented with Stripe');
+      const response = await userApi.subscribe(userId);
+      if (response.data?.success) {
+        await loadSubscription();
+        setShowSubscriptionModal(false);
+        setError(null);
+      } else {
+        setError(response.data?.error || 'Failed to subscribe');
       }
     } catch (err) {
-      setError(err.message || 'Failed to subscribe');
+      setError(err.response?.data?.error || err.message || 'Failed to subscribe');
     }
   };
 
   const handleAddCredits = async (amount) => {
     try {
-      // TODO: Implement payment integration
-      alert(`Add $${amount} credits - Payment integration coming soon!`);
+      const response = await userApi.addCredits(userId, amount);
+      if (response.data?.success) {
+        await loadCredits();
+        setShowCreditsModal(false);
+        setError(null);
+      } else {
+        setError(response.data?.error || 'Failed to add credits');
+      }
     } catch (err) {
-      setError(err.message || 'Failed to add credits');
+      setError(err.response?.data?.error || err.message || 'Failed to add credits');
+    }
+  };
+
+  const handleCopySecret = async () => {
+    try {
+      await navigator.clipboard.writeText(newKeySecret);
+      setCopiedSecret(true);
+      setTimeout(() => setCopiedSecret(false), 2000);
+    } catch (err) {
+      setError('Failed to copy to clipboard');
     }
   };
 
@@ -132,7 +143,7 @@ function ApiKeyManagement({ userId = 1 }) {
             <h2>Credits</h2>
             <div className="credits-amount">${credits.toFixed(5)}</div>
             <p className="credits-info">Each API request costs $0.00001 (10 requests = $0.0001)</p>
-            <button className="btn btn-primary" onClick={() => handleAddCredits(10)}>
+            <button className="btn btn-primary" onClick={() => setShowCreditsModal(true)}>
               Add $10 Credits
             </button>
           </div>
@@ -153,7 +164,7 @@ function ApiKeyManagement({ userId = 1 }) {
               <h3>Subscribe to ARIAssistance</h3>
               <p>Get AI-powered suggested replies for your conversations</p>
               <p className="price">$5/month</p>
-              <button className="btn btn-primary" onClick={handleSubscribe}>
+              <button className="btn btn-primary" onClick={() => setShowSubscriptionModal(true)}>
                 Subscribe Now
               </button>
             </div>
@@ -201,12 +212,9 @@ function ApiKeyManagement({ userId = 1 }) {
                     <code className="secret-key">{newKeySecret}</code>
                     <button 
                       className="btn btn-secondary" 
-                      onClick={() => {
-                        navigator.clipboard.writeText(newKeySecret);
-                        alert('Secret key copied to clipboard!');
-                      }}
+                      onClick={handleCopySecret}
                     >
-                      Copy Secret
+                      {copiedSecret ? '✓ Copied!' : 'Copy Secret'}
                     </button>
                   </div>
                   <button 
@@ -265,7 +273,7 @@ function ApiKeyManagement({ userId = 1 }) {
                   <div className="key-actions">
                     <button 
                       className="btn btn-danger btn-sm"
-                      onClick={() => handleDeleteKey(key.id)}
+                      onClick={() => setShowDeleteConfirm(key.id)}
                     >
                       Delete
                     </button>
@@ -275,6 +283,92 @@ function ApiKeyManagement({ userId = 1 }) {
             )}
           </div>
         </div>
+
+        {/* Delete Confirmation Modal */}
+        <Modal
+          isOpen={showDeleteConfirm !== null}
+          onClose={() => setShowDeleteConfirm(null)}
+          title="Delete API Key"
+          size="small"
+        >
+          <p>Are you sure you want to delete this API key? This action cannot be undone.</p>
+          <div className="modal-footer">
+            <button 
+              className="btn btn-secondary" 
+              onClick={() => setShowDeleteConfirm(null)}
+            >
+              Cancel
+            </button>
+            <button 
+              className="btn btn-danger" 
+              onClick={() => handleDeleteKey(showDeleteConfirm)}
+            >
+              Delete
+            </button>
+          </div>
+        </Modal>
+
+        {/* Add Credits Modal */}
+        <Modal
+          isOpen={showCreditsModal}
+          onClose={() => setShowCreditsModal(false)}
+          title="Add Credits"
+          size="small"
+        >
+          <p>Add $10 credits to your account?</p>
+          <p style={{ fontSize: '0.9rem', color: '#666', marginTop: '0.5rem' }}>
+            Payment integration (Stripe) coming soon! This is a mock payment.
+          </p>
+          <div className="modal-footer">
+            <button 
+              className="btn btn-secondary" 
+              onClick={() => setShowCreditsModal(false)}
+            >
+              Cancel
+            </button>
+            <button 
+              className="btn btn-primary" 
+              onClick={() => handleAddCredits(10)}
+            >
+              Add $10 Credits
+            </button>
+          </div>
+        </Modal>
+
+        {/* Subscription Modal */}
+        <Modal
+          isOpen={showSubscriptionModal}
+          onClose={() => setShowSubscriptionModal(false)}
+          title="Subscribe to ARIAssistance"
+          size="medium"
+        >
+          <p>Subscribe to ARIAssistance for $5/month?</p>
+          <p style={{ fontSize: '0.9rem', color: '#666', marginTop: '0.5rem' }}>
+            Payment integration (Stripe) coming soon! This is a mock payment.
+          </p>
+          <p style={{ fontSize: '0.9rem', color: '#666', marginTop: '0.5rem' }}>
+            This would:
+          </p>
+          <ul style={{ fontSize: '0.9rem', color: '#666', marginLeft: '1.5rem' }}>
+            <li>Open Stripe checkout</li>
+            <li>Set up recurring payment</li>
+            <li>Activate subscription</li>
+          </ul>
+          <div className="modal-footer">
+            <button 
+              className="btn btn-secondary" 
+              onClick={() => setShowSubscriptionModal(false)}
+            >
+              Cancel
+            </button>
+            <button 
+              className="btn btn-primary" 
+              onClick={handleSubscribe}
+            >
+              Subscribe Now
+            </button>
+          </div>
+        </Modal>
       </div>
     </div>
   );

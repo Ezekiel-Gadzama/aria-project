@@ -9,6 +9,7 @@ import Navigation from './components/Navigation';
 import Login from './components/Login';
 import ApiKeyManagement from './components/ApiKeyManagement';
 import AnalysisDashboard from './components/AnalysisDashboard';
+import Settings from './components/Settings';
 
 function App() {
   // Load user from localStorage on mount (session persistence)
@@ -120,6 +121,26 @@ function App() {
               element={
                 isAuthenticated ? (
                   <ApiKeyManagement userId={currentUser?.id} />
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              } 
+            />
+            <Route 
+              path="/settings" 
+              element={
+                isAuthenticated ? (
+                  <Settings userId={currentUser?.id} />
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              } 
+            />
+            <Route 
+              path="*" 
+              element={
+                isAuthenticated ? (
+                  <Navigate to="/targets" replace />
                 ) : (
                   <Navigate to="/" replace />
                 )

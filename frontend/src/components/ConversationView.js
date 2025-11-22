@@ -1671,10 +1671,10 @@ function ConversationView({ userId = 1 }) {
                       )}
                       {/* Message status indicators */}
                       {msg.fromUser && (
-                        <span style={{ marginLeft: '4px', fontSize: '0.7rem' }}>
+                        <span style={{ marginLeft: '4px', fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center' }}>
                           {msg.status === 'failed' ? (
                             <span 
-                              style={{ color: '#d32f2f', cursor: 'pointer' }} 
+                              style={{ color: '#d32f2f', cursor: 'pointer', fontSize: '0.9rem' }} 
                               title="Failed to send. Click to retry or delete."
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1687,13 +1687,13 @@ function ConversationView({ userId = 1 }) {
                               •
                             </span>
                           ) : msg.status === 'read' ? (
-                            <span style={{ color: '#4caf50' }} title="Read">✓✓</span>
+                            <span style={{ color: 'white', fontWeight: 'bold' }} title="Read">✓✓</span>
                           ) : msg.status === 'delivered' ? (
-                            <span style={{ color: '#999' }} title="Delivered">✓✓</span>
+                            <span style={{ color: 'white', fontWeight: 'bold' }} title="Delivered">✓✓</span>
                           ) : msg.isPending ? (
-                            <span style={{ color: '#999', opacity: 0.5 }} title="Sending...">⏳</span>
+                            <span style={{ color: 'rgba(255,255,255,0.7)', opacity: 0.7 }} title="Sending...">⏳</span>
                           ) : (
-                            <span style={{ color: '#999' }} title="Sent">✓</span>
+                            <span style={{ color: 'white', fontWeight: 'bold' }} title="Sent">✓✓</span>
                           )}
                         </span>
                       )}

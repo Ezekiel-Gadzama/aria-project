@@ -37,7 +37,13 @@ function Navigation({ isAuthenticated, onLogout }) {
           to="/api-keys" 
           className={`nav-link ${location.pathname.startsWith('/api-keys') ? 'active' : ''}`}
         >
-          API Keys
+          Payments
+        </Link>
+        <Link 
+          to="/settings" 
+          className={`nav-link ${location.pathname.startsWith('/settings') ? 'active' : ''}`}
+        >
+          Settings
         </Link>
         <button onClick={onLogout} className="btn btn-secondary">
           Logout

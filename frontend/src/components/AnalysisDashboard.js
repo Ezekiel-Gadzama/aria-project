@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { targetApi } from '../services/api';
+import { targetApi, platformApi } from '../services/api';
 import './AnalysisDashboard.css';
 
 function AnalysisDashboard({ userId = 1 }) {
@@ -12,12 +12,30 @@ function AnalysisDashboard({ userId = 1 }) {
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [analysisData, setAnalysisData] = useState(null);
   const [targets, setTargets] = useState([]);
-  const [platforms, setPlatforms] = useState([]);
+  const [registeredPlatforms, setRegisteredPlatforms] = useState([]);
+
+  useEffect(() => {
+    loadRegisteredPlatforms();
+    loadTargets();
+  }, []);
 
   useEffect(() => {
     loadAnalysisData();
-    loadTargets();
   }, [selectedPlatform, selectedCategory, targetId]);
+
+  const loadRegisteredPlatforms = async () => {
+    try {
+      const response = await platformApi.getAccounts(userId);
+      if (response.data?.success) {
+        const accounts = response.data.data || [];
+        // Extract unique platforms from registered accounts
+        const uniquePlatforms = [...new Set(accounts.map(acc => acc.platform))];
+        setRegisteredPlatforms(uniquePlatforms);
+      }
+    } catch (err) {
+      console.error('Failed to load registered platforms:', err);
+    }
+  };
 
   const loadTargets = async () => {
     try {
@@ -33,50 +51,19 @@ function AnalysisDashboard({ userId = 1 }) {
   const loadAnalysisData = async () => {
     try {
       setLoading(true);
-      // TODO: Implement API endpoint
-      // const response = await targetApi.getAnalysis(userId, targetId, {
-      //   platform: selectedPlatform,
-      //   category: selectedCategory
-      // });
+      setError(null);
+      const response = await targetApi.getAnalysis(userId, targetId ? parseInt(targetId) : null, {
+        platform: selectedPlatform !== 'all' ? selectedPlatform : null,
+        category: selectedCategory !== 'all' ? selectedCategory : null
+      });
       
-      // Mock data
-      const mockData = {
-        sentiment: {
-          average: 0.65,
-          trend: 'positive',
-          withTargets: 0.72,
-          withoutTargets: 0.58,
-          improvement: 0.14
-        },
-        engagement: {
-          score: 0.78,
-          responsiveness: 0.82,
-          messageLength: 45,
-          initiationFrequency: 0.65
-        },
-        disinterest: {
-          detected: false,
-          signs: []
-        },
-        conversationFlow: {
-          avgResponseTime: 120,
-          turnTaking: 0.75
-        },
-        goalProgression: {
-          score: 0.68,
-          status: 'in_progress'
-        },
-        topTargets: [
-          { id: 1, name: 'Target 1', score: 0.85 },
-          { id: 2, name: 'Target 2', score: 0.82 },
-          { id: 3, name: 'Target 3', score: 0.79 },
-          { id: 4, name: 'Target 4', score: 0.76 },
-          { id: 5, name: 'Target 5', score: 0.73 }
-        ]
-      };
-      setAnalysisData(mockData);
+      if (response.data?.success) {
+        setAnalysisData(response.data.data);
+      } else {
+        setError(response.data?.error || 'Failed to load analysis data');
+      }
     } catch (err) {
-      setError(err.message || 'Failed to load analysis data');
+      setError(err.response?.data?.error || err.message || 'Failed to load analysis data');
     } finally {
       setLoading(false);
     }
@@ -88,13 +75,14 @@ function AnalysisDashboard({ userId = 1 }) {
 
   const isTargetSpecific = !!targetId;
   const target = targets.find(t => t.id === parseInt(targetId));
+  const targetName = target?.name || target?.alias || 'Target';
 
   return (
     <div className="analysis-dashboard">
       <div className="container">
         <div className="dashboard-header">
           <h1>
-            {isTargetSpecific ? `Analysis: ${target?.name || 'Target'}` : 'General Analysis'}
+            {isTargetSpecific ? `Analysis: ${targetName}` : 'General Analysis'}
           </h1>
           <div className="header-actions">
             {isTargetSpecific ? (
@@ -126,9 +114,11 @@ function AnalysisDashboard({ userId = 1 }) {
               onChange={(e) => setSelectedPlatform(e.target.value)}
             >
               <option value="all">All Platforms</option>
-              <option value="TELEGRAM">Telegram</option>
-              <option value="WHATSAPP">WhatsApp</option>
-              <option value="INSTAGRAM">Instagram</option>
+              {registeredPlatforms.map((platform) => (
+                <option key={platform} value={platform}>
+                  {platform}
+                </option>
+              ))}
             </select>
           </div>
           <div className="filter-group">
@@ -249,24 +239,34 @@ function AnalysisDashboard({ userId = 1 }) {
               </div>
             </div>
 
-            {/* Top 5 Leaderboard (only for general analysis) */}
-            {!isTargetSpecific && (
+            {/* Top Target Users Leaderboard (only for general analysis) */}
+            {!isTargetSpecific && analysisData.topTargets && analysisData.topTargets.length > 0 && (
               <div className="metric-card">
-                <h2>Top 5 Target Users</h2>
+                <h2>
+                  {analysisData.topTargets.length >= 5 
+                    ? 'Top 5 Target Users' 
+                    : 'Top Target Users'}
+                </h2>
                 <div className="leaderboard">
-                  {analysisData.topTargets.map((target, idx) => (
-                    <div key={target.id} className="leaderboard-item">
-                      <span className="rank">#{idx + 1}</span>
-                      <span className="name">{target.name}</span>
-                      <span className="score">{target.score.toFixed(2)}</span>
-                      <button 
-                        className="btn btn-sm btn-secondary"
-                        onClick={() => navigate(`/analysis/${target.id}`)}
-                      >
-                        View Details
-                      </button>
-                    </div>
-                  ))}
+                  {analysisData.topTargets.map((targetItem, idx) => {
+                    // Find the actual target from the targets list to get the name
+                    const actualTarget = targets.find(t => t.id === targetItem.id);
+                    const displayName = actualTarget?.name || actualTarget?.alias || targetItem.name || `Target ${idx + 1}`;
+                    
+                    return (
+                      <div key={targetItem.id} className="leaderboard-item">
+                        <span className="rank">#{idx + 1}</span>
+                        <span className="name">{displayName}</span>
+                        <span className="score">{targetItem.score.toFixed(2)}</span>
+                        <button 
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => navigate(`/analysis/${targetItem.id}`)}
+                        >
+                          View Details
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}

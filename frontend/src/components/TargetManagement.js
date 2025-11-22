@@ -53,8 +53,9 @@ function TargetManagement({ userId = 1 }) {
             const response = await targetApi.checkOnlineStatus(target.id, userId);
             if (response.data?.success) {
               const data = response.data.data;
+              // Backend returns "isOnline" not "online"
               statuses[target.id] = {
-                online: data.online === true,
+                online: data.isOnline === true || data.online === true,
                 lastActive: data.lastActive || null
               };
             }
@@ -592,28 +593,37 @@ function TargetManagement({ userId = 1 }) {
                     )}
                     {target.name}
                     {onlineStatus[target.id]?.online ? (
-                      <span className="online-indicator" title="Online" style={{ 
-                        display: 'inline-block',
-                        width: '8px',
-                        height: '8px',
-                        borderRadius: '50%',
-                        backgroundColor: '#4caf50',
-                        boxShadow: '0 0 0 2px rgba(76, 175, 80, 0.3)',
-                        animation: 'pulse 2s infinite'
-                      }}></span>
+                      <>
+                        <span className="online-indicator" title="Online" style={{ 
+                          display: 'inline-block',
+                          width: '8px',
+                          height: '8px',
+                          borderRadius: '50%',
+                          backgroundColor: '#4caf50',
+                          boxShadow: '0 0 0 2px rgba(76, 175, 80, 0.3)',
+                          animation: 'pulse 2s infinite',
+                          marginLeft: '0.5rem'
+                        }}></span>
+                        <span style={{ fontSize: '0.8rem', color: '#4caf50', marginLeft: '0.5rem' }}>
+                          online
+                        </span>
+                      </>
                     ) : (
-                      <span className="offline-indicator" title={onlineStatus[target.id]?.lastActive || "Offline"} style={{ 
-                        display: 'inline-block',
-                        width: '8px',
-                        height: '8px',
-                        borderRadius: '50%',
-                        backgroundColor: '#999'
-                      }}></span>
-                    )}
-                    {!onlineStatus[target.id]?.online && onlineStatus[target.id]?.lastActive && (
-                      <span style={{ fontSize: '0.75rem', color: '#666' }}>
-                        {onlineStatus[target.id].lastActive}
-                      </span>
+                      <>
+                        <span className="offline-indicator" title={onlineStatus[target.id]?.lastActive || "Offline"} style={{ 
+                          display: 'inline-block',
+                          width: '8px',
+                          height: '8px',
+                          borderRadius: '50%',
+                          backgroundColor: '#999',
+                          marginLeft: '0.5rem'
+                        }}></span>
+                        {onlineStatus[target.id]?.lastActive && (
+                          <span style={{ fontSize: '0.75rem', color: '#666', marginLeft: '0.5rem' }}>
+                            {onlineStatus[target.id].lastActive}
+                          </span>
+                        )}
+                      </>
                     )}
                   </h3>
                   <button
