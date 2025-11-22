@@ -965,7 +965,7 @@ function ConversationView({ userId = 1 }) {
                           color: '#666'
                         }}
                       >
-                        Replying to a message not in recent 50 messages. Check message directly from {target?.platform || 'telegram'}
+                        Deleted message
                       </div>
                     )}
                     <div className="message-content" data-message-id={msg.messageId}>
