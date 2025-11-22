@@ -10,6 +10,7 @@ import com.aria.service.UserService;
 import com.aria.storage.DatabaseManager;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.util.Map;
 
 /**
  * REST API Controller for conversation management
@@ -137,22 +138,159 @@ public class ConversationController {
                             : "Ezekiel(23)")) {
 
                 Integer dialogRowId = null;
-                try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                        "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' AND name = ? ORDER BY id DESC LIMIT 1")) {
-                    ps.setInt(1, currentUserId);
-                    ps.setInt(2, selected.getPlatformId());
-                    ps.setString(3, targetUser.getName());
-                    try (java.sql.ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) dialogRowId = rs.getInt(1);
+                
+                // Strategy 1: Try to get entity ID from Telegram and match by dialog_id (peer ID) - most reliable
+                if (selected.getUsername() != null && !selected.getUsername().isEmpty() && selected.getPlatform() == com.aria.platform.Platform.TELEGRAM) {
+                    try {
+                        // Get platform account for API credentials
+                        DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(selected.getPlatformId());
+                        if (acc != null) {
+                            String usernameForLookup = selected.getUsername().startsWith("@") ? 
+                                selected.getUsername().substring(1) : selected.getUsername();
+                            
+                            // Get entity ID from Telegram
+                            ProcessBuilder pb = new ProcessBuilder("python3", "scripts/telethon/get_entity_id.py", usernameForLookup);
+                            Map<String, String> env = pb.environment();
+                            env.put("TELEGRAM_API_ID", acc.apiId);
+                            env.put("TELEGRAM_API_HASH", acc.apiHash);
+                            env.put("TELEGRAM_PHONE", acc.number);
+                            if (acc.username != null && !acc.username.isEmpty()) {
+                                env.put("TELEGRAM_USERNAME", acc.username);
+                            }
+                            // Build session path (same as in TelegramConnector)
+                            String sessionPath = "Session/telegramConnector/user_" + (acc.username != null && !acc.username.isEmpty() ? acc.username.replace("@", "") : acc.number.replace("+", "")) + "/user_" + (acc.username != null && !acc.username.isEmpty() ? acc.username.replace("@", "") : acc.number.replace("+", ""));
+                            env.put("TELETHON_SESSION_PATH", sessionPath);
+                            pb.redirectErrorStream(true);
+                            Process p = pb.start();
+                            StringBuilder output = new StringBuilder();
+                            try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                                    new java.io.InputStreamReader(p.getInputStream()))) {
+                                String line;
+                                while ((line = reader.readLine()) != null) {
+                                    output.append(line).append("\n");
+                                }
+                            }
+                            int exit = p.waitFor();
+                            if (exit == 0) {
+                                String outputStr = output.toString().trim();
+                                try {
+                                    com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(outputStr).getAsJsonObject();
+                                    if (json.has("success") && json.get("success").getAsBoolean() && json.has("entityId")) {
+                                        Long entityId = json.get("entityId").getAsLong();
+                                        // Try to find dialog by entity ID (dialog_id in dialogs table)
+                                        try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                                "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND dialog_id = ? LIMIT 1")) {
+                                            ps.setInt(1, currentUserId);
+                                            ps.setInt(2, selected.getPlatformId());
+                                            ps.setLong(3, entityId);
+                                            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                                if (rs.next()) {
+                                                    dialogRowId = rs.getInt(1);
+                                                    System.out.println("Found dialog by entity ID: " + entityId);
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch (Exception e) {
+                                    System.err.println("Failed to parse entity ID response: " + e.getMessage());
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        System.err.println("Failed to get entity ID from Telegram: " + e.getMessage());
+                        // Continue with other strategies
                     }
                 }
+                
+                // Strategy 2: Try to find existing dialog by name (case-insensitive)
                 if (dialogRowId == null) {
-                    return ResponseEntity.ok(ApiResponse.success("OK", out));
+                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                            "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' AND LOWER(name) = LOWER(?) ORDER BY id DESC LIMIT 1")) {
+                        ps.setInt(1, currentUserId);
+                        ps.setInt(2, selected.getPlatformId());
+                        ps.setString(3, targetUser.getName());
+                        try (java.sql.ResultSet rs = ps.executeQuery()) {
+                            if (rs.next()) dialogRowId = rs.getInt(1);
+                        }
+                    }
+                }
+                
+                // Strategy 3: Try to find by username (case-insensitive, with/without @)
+                if (dialogRowId == null && selected.getUsername() != null && !selected.getUsername().isEmpty()) {
+                    String usernameToMatch = selected.getUsername().startsWith("@") ? 
+                        selected.getUsername().substring(1) : selected.getUsername();
+                    // Try exact match (case-insensitive)
+                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                            "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' AND (LOWER(name) = LOWER(?) OR LOWER(name) = LOWER(?)) ORDER BY id DESC LIMIT 1")) {
+                        ps.setInt(1, currentUserId);
+                        ps.setInt(2, selected.getPlatformId());
+                        ps.setString(3, usernameToMatch);
+                        ps.setString(4, "@" + usernameToMatch);
+                        try (java.sql.ResultSet rs = ps.executeQuery()) {
+                            if (rs.next()) dialogRowId = rs.getInt(1);
+                        }
+                    }
+                    // Try partial match (contains)
+                    if (dialogRowId == null) {
+                        try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' AND (LOWER(name) LIKE ? OR LOWER(name) LIKE ?) ORDER BY id DESC LIMIT 1")) {
+                            ps.setInt(1, currentUserId);
+                            ps.setInt(2, selected.getPlatformId());
+                            ps.setString(3, "%" + usernameToMatch.toLowerCase() + "%");
+                            ps.setString(4, "%@" + usernameToMatch.toLowerCase() + "%");
+                            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                if (rs.next()) dialogRowId = rs.getInt(1);
+                            }
+                        }
+                    }
+                }
+                
+                // Strategy 4: If still not found, list all dialogs and find best match
+                if (dialogRowId == null) {
+                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                            "SELECT id, name FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' ORDER BY last_synced DESC")) {
+                        ps.setInt(1, currentUserId);
+                        ps.setInt(2, selected.getPlatformId());
+                        try (java.sql.ResultSet rs = ps.executeQuery()) {
+                            String targetNameLower = targetUser.getName().toLowerCase();
+                            String usernameLower = selected.getUsername() != null ? selected.getUsername().toLowerCase().replace("@", "") : "";
+                            while (rs.next()) {
+                                String dialogName = rs.getString("name");
+                                String dialogNameLower = dialogName != null ? dialogName.toLowerCase() : "";
+                                // Check if dialog name matches target name or username
+                                if ((dialogNameLower.contains(targetNameLower) || targetNameLower.contains(dialogNameLower)) ||
+                                    (!usernameLower.isEmpty() && (dialogNameLower.contains(usernameLower) || dialogNameLower.contains("@" + usernameLower)))) {
+                                    dialogRowId = rs.getInt("id");
+                                    System.out.println("Found dialog by fuzzy match: " + dialogName);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if (dialogRowId == null) {
+                    System.err.println("Dialog not found for targetUserId=" + targetUserId + ", userId=" + currentUserId + ", platformAccountId=" + selected.getPlatformId() + ", name=" + targetUser.getName() + ", username=" + (selected.getUsername() != null ? selected.getUsername() : "null"));
+                    // Log all available dialogs for debugging
+                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                            "SELECT id, name, dialog_id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' ORDER BY last_synced DESC LIMIT 10")) {
+                        ps.setInt(1, currentUserId);
+                        ps.setInt(2, selected.getPlatformId());
+                        try (java.sql.ResultSet rs = ps.executeQuery()) {
+                            System.err.println("Available dialogs for this platform account:");
+                            while (rs.next()) {
+                                System.err.println("  - Dialog ID: " + rs.getInt("id") + ", Name: " + rs.getString("name") + ", Telegram ID: " + rs.getLong("dialog_id"));
+                            }
+                        }
+                    } catch (Exception e) {
+                        System.err.println("Error listing dialogs: " + e.getMessage());
+                    }
+                    return ResponseEntity.ok(ApiResponse.success("OK", out)); // Return empty list if dialog not found
                 }
 
                 try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                        "SELECT m.message_id, m.sender, m.text, m.timestamp, m.has_media, m.reference_id, " +
-                                "(SELECT id FROM media WHERE message_id = m.id LIMIT 1) as media_id " +
+                        "SELECT m.id, m.message_id, m.sender, m.text, m.timestamp, m.has_media, m.reference_id, " +
+                                "CASE WHEN m.text IS NOT NULL AND EXISTS (SELECT 1 FROM messages m2 WHERE m2.dialog_id = m.dialog_id AND m2.message_id = m.message_id AND m2.timestamp < m.timestamp) THEN TRUE ELSE FALSE END as edited " +
                                 "FROM messages m WHERE m.dialog_id = ? " +
                                 "ORDER BY m.message_id DESC LIMIT ?")) {
                     ps.setInt(1, dialogRowId);
@@ -160,26 +298,44 @@ public class ConversationController {
                     try (java.sql.ResultSet rs = ps.executeQuery()) {
                         while (rs.next()) {
                             java.util.Map<String, Object> row = new java.util.HashMap<>();
-                            row.put("messageId", rs.getInt(1));
-                            row.put("fromUser", "me".equalsIgnoreCase(rs.getString(2)));
-                            row.put("text", rs.getString(3));
-                            row.put("timestamp", rs.getTimestamp(4) != null ? rs.getTimestamp(4).getTime() : null);
-                            row.put("hasMedia", rs.getBoolean(5));
+                            int internalMessageId = rs.getInt(1); // Get internal message ID
+                            row.put("messageId", rs.getInt(2)); // Telegram message_id
+                            row.put("fromUser", "me".equalsIgnoreCase(rs.getString(3)));
                             
-                            // Get reference_id (column 6)
-                            Long referenceId = (Long) rs.getObject(6);
+                            // Decrypt message text
+                            String encryptedText = rs.getString(4);
+                            String decryptedText = null;
+                            if (encryptedText != null && !encryptedText.isEmpty()) {
+                                try {
+                                    decryptedText = com.aria.storage.SecureStorage.decrypt(encryptedText);
+                                } catch (Exception e) {
+                                    System.err.println("Failed to decrypt message text: " + e.getMessage());
+                                    // If decryption fails, return empty string instead of encrypted text
+                                    // This prevents showing encrypted base64 strings to users
+                                    decryptedText = "";
+                                }
+                            }
+                            row.put("text", decryptedText);
+                            row.put("timestamp", rs.getTimestamp(5) != null ? rs.getTimestamp(5).getTime() : null);
+                            row.put("hasMedia", rs.getBoolean(6));
+                            
+                            // Get reference_id (column 7)
+                            Long referenceId = (Long) rs.getObject(7);
                             if (referenceId != null && !rs.wasNull()) {
                                 row.put("referenceId", referenceId);
                             }
-                            // Get media_id (column 7 - subquery result)
-                            Object mediaId = rs.getObject(7);
-                            if (mediaId != null) {
-                                row.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + rs.getInt(1));
-                                
-                                // Get media metadata (fileName, mimeType) from media table
+                            
+                            // Get edited flag (column 8) - check if message was edited by comparing text with raw_json
+                            // For now, we'll check if the message text differs from what would be in the original raw_json
+                            // Since we don't have an edited column, we'll mark all as false and let the edit endpoint set it
+                            row.put("edited", false);
+                            
+                            // Get media metadata (fileName, mimeType, fileSize) from media table using internal message ID
+                            if (rs.getBoolean(6)) { // hasMedia
+                                row.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + rs.getInt(2));
                                 try (java.sql.PreparedStatement mediaPs = conn.prepareStatement(
-                                        "SELECT file_name, mime_type FROM media WHERE message_id = ? ORDER BY id ASC LIMIT 1")) {
-                                    mediaPs.setInt(1, (Integer) mediaId);
+                                        "SELECT file_name, mime_type, file_size FROM media WHERE message_id = ? ORDER BY id ASC LIMIT 1")) {
+                                    mediaPs.setInt(1, internalMessageId); // Use internal message ID
                                     try (java.sql.ResultSet mediaRs = mediaPs.executeQuery()) {
                                         if (mediaRs.next()) {
                                             String fn = mediaRs.getString(1);
@@ -189,6 +345,10 @@ public class ConversationController {
                                             String mt = mediaRs.getString(2);
                                             if (mt != null && !mt.isEmpty()) {
                                                 row.put("mimeType", mt);
+                                            }
+                                            Long fs = (Long) mediaRs.getObject(3);
+                                            if (fs != null && !mediaRs.wasNull()) {
+                                                row.put("fileSize", fs);
                                             }
                                         }
                                     }
@@ -717,33 +877,39 @@ public class ConversationController {
                     return ResponseEntity.badRequest().body(ApiResponse.error("New text is required for non-media messages"));
                 }
 
-                // Call connector to edit
-                com.aria.platform.PlatformConnector connector =
+                // Call connector to edit - use direct cast like in respond method
+                com.aria.platform.telegram.TelegramConnector connector =
+                        (com.aria.platform.telegram.TelegramConnector)
                         com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
-                if (connector instanceof com.aria.platform.telegram.TelegramConnector tg) {
-                    boolean ok = tg.editMessage(selected.getUsername(), lastMsgId, newText != null ? newText : "");
-                    if (ok) {
-                        // If it has media, get media metadata
-                        if (hasMedia) {
-                            try (java.sql.PreparedStatement mediaPs = conn.prepareStatement(
-                                    "SELECT me.file_name, me.mime_type FROM media me " +
-                                    "JOIN messages m ON me.message_id = m.id " +
-                                    "WHERE m.dialog_id = ? AND m.message_id = ? LIMIT 1")) {
-                                mediaPs.setInt(1, dialogsRowId);
-                                mediaPs.setInt(2, lastMsgId);
-                                try (java.sql.ResultSet rs = mediaPs.executeQuery()) {
-                                    if (rs.next()) {
-                                        fileName = rs.getString(1);
-                                        mimeType = rs.getString(2);
-                                    }
+                if (connector == null) {
+                    return ResponseEntity.internalServerError().body(ApiResponse.error("Failed to create connector"));
+                }
+                boolean ok = connector.editMessage(selected.getUsername(), lastMsgId, newText != null ? newText : "");
+                if (ok) {
+                    // If it has media, get media metadata
+                    if (hasMedia) {
+                        try (java.sql.PreparedStatement mediaPs = conn.prepareStatement(
+                                "SELECT me.file_name, me.mime_type FROM media me " +
+                                "JOIN messages m ON me.message_id = m.id " +
+                                "WHERE m.dialog_id = ? AND m.message_id = ? LIMIT 1")) {
+                            mediaPs.setInt(1, dialogsRowId);
+                            mediaPs.setInt(2, lastMsgId);
+                            try (java.sql.ResultSet rs = mediaPs.executeQuery()) {
+                                if (rs.next()) {
+                                    fileName = rs.getString(1);
+                                    mimeType = rs.getString(2);
                                 }
                             }
-                            // If media metadata wasn't found in database, the message still has media
-                            // (might have been sent via app but metadata not saved yet, or ingested before media download)
-                            // We'll still return hasMedia=true so frontend can display it properly
                         }
-                        
-                        // Update the message in the database after successful edit in Telegram (encrypt it like saveMessage does)
+                        // If media metadata wasn't found in database, the message still has media
+                        // (might have been sent via app but metadata not saved yet, or ingested before media download)
+                        // We'll still return hasMedia=true so frontend can display it properly
+                    }
+                    
+                    // Update the message in the database after successful edit in Telegram (encrypt it like saveMessage does)
+                    // Use transaction to ensure atomic update
+                    conn.setAutoCommit(false);
+                    try {
                         try (java.sql.PreparedStatement ps = conn.prepareStatement(
                                 "UPDATE messages SET text = ? WHERE dialog_id = ? AND message_id = ?")) {
                             String encryptedText = newText != null && !newText.isEmpty() ? 
@@ -751,39 +917,66 @@ public class ConversationController {
                             ps.setString(1, encryptedText);
                             ps.setInt(2, dialogsRowId);
                             ps.setInt(3, lastMsgId);
-                            ps.executeUpdate();
-                        } catch (Exception e) {
-                            // Log but don't fail - message was edited in Telegram
-                            System.err.println("Warning: Failed to update message in database: " + e.getMessage());
+                            int updated = ps.executeUpdate();
+                            
+                            // Commit the transaction
+                            conn.commit();
+                            System.out.println("Database transaction committed for message edit (editLast): messageId=" + lastMsgId + ", rowsUpdated=" + updated);
                         }
-                        
-                        // Return updated message data
-                        java.util.Map<String, Object> messageData = new java.util.HashMap<>();
-                        messageData.put("messageId", lastMsgId);
-                        messageData.put("fromUser", true);
-                        messageData.put("text", newText != null && !newText.isEmpty() ? newText : null);
-                        messageData.put("edited", true);
-                        messageData.put("timestamp", System.currentTimeMillis());
-                        messageData.put("hasMedia", hasMedia);
-                        if (hasMedia) {
-                            // Always include mediaDownloadUrl when hasMedia is true
-                            messageData.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + lastMsgId);
-                            // Include fileName and mimeType if available (may be null if media metadata not in DB yet)
-                            if (fileName != null) {
-                                messageData.put("fileName", fileName);
-                            }
-                            if (mimeType != null) {
-                                messageData.put("mimeType", mimeType);
-                            }
+                    } catch (Exception e) {
+                        // Rollback on error
+                        try {
+                            conn.rollback();
+                            System.err.println("Rolled back transaction due to error: " + e.getMessage());
+                        } catch (Exception rollbackEx) {
+                            System.err.println("Failed to rollback: " + rollbackEx.getMessage());
                         }
-                        
-                        return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
-                    } else {
-                        return ResponseEntity.internalServerError().body(ApiResponse.error("Failed to edit message"));
+                        // Log but don't fail - message was edited in Telegram
+                        System.err.println("Warning: Failed to update message in database: " + e.getMessage());
+                    } finally {
+                        conn.setAutoCommit(true); // Restore auto-commit
                     }
+                    
+                    // Return updated message data
+                    java.util.Map<String, Object> messageData = new java.util.HashMap<>();
+                    messageData.put("messageId", lastMsgId);
+                    messageData.put("fromUser", true);
+                    messageData.put("text", newText != null && !newText.isEmpty() ? newText : null);
+                    messageData.put("edited", true);
+                    // Keep original timestamp, don't update to current time when editing
+                    try (java.sql.PreparedStatement tsPs = conn.prepareStatement(
+                            "SELECT timestamp FROM messages WHERE dialog_id = ? AND message_id = ?")) {
+                        tsPs.setInt(1, dialogsRowId);
+                        tsPs.setInt(2, lastMsgId);
+                        try (java.sql.ResultSet tsRs = tsPs.executeQuery()) {
+                            if (tsRs.next() && tsRs.getTimestamp(1) != null) {
+                                messageData.put("timestamp", tsRs.getTimestamp(1).getTime());
+                            } else {
+                                messageData.put("timestamp", System.currentTimeMillis());
+                            }
+                        }
+                    } catch (Exception e) {
+                        messageData.put("timestamp", System.currentTimeMillis());
+                    }
+                    messageData.put("hasMedia", hasMedia);
+                    if (hasMedia) {
+                        // Always include mediaDownloadUrl when hasMedia is true
+                        messageData.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + lastMsgId);
+                        // Include fileName and mimeType if available (may be null if media metadata not in DB yet)
+                        if (fileName != null) {
+                            messageData.put("fileName", fileName);
+                        }
+                        if (mimeType != null) {
+                            messageData.put("mimeType", mimeType);
+                        }
+                    }
+                    
+                    return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
                 } else {
-                    return ResponseEntity.internalServerError().body(ApiResponse.error("Connector not available"));
+                    return ResponseEntity.internalServerError().body(ApiResponse.error("Failed to edit message"));
                 }
+            } catch (Exception e) {
+                return ResponseEntity.internalServerError().body(ApiResponse.error("Error editing message: " + e.getMessage()));
             }
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body(ApiResponse.error("Error editing message: " + e.getMessage()));
@@ -817,61 +1010,65 @@ public class ConversationController {
             }
             DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(selected.getPlatformId());
             if (acc == null) return ResponseEntity.badRequest().body(ApiResponse.error("Platform account not found"));
-            com.aria.platform.PlatformConnector connector =
+            // Use direct cast like in respond method
+            com.aria.platform.telegram.TelegramConnector connector =
+                    (com.aria.platform.telegram.TelegramConnector)
                     com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
-            if (connector instanceof com.aria.platform.telegram.TelegramConnector tg) {
-                // Check if message has media first (declare outside try blocks)
-                boolean hasMedia = false;
-                String fileName = null;
-                String mimeType = null;
+            if (connector == null) {
+                return ResponseEntity.internalServerError().body(ApiResponse.error("Failed to create connector"));
+            }
+            // Check if message has media first (declare outside try blocks)
+            boolean hasMedia = false;
+            String fileName = null;
+            String mimeType = null;
+            
+            // Check if message has media before editing
+            try (java.sql.Connection checkConn = java.sql.DriverManager.getConnection(
+                    System.getenv("DATABASE_URL") != null
+                            ? System.getenv("DATABASE_URL")
+                            : "jdbc:postgresql://localhost:5432/aria",
+                    System.getenv("DATABASE_USER") != null
+                            ? System.getenv("DATABASE_USER")
+                            : "postgres",
+                    System.getenv("DATABASE_PASSWORD") != null
+                            ? System.getenv("DATABASE_PASSWORD")
+                            : "Ezekiel(23)")) {
                 
-                // Check if message has media before editing
-                try (java.sql.Connection checkConn = java.sql.DriverManager.getConnection(
-                        System.getenv("DATABASE_URL") != null
-                                ? System.getenv("DATABASE_URL")
-                                : "jdbc:postgresql://localhost:5432/aria",
-                        System.getenv("DATABASE_USER") != null
-                                ? System.getenv("DATABASE_USER")
-                                : "postgres",
-                        System.getenv("DATABASE_PASSWORD") != null
-                                ? System.getenv("DATABASE_PASSWORD")
-                                : "Ezekiel(23)")) {
-                    
-                    Integer dialogsRowId = null;
-                    try (java.sql.PreparedStatement ps = checkConn.prepareStatement(
-                            "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' AND name = ? ORDER BY id DESC LIMIT 1")) {
-                        ps.setInt(1, currentUserId);
-                        ps.setInt(2, selected.getPlatformId());
-                        ps.setString(3, targetUser.getName());
-                        try (java.sql.ResultSet rs = ps.executeQuery()) {
-                            if (rs.next()) dialogsRowId = rs.getInt(1);
-                        }
+                Integer dialogsRowId = null;
+                try (java.sql.PreparedStatement ps = checkConn.prepareStatement(
+                        "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' AND name = ? ORDER BY id DESC LIMIT 1")) {
+                    ps.setInt(1, currentUserId);
+                    ps.setInt(2, selected.getPlatformId());
+                    ps.setString(3, targetUser.getName());
+                    try (java.sql.ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) dialogsRowId = rs.getInt(1);
                     }
-                    
-                    if (dialogsRowId != null) {
-                        try (java.sql.PreparedStatement checkPs = checkConn.prepareStatement(
-                                "SELECT m.has_media FROM messages m WHERE m.dialog_id = ? AND m.message_id = ?")) {
-                            checkPs.setInt(1, dialogsRowId);
-                            checkPs.setInt(2, messageId);
-                            try (java.sql.ResultSet rs = checkPs.executeQuery()) {
-                                if (rs.next()) {
-                                    hasMedia = rs.getBoolean(1);
-                                }
+                }
+                
+                if (dialogsRowId != null) {
+                    try (java.sql.PreparedStatement checkPs = checkConn.prepareStatement(
+                            "SELECT m.has_media FROM messages m WHERE m.dialog_id = ? AND m.message_id = ?")) {
+                        checkPs.setInt(1, dialogsRowId);
+                        checkPs.setInt(2, messageId);
+                        try (java.sql.ResultSet rs = checkPs.executeQuery()) {
+                            if (rs.next()) {
+                                hasMedia = rs.getBoolean(1);
                             }
                         }
                     }
-                } catch (Exception e) {
-                    // Log but continue - we'll check again after editing
-                    System.err.println("Warning: Failed to check if message has media: " + e.getMessage());
                 }
-                
-                // Allow empty text only for media messages (to remove caption)
-                if (!hasMedia && (newText == null || newText.trim().isEmpty())) {
-                    return ResponseEntity.badRequest().body(ApiResponse.error("New text is required for non-media messages"));
-                }
-                
-                boolean ok = tg.editMessage(selected.getUsername(), messageId, newText != null ? newText : "");
-                if (ok) {
+            } catch (Exception e) {
+                // Log but continue - we'll check again after editing
+                System.err.println("Warning: Failed to check if message has media: " + e.getMessage());
+            }
+            
+            // Allow empty text only for media messages (to remove caption)
+            if (!hasMedia && (newText == null || newText.trim().isEmpty())) {
+                return ResponseEntity.badRequest().body(ApiResponse.error("New text is required for non-media messages"));
+            }
+            
+            boolean ok = connector.editMessage(selected.getUsername(), messageId, newText != null ? newText : "");
+            if (ok) {
                     // Update the message in the database after successful edit in Telegram
                     try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
                             System.getenv("DATABASE_URL") != null
@@ -931,47 +1128,96 @@ public class ConversationController {
                             }
                             
                             // Update message text in database (encrypt it like saveMessage does)
-                            try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                                    "UPDATE messages SET text = ? WHERE dialog_id = ? AND message_id = ?")) {
-                                String encryptedText = newText != null && !newText.isEmpty() ? 
-                                    com.aria.storage.SecureStorage.encrypt(newText) : null;
-                                ps.setString(1, encryptedText);
-                                ps.setInt(2, dialogsRowId);
-                                ps.setInt(3, messageId);
-                                ps.executeUpdate();
+                            // Use transaction to ensure atomic update
+                            conn.setAutoCommit(false);
+                            try {
+                                try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                        "UPDATE messages SET text = ? WHERE dialog_id = ? AND message_id = ?")) {
+                                    String encryptedText = newText != null && !newText.isEmpty() ? 
+                                        com.aria.storage.SecureStorage.encrypt(newText) : null;
+                                    ps.setString(1, encryptedText);
+                                    ps.setInt(2, dialogsRowId);
+                                    ps.setInt(3, messageId);
+                                    int updated = ps.executeUpdate();
+                                    
+                                    // Commit the transaction
+                                    conn.commit();
+                                    System.out.println("Database transaction committed for message edit: messageId=" + messageId + ", rowsUpdated=" + updated);
+                                }
+                            } catch (Exception e) {
+                                // Rollback on error
+                                try {
+                                    conn.rollback();
+                                    System.err.println("Rolled back transaction due to error: " + e.getMessage());
+                                } catch (Exception rollbackEx) {
+                                    System.err.println("Failed to rollback: " + rollbackEx.getMessage());
+                                }
+                                throw e; // Re-throw to be caught by outer catch
+                            } finally {
+                                conn.setAutoCommit(true); // Restore auto-commit
                             }
+                            
+                            // Return updated message data
+                            java.util.Map<String, Object> messageData = new java.util.HashMap<>();
+                            messageData.put("messageId", messageId);
+                            messageData.put("fromUser", true);
+                            messageData.put("text", newText != null && !newText.isEmpty() ? newText : null);
+                            messageData.put("edited", true);
+                            // Keep original timestamp, don't update to current time when editing
+                            try (java.sql.PreparedStatement tsPs = conn.prepareStatement(
+                                    "SELECT timestamp FROM messages WHERE dialog_id = ? AND message_id = ?")) {
+                                tsPs.setInt(1, dialogsRowId);
+                                tsPs.setInt(2, messageId);
+                                try (java.sql.ResultSet tsRs = tsPs.executeQuery()) {
+                                    if (tsRs.next() && tsRs.getTimestamp(1) != null) {
+                                        messageData.put("timestamp", tsRs.getTimestamp(1).getTime());
+                                    } else {
+                                        messageData.put("timestamp", System.currentTimeMillis());
+                                    }
+                                }
+                            } catch (Exception e) {
+                                messageData.put("timestamp", System.currentTimeMillis());
+                            }
+                            messageData.put("hasMedia", hasMedia);
+                            if (hasMedia) {
+                                // Always include mediaDownloadUrl when hasMedia is true
+                                messageData.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + messageId);
+                                // Include fileName and mimeType if available (may be null if media metadata not in DB yet)
+                                if (fileName != null) {
+                                    messageData.put("fileName", fileName);
+                                }
+                                if (mimeType != null) {
+                                    messageData.put("mimeType", mimeType);
+                                }
+                            }
+                            
+                            return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
+                        } else {
+                            // Dialog not found, but message was edited in Telegram
+                            // Return basic success response
+                            java.util.Map<String, Object> messageData = new java.util.HashMap<>();
+                            messageData.put("messageId", messageId);
+                            messageData.put("fromUser", true);
+                            messageData.put("text", newText != null && !newText.isEmpty() ? newText : null);
+                            messageData.put("edited", true);
+                            messageData.put("timestamp", System.currentTimeMillis());
+                            return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
                         }
                     } catch (Exception e) {
                         // Log but don't fail - message was edited in Telegram
                         System.err.println("Warning: Failed to update message in database: " + e.getMessage());
+                        // Return basic success response even if DB update failed
+                        java.util.Map<String, Object> messageData = new java.util.HashMap<>();
+                        messageData.put("messageId", messageId);
+                        messageData.put("fromUser", true);
+                        messageData.put("text", newText != null && !newText.isEmpty() ? newText : null);
+                        messageData.put("edited", true);
+                        messageData.put("timestamp", System.currentTimeMillis());
+                        return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
                     }
-                    
-                    // Return updated message data
-                    java.util.Map<String, Object> messageData = new java.util.HashMap<>();
-                    messageData.put("messageId", messageId);
-                    messageData.put("fromUser", true);
-                    messageData.put("text", newText != null && !newText.isEmpty() ? newText : null);
-                    messageData.put("edited", true);
-                    messageData.put("timestamp", System.currentTimeMillis());
-                    messageData.put("hasMedia", hasMedia);
-                    if (hasMedia) {
-                        // Always include mediaDownloadUrl when hasMedia is true
-                        messageData.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + messageId);
-                        // Include fileName and mimeType if available (may be null if media metadata not in DB yet)
-                        if (fileName != null) {
-                            messageData.put("fileName", fileName);
-                        }
-                        if (mimeType != null) {
-                            messageData.put("mimeType", mimeType);
-                        }
-                    }
-                    
-                    return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
                 } else {
                     return ResponseEntity.internalServerError().body(ApiResponse.error("Failed to edit message"));
                 }
-            }
-            return ResponseEntity.internalServerError().body(ApiResponse.error("Connector not available"));
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body(ApiResponse.error("Error editing message: " + e.getMessage()));
         }
@@ -979,13 +1225,14 @@ public class ConversationController {
 
     /**
      * Delete a specific message by messageId
-     * DELETE /api/conversations/message?targetUserId=...&messageId=...&userId=...
+     * DELETE /api/conversations/message?targetUserId=...&messageId=...&userId=...&revoke=true/false
      */
     @DeleteMapping("/message")
-    public ResponseEntity<ApiResponse<String>> deleteMessage(
+    public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> deleteMessage(
             @RequestParam("targetUserId") Integer targetUserId,
             @RequestParam("messageId") Integer messageId,
-            @RequestParam(value = "userId", required = false) Integer userId
+            @RequestParam(value = "userId", required = false) Integer userId,
+            @RequestParam(value = "revoke", defaultValue = "true") Boolean revoke
     ) {
         try {
             int currentUserId = userId != null ? userId : 1;
@@ -999,11 +1246,15 @@ public class ConversationController {
             }
             DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(selected.getPlatformId());
             if (acc == null) return ResponseEntity.badRequest().body(ApiResponse.error("Platform account not found"));
-            com.aria.platform.PlatformConnector connector =
+            // Use direct cast like in respond method
+            com.aria.platform.telegram.TelegramConnector connector =
+                    (com.aria.platform.telegram.TelegramConnector)
                     com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
-            if (connector instanceof com.aria.platform.telegram.TelegramConnector tg) {
-                boolean ok = tg.deleteMessage(selected.getUsername(), messageId);
-                if (ok) {
+            if (connector == null) {
+                return ResponseEntity.internalServerError().body(ApiResponse.error("Failed to create connector"));
+            }
+            com.aria.platform.telegram.TelegramConnector.DeleteMessageResult result = connector.deleteMessage(selected.getUsername(), messageId, revoke);
+                if (result.success) {
                     // Delete the message from the database after successful deletion in Telegram
                     try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
                             System.getenv("DATABASE_URL") != null
@@ -1016,27 +1267,173 @@ public class ConversationController {
                                     ? System.getenv("DATABASE_PASSWORD")
                                     : "Ezekiel(23)")) {
                         
-                        // Find dialog row id
+                        // Find dialog row id using the same robust lookup as getMessages
                         Integer dialogsRowId = null;
-                        try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                                "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' AND name = ? ORDER BY id DESC LIMIT 1")) {
-                            ps.setInt(1, currentUserId);
-                            ps.setInt(2, selected.getPlatformId());
-                            ps.setString(3, targetUser.getName());
-                            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                                if (rs.next()) dialogsRowId = rs.getInt(1);
+                        
+                        // Strategy 1: Try to resolve username to entity ID and match by dialog_id
+                        try {
+                            // Get target username for lookup
+                            String targetUsername = selected.getUsername();
+                            if (targetUsername != null && !targetUsername.isBlank() && !targetUsername.startsWith("@")) {
+                                targetUsername = "@" + targetUsername;
+                            } else if (targetUsername == null || targetUsername.isBlank()) {
+                                targetUsername = targetUser.getName(); // Fallback to name
+                            }
+                            
+                            // Try to get entity ID from Python script
+                            java.lang.ProcessBuilder entityPb = new java.lang.ProcessBuilder(
+                                    "python3",
+                                    "scripts/telethon/get_entity_id.py",
+                                    targetUsername.replace("@", "")
+                            );
+                            entityPb.environment().put("TELEGRAM_API_ID", acc.apiId);
+                            entityPb.environment().put("TELEGRAM_API_HASH", acc.apiHash);
+                            entityPb.environment().put("TELEGRAM_PHONE", acc.number != null ? acc.number : "");
+                            entityPb.environment().put("TELEGRAM_USERNAME", acc.username != null ? acc.username : "");
+                            entityPb.environment().put("TELETHON_SESSION_PATH", 
+                                    "Session/telegramConnector/user_" + (acc.username != null && !acc.username.isBlank() ? acc.username : 
+                                                                        (acc.number != null ? acc.number : "unknown")));
+                            entityPb.directory(new java.io.File(System.getProperty("user.dir")));
+                            java.lang.Process entityProcess = entityPb.start();
+                            java.lang.StringBuilder entityOutput = new java.lang.StringBuilder();
+                            try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                                    new java.io.InputStreamReader(entityProcess.getInputStream()))) {
+                                String line;
+                                while ((line = reader.readLine()) != null) {
+                                    entityOutput.append(line).append("\n");
+                                }
+                            }
+                            int entityExitCode = entityProcess.waitFor();
+                            if (entityExitCode == 0) {
+                                try {
+                                    com.google.gson.JsonObject entityJson = com.google.gson.JsonParser.parseString(entityOutput.toString()).getAsJsonObject();
+                                    if (entityJson.has("success") && entityJson.get("success").getAsBoolean() && entityJson.has("entityId")) {
+                                        long entityId = entityJson.get("entityId").getAsLong();
+                                        try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                                "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND dialog_id = ? AND type='private' LIMIT 1")) {
+                                            ps.setInt(1, currentUserId);
+                                            ps.setInt(2, selected.getPlatformId());
+                                            ps.setLong(3, entityId);
+                                            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                                if (rs.next()) dialogsRowId = rs.getInt(1);
+                                            }
+                                        }
+                                    }
+                                } catch (Exception e) {
+                                    // Ignore JSON parse errors, fall through to next strategy
+                                }
+                            }
+                        } catch (Exception e) {
+                            // Ignore entity ID lookup errors, fall through to next strategy
+                        }
+                        
+                        // Strategy 2: Try to find by exact name match
+                        if (dialogsRowId == null) {
+                            try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                    "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' AND name = ? ORDER BY id DESC LIMIT 1")) {
+                                ps.setInt(1, currentUserId);
+                                ps.setInt(2, selected.getPlatformId());
+                                ps.setString(3, targetUser.getName());
+                                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                    if (rs.next()) dialogsRowId = rs.getInt(1);
+                                }
                             }
                         }
                         
-                        // Delete message from database
-                        if (dialogsRowId != null) {
+                        // Strategy 3: Try to find by username match
+                        if (dialogsRowId == null && selected.getUsername() != null && !selected.getUsername().isBlank()) {
+                            String usernameToMatch = selected.getUsername().toLowerCase().replace("@", "");
                             try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                                    "DELETE FROM messages WHERE dialog_id = ? AND message_id = ?")) {
-                                ps.setInt(1, dialogsRowId);
-                                ps.setInt(2, messageId);
-                                int deleted = ps.executeUpdate();
-                                System.out.println("Deleted message from database: messageId=" + messageId + ", dialogId=" + dialogsRowId + ", rowsDeleted=" + deleted);
+                                    "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' AND (LOWER(name) LIKE ? OR LOWER(name) LIKE ?) ORDER BY id DESC LIMIT 1")) {
+                                ps.setInt(1, currentUserId);
+                                ps.setInt(2, selected.getPlatformId());
+                                ps.setString(3, "%" + usernameToMatch + "%");
+                                ps.setString(4, "%@" + usernameToMatch + "%");
+                                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                    if (rs.next()) dialogsRowId = rs.getInt(1);
+                                }
                             }
+                        }
+                        
+                        // Strategy 4: Try to find by message_id (look up which dialog this message belongs to)
+                        if (dialogsRowId == null) {
+                            try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                    "SELECT dialog_id FROM messages WHERE message_id = ? LIMIT 1")) {
+                                ps.setInt(1, messageId);
+                                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                    if (rs.next()) {
+                                        int msgDialogId = rs.getInt(1);
+                                        // Verify this dialog belongs to the correct user and platform
+                                        try (java.sql.PreparedStatement verifyPs = conn.prepareStatement(
+                                                "SELECT id FROM dialogs WHERE id = ? AND user_id = ? AND platform_account_id = ? LIMIT 1")) {
+                                            verifyPs.setInt(1, msgDialogId);
+                                            verifyPs.setInt(2, currentUserId);
+                                            verifyPs.setInt(3, selected.getPlatformId());
+                                            try (java.sql.ResultSet verifyRs = verifyPs.executeQuery()) {
+                                                if (verifyRs.next()) {
+                                                    dialogsRowId = verifyRs.getInt(1);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Delete message from database (and associated media)
+                        if (dialogsRowId != null) {
+                            // Use transaction to ensure atomic deletion
+                            conn.setAutoCommit(false);
+                            try {
+                                // First, find the internal message ID to delete associated media
+                                Integer internalMessageId = null;
+                                try (java.sql.PreparedStatement findPs = conn.prepareStatement(
+                                        "SELECT id FROM messages WHERE dialog_id = ? AND message_id = ?")) {
+                                    findPs.setInt(1, dialogsRowId);
+                                    findPs.setInt(2, messageId);
+                                    try (java.sql.ResultSet rs = findPs.executeQuery()) {
+                                        if (rs.next()) {
+                                            internalMessageId = rs.getInt(1);
+                                        }
+                                    }
+                                }
+                                
+                                // Delete associated media first (if any)
+                                if (internalMessageId != null) {
+                                    try (java.sql.PreparedStatement mediaPs = conn.prepareStatement(
+                                            "DELETE FROM media WHERE message_id = ?")) {
+                                        mediaPs.setInt(1, internalMessageId);
+                                        int mediaDeleted = mediaPs.executeUpdate();
+                                        System.out.println("Deleted " + mediaDeleted + " media record(s) for message " + internalMessageId);
+                                    }
+                                }
+                                
+                                // Delete the message
+                                try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                        "DELETE FROM messages WHERE dialog_id = ? AND message_id = ?")) {
+                                    ps.setInt(1, dialogsRowId);
+                                    ps.setInt(2, messageId);
+                                    int deleted = ps.executeUpdate();
+                                    System.out.println("Deleted message from database: messageId=" + messageId + ", dialogId=" + dialogsRowId + ", rowsDeleted=" + deleted);
+                                    
+                                    // Commit the transaction
+                                    conn.commit();
+                                    System.out.println("Database transaction committed for message deletion");
+                                }
+                            } catch (Exception e) {
+                                // Rollback on error
+                                try {
+                                    conn.rollback();
+                                    System.err.println("Rolled back transaction due to error: " + e.getMessage());
+                                } catch (Exception rollbackEx) {
+                                    System.err.println("Failed to rollback: " + rollbackEx.getMessage());
+                                }
+                                throw e; // Re-throw to be caught by outer catch
+                            } finally {
+                                conn.setAutoCommit(true); // Restore auto-commit
+                            }
+                        } else {
+                            System.err.println("Warning: Could not find dialog for deletion. messageId=" + messageId + ", targetName=" + targetUser.getName());
                         }
                     } catch (Exception e) {
                         // Log but don't fail - message was deleted in Telegram
@@ -1044,12 +1441,16 @@ public class ConversationController {
                         e.printStackTrace();
                     }
                     
-                    return ResponseEntity.ok(ApiResponse.success("Deleted", null));
+                    java.util.Map<String, Object> resultMap = new java.util.HashMap<>();
+                    resultMap.put("success", true);
+                    resultMap.put("revoked", result.revoked);
+                    if (!result.revoked && revoke) {
+                        resultMap.put("message", "Message deleted only for you (Telegram doesn't allow deleting for other user)");
+                    }
+                    return ResponseEntity.ok(ApiResponse.success("Deleted", resultMap));
                 } else {
-                    return ResponseEntity.internalServerError().body(ApiResponse.error("Failed to delete message from Telegram"));
+                    return ResponseEntity.internalServerError().body(ApiResponse.error(result.error != null ? result.error : "Failed to delete message from Telegram"));
                 }
-            }
-            return ResponseEntity.internalServerError().body(ApiResponse.error("Connector not available"));
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body(ApiResponse.error("Error deleting message: " + e.getMessage()));
         }
@@ -1323,6 +1724,7 @@ public class ConversationController {
             messageData.put("hasMedia", true);
             messageData.put("fileName", fileName);
             messageData.put("mimeType", mimeType);
+            messageData.put("fileSize", file.getSize()); // Include file size
             // Add media download URL if we have the message in database
             if (dialogRowId != null) {
                 messageData.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + telegramMessageId);

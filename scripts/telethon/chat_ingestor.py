@@ -177,15 +177,36 @@ async def download_media(client, message, chat_name, message_id):
                 media_type = "document"
                 file_ext = ".bin"
 
-        filename = f"{safe_chat_name}_{message_id}_{media_type}{file_ext}"
+        # Try to get original filename from document attributes
+        original_filename = None
+        if hasattr(message.media, 'document'):
+            doc = message.media.document
+            if hasattr(doc, 'attributes'):
+                for attr in doc.attributes:
+                    if hasattr(attr, 'file_name') and attr.file_name:
+                        original_filename = attr.file_name
+                        break
+        
+        # Generate a safe filename for storage
+        # Use original filename if available, otherwise generate one based on media type
+        if original_filename:
+            # Use original filename but make it safe for filesystem
+            safe_original = create_safe_filename(original_filename)
+            filename = f"{safe_chat_name}_{message_id}_{safe_original}"
+        else:
+            filename = f"{safe_chat_name}_{message_id}_{media_type}{file_ext}"
+        
         filepath = os.path.join(chat_dir, filename)
         await client.download_media(message, file=filepath)
         file_size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
 
+        # For display, prefer original filename, otherwise use the generated one
+        display_filename = original_filename if original_filename else filename
+
         return {
             "type": media_type,
             "file_path": filepath,
-            "file_name": filename,
+            "file_name": display_filename,  # Original filename for display, or generated one
             "file_size": file_size,
             "mime_type": getattr(message.media.document, 'mime_type', None) if hasattr(message.media, 'document') else None
         }

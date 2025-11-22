@@ -434,17 +434,30 @@ public class TelegramConnector implements PlatformConnector {
         }
     }
 
-    public boolean deleteMessage(String target, int messageId) {
+    public static class DeleteMessageResult {
+        public final boolean success;
+        public final boolean revoked;
+        public final String error;
+        
+        public DeleteMessageResult(boolean success, boolean revoked, String error) {
+            this.success = success;
+            this.revoked = revoked;
+            this.error = error;
+        }
+    }
+    
+    public DeleteMessageResult deleteMessage(String target, int messageId, boolean revoke) {
         if (!isConfigured()) {
             System.err.println("Telegram connector not configured");
-            return false;
+            return new DeleteMessageResult(false, false, "Connector not configured");
         }
         try {
             ProcessBuilder processBuilder = new ProcessBuilder(
                     "python3",
                     "scripts/telethon/message_deleter.py",
                     target,
-                    String.valueOf(messageId)
+                    String.valueOf(messageId),
+                    String.valueOf(revoke)
             );
             Map<String, String> env = processBuilder.environment();
             env.put("TELEGRAM_API_ID", this.apiId);
@@ -469,21 +482,32 @@ public class TelegramConnector implements PlatformConnector {
             }
             int exitCode = process.waitFor();
             
-            // Check if output indicates success
-            String fullOutput = output.toString();
-            boolean hasSuccess = fullOutput.contains("Deleted message") || fullOutput.contains("deleted");
-            boolean hasError = fullOutput.toLowerCase().contains("error") || (exitCode != 0 && !hasSuccess);
-            
-            if (hasError) {
-                System.err.println("Delete message failed. Exit code: " + exitCode + ", Output: " + fullOutput);
-                return false;
+            // Parse JSON response
+            String fullOutput = output.toString().trim();
+            try {
+                com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(fullOutput).getAsJsonObject();
+                if (json.has("success") && json.get("success").getAsBoolean()) {
+                    boolean revokedResult = json.has("revoked") && json.get("revoked").getAsBoolean();
+                    return new DeleteMessageResult(true, revokedResult, null);
+                } else {
+                    String errorMsg = json.has("error") ? json.get("error").getAsString() : "Unknown error";
+                    return new DeleteMessageResult(false, false, errorMsg);
+                }
+            } catch (Exception e) {
+                // Fallback to old parsing logic
+                boolean hasSuccess = fullOutput.contains("\"success\": true") || fullOutput.contains("Deleted message") || fullOutput.contains("deleted");
+                boolean hasError = fullOutput.toLowerCase().contains("\"success\": false") || fullOutput.toLowerCase().contains("error");
+                
+                if (hasError || exitCode != 0) {
+                    return new DeleteMessageResult(false, false, "Delete failed: " + fullOutput);
+                }
+                
+                return new DeleteMessageResult(hasSuccess || exitCode == 0, revoke, null);
             }
-            
-            return exitCode == 0 || hasSuccess;
         } catch (Exception e) {
             System.err.println("Exception in deleteMessage: " + e.getMessage());
             e.printStackTrace();
-            return false;
+            return new DeleteMessageResult(false, false, "Exception: " + e.getMessage());
         }
     }
 

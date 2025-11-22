@@ -23,6 +23,9 @@ function ConversationView({ userId = 1 }) {
   const [targetOnline, setTargetOnline] = useState(false); // Online status of target user
   const [lastActive, setLastActive] = useState(null); // Last active time
   const [replyingTo, setReplyingTo] = useState(null); // Message being replied to { messageId, text, fromUser }
+  const [deleteModal, setDeleteModal] = useState(null); // { messageId, revoke: true/false } for delete confirmation
+  const [recentlyEditedMessages, setRecentlyEditedMessages] = useState(new Set()); // Track recently edited message IDs to prevent polling from overwriting
+  const [isOperationInProgress, setIsOperationInProgress] = useState(false); // Track if delete/edit is in progress to pause polling
 
   useEffect(() => {
     loadTarget();
@@ -33,10 +36,13 @@ function ConversationView({ userId = 1 }) {
         const resp = await conversationApi.isActive(targetId, userId);
         if (resp.data?.success && resp.data?.data === true) {
           setConversationInitialized(true);
-          await loadMessages();
         }
+        // Always try to load messages (even if conversation not initialized, messages might exist)
+        await loadMessages();
       } catch (e) {
-        // ignore
+        // Try to load messages anyway
+        console.error('Failed to check active conversation:', e);
+        loadMessages().catch(err => console.error('Failed to load messages:', err));
       }
     })();
   }, [targetId]);
@@ -67,6 +73,127 @@ function ConversationView({ userId = 1 }) {
     
     return () => clearInterval(interval);
   }, [conversationInitialized, target, targetId, userId]);
+
+  // Poll for new messages when conversation is initialized
+  useEffect(() => {
+    if (!conversationInitialized || !targetId || isOperationInProgress) return; // Don't poll if operation is in progress
+    
+    const pollForNewMessages = async () => {
+      // Skip polling if an operation (delete/edit) is in progress
+      if (isOperationInProgress) {
+        return;
+      }
+      
+      try {
+        const resp = await conversationApi.getMessages(targetId, userId, 50);
+        if (resp.data?.success) {
+          const rows = resp.data.data || [];
+          if (rows.length > 0) {
+            // Always update messages (in case order changed or messages were edited/deleted)
+            const loadedMessages = rows.map((r) => ({
+              text: r.text || '',
+              fromUser: !!r.fromUser,
+              timestamp: r.timestamp ? new Date(r.timestamp) : new Date(),
+              mediaUrl: r.mediaDownloadUrl || null,
+              messageId: r.messageId,
+              hasMedia: r.hasMedia || false,
+              fileName: r.fileName || null,
+              mimeType: r.mimeType || null,
+              edited: r.edited || false,
+              referenceId: r.referenceId || null,
+            }));
+            
+            // Always sync messages to reflect deletions and updates
+            // But preserve edited messages that might not be updated in DB yet
+            setMessages(prev => {
+              // Create maps for quick lookup
+              const prevMap = new Map(prev.map(m => [m.messageId, m]));
+              
+              // Merge loaded messages with previous state, preserving edited messages
+              // If a message was marked as edited in previous state or was recently edited, preserve it
+              const syncedMessages = loadedMessages.map(newMsg => {
+                const prevMsg = prevMap.get(newMsg.messageId);
+                const isRecentlyEdited = recentlyEditedMessages.has(newMsg.messageId);
+                
+                if (prevMsg) {
+                  // If this message was recently edited (within last 5 seconds), keep the previous version
+                  // This prevents polling from overwriting edits before database is updated
+                  if (isRecentlyEdited) {
+                    return prevMsg; // Keep the edited version from previous state
+                  }
+                  
+                  // If the message was previously edited and the text matches, keep it as edited
+                  if (prevMsg.edited && prevMsg.text === newMsg.text) {
+                    return { ...newMsg, edited: true };
+                  }
+                  
+                  // If text changed, it was edited - use the new text from DB and mark as edited
+                  if (prevMsg.text !== newMsg.text) {
+                    return { ...newMsg, edited: true };
+                  }
+                }
+                return newMsg;
+              });
+              
+              const prevIds = new Set(prev.map(m => m.messageId));
+              const newIds = new Set(syncedMessages.map(m => m.messageId));
+              const prevHighest = prev.length > 0 ? Math.max(...prev.map(m => m.messageId || 0)) : 0;
+              const newHighest = syncedMessages.length > 0 ? Math.max(...syncedMessages.map(m => m.messageId || 0)) : 0;
+              
+              // Check if messages are different (added, removed, or edited)
+              const hasNewMessages = newHighest > prevHighest;
+              const hasRemovedMessages = prevIds.size > newIds.size;
+              
+              // Check if any existing message was edited (text changed)
+              let hasEditedMessages = false;
+              for (const newMsg of syncedMessages) {
+                const prevMsg = prevMap.get(newMsg.messageId);
+                if (prevMsg && prevMsg.text !== newMsg.text) {
+                  hasEditedMessages = true;
+                  break;
+                }
+              }
+              
+              const hasChanged = hasNewMessages || hasRemovedMessages || hasEditedMessages || 
+                prevIds.size !== newIds.size || syncedMessages.length !== prev.length;
+              
+              // Update if messages changed (new, deleted, or edited)
+              if (hasChanged) {
+                // Auto-scroll to bottom if we're near the bottom and have new messages
+                setTimeout(() => {
+                  const messagesContainer = document.querySelector('.messages-container');
+                  if (messagesContainer && hasNewMessages) {
+                    const isNearBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 200;
+                    if (isNearBottom) {
+                      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                    }
+                  }
+                }, 100);
+                // Return synced messages (preserving edited state where appropriate)
+                return syncedMessages;
+              }
+              return prev; // No changes, keep previous messages
+            });
+          }
+        }
+      } catch (err) {
+        // Silently fail - polling errors are not critical
+        console.error('Failed to poll for new messages:', err);
+      }
+    };
+
+    // Poll immediately (to check for new messages)
+    pollForNewMessages();
+    
+    // Then poll every 3 seconds for new messages (only if no operation in progress)
+    const messageInterval = setInterval(() => {
+      if (!isOperationInProgress) {
+        pollForNewMessages();
+      }
+    }, 3000);
+    
+    return () => clearInterval(messageInterval);
+  }, [conversationInitialized, targetId, userId, isOperationInProgress]); // Include isOperationInProgress to pause/resume polling
 
   const loadTarget = async () => {
     try {
@@ -156,6 +283,7 @@ function ConversationView({ userId = 1 }) {
             hasMedia: messageData.hasMedia || true,
             fileName: messageData.fileName || null,
             mimeType: messageData.mimeType || null,
+            fileSize: messageData.fileSize || null, // Include file size
             referenceId: replyingTo?.messageId || null,
           };
           setMessages(prev => [...prev, newMsg]);
@@ -275,6 +403,9 @@ function ConversationView({ userId = 1 }) {
     setEditText('');
     setSelectedMessageId(null);
     
+    // Pause polling while edit is in progress
+    setIsOperationInProgress(true);
+    
     try {
       let response;
       if (msgId) {
@@ -282,6 +413,9 @@ function ConversationView({ userId = 1 }) {
       } else {
         response = await conversationApi.editLast(targetId, userId, messageText);
       }
+      
+      // Wait a bit to ensure database update is committed
+      await new Promise(resolve => setTimeout(resolve, 500));
       
       // If response includes updated message data, update it in the UI
       if (response.data?.success && response.data?.data) {
@@ -299,28 +433,54 @@ function ConversationView({ userId = 1 }) {
         };
         
         // Update the message in the messages list, preserving media info
-        setMessages(prev => prev.map(msg => {
-          if (msg.messageId === updatedMsg.messageId) {
-            // Preserve media info if the original message had media
-            // This ensures media shows even if backend doesn't return hasMedia=true
-            if (msg.hasMedia || msg.mediaUrl) {
-              return { 
-                ...updatedMsg, 
-                hasMedia: true, // Ensure hasMedia is true if original had media
-                mediaUrl: updatedMsg.mediaUrl || msg.mediaUrl, // Use new URL if available, otherwise keep old
-                fileName: updatedMsg.fileName || msg.fileName,
-                mimeType: updatedMsg.mimeType || msg.mimeType
-              };
+        // Use functional update to ensure we're working with the latest state
+        setMessages(prev => {
+          const updated = prev.map(msg => {
+            if (msg.messageId === updatedMsg.messageId) {
+              // Preserve media info if the original message had media
+              // This ensures media shows even if backend doesn't return hasMedia=true
+              if (msg.hasMedia || msg.mediaUrl) {
+                return { 
+                  ...updatedMsg, 
+                  hasMedia: true, // Ensure hasMedia is true if original had media
+                  mediaUrl: updatedMsg.mediaUrl || msg.mediaUrl, // Use new URL if available, otherwise keep old
+                  fileName: updatedMsg.fileName || msg.fileName,
+                  mimeType: updatedMsg.mimeType || msg.mimeType,
+                  edited: true // Explicitly mark as edited
+                };
+              }
+              return { ...updatedMsg, edited: true }; // Explicitly mark as edited
             }
-            return updatedMsg;
-          }
-          return msg;
-        }));
+            return msg;
+          });
+          // Force re-render by returning a new array reference
+          return updated;
+        });
+        
+        // Mark this message as recently edited to prevent polling from overwriting it
+        setRecentlyEditedMessages(prev => new Set(prev).add(updatedMsg.messageId));
+        // After 5 seconds, allow polling to sync normally (database should be updated by then)
+        setTimeout(() => {
+          setRecentlyEditedMessages(prev => {
+            const next = new Set(prev);
+            next.delete(updatedMsg.messageId);
+            return next;
+          });
+        }, 5000);
       } else {
         // Fallback: update locally and reload
         setMessages(prev => prev.map(msg => 
           msg.messageId === msgId ? { ...msg, text: messageText, edited: true } : msg
         ));
+        // Mark as recently edited even for fallback
+        setRecentlyEditedMessages(prev => new Set(prev).add(msgId));
+        setTimeout(() => {
+          setRecentlyEditedMessages(prev => {
+            const next = new Set(prev);
+            next.delete(msgId);
+            return next;
+          });
+        }, 5000);
         setTimeout(loadMessages, 300);
       }
     } catch (err) {
@@ -328,6 +488,11 @@ function ConversationView({ userId = 1 }) {
       // Restore edit state if editing failed
       setSelectedMessageId(msgId);
       setEditText(messageText);
+    } finally {
+      // Resume polling after edit completes (with a delay to ensure DB is updated)
+      setTimeout(() => {
+        setIsOperationInProgress(false);
+      }, 2000); // Wait 2 seconds to ensure database is updated before resuming polling
     }
   };
 
@@ -337,34 +502,92 @@ function ConversationView({ userId = 1 }) {
       const resp = await conversationApi.getMessages(targetId, userId, 50);
       if (resp.data?.success) {
         const rows = resp.data.data || [];
-        setMessages(
-          rows.map((r) => ({
-            text: r.text || '',
-            fromUser: !!r.fromUser,
-            timestamp: r.timestamp ? new Date(r.timestamp) : new Date(),
-            mediaUrl: r.mediaDownloadUrl || null,
-            messageId: r.messageId,
-            hasMedia: r.hasMedia || false,
-            fileName: r.fileName || null,
-            mimeType: r.mimeType || null,
-            edited: r.edited || false, // Preserve edited flag from database or API
-            referenceId: r.referenceId || null, // Include reference_id for replies
-          }))
-        );
+        const loadedMessages = rows.map((r) => ({
+          text: r.text || '',
+          fromUser: !!r.fromUser,
+          timestamp: r.timestamp ? new Date(r.timestamp) : new Date(),
+          mediaUrl: r.mediaDownloadUrl || null,
+          messageId: r.messageId,
+          hasMedia: r.hasMedia || false,
+          fileName: r.fileName || null,
+          mimeType: r.mimeType || null,
+          edited: r.edited || false, // Preserve edited flag from database or API
+          referenceId: r.referenceId || null, // Include reference_id for replies
+          fileSize: r.fileSize || null, // Include file size
+        }));
+        setMessages(loadedMessages);
+        console.log(`Loaded ${loadedMessages.length} messages for target ${targetId}`);
+        
+        // Auto-scroll to bottom after messages are loaded
+        setTimeout(() => {
+          const messagesContainer = document.querySelector('.messages-container');
+          if (messagesContainer) {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+          }
+        }, 100);
+      } else {
+        console.warn('Failed to load messages:', resp.data?.error);
+        setMessages([]); // Clear messages if load fails
       }
     } catch (e) {
-      // ignore
       console.error('Failed to load messages:', e);
+      setMessages([]); // Clear messages on error
     }
   };
 
-  const handleDelete = async (messageId) => {
+  const handleDelete = (messageId) => {
+    // Show delete confirmation modal
+    setDeleteModal({ messageId, revoke: true }); // Default to checked (revoke=true)
+  };
+
+  const performDelete = async () => {
+    if (!deleteModal) return;
+    const { messageId, revoke } = deleteModal;
+    
+    // Close modal FIRST before doing anything else
+    const messageIdToDelete = messageId;
+    setDeleteModal(null);
+    
+    // Pause polling while delete is in progress
+    setIsOperationInProgress(true);
+    
+    // Remove message from UI optimistically (immediately)
+    setMessages(prev => prev.filter(m => m.messageId !== messageIdToDelete));
+    
     try {
-      await conversationApi.delete(targetId, userId, messageId);
-      setMessages(prev => prev.filter(m => m.messageId !== messageId));
+      const response = await conversationApi.delete(targetId, userId, messageIdToDelete, revoke);
+      
+      // Wait a bit to ensure database update is committed
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      if (response.data?.success) {
+        if (response.data?.data?.message) {
+          // Show info if message was only deleted for user (not revoked)
+          setError(response.data.data.message);
+          setTimeout(() => setError(null), 5000);
+        }
+      } else {
+        // Show error if deletion failed - message will be restored by polling
+        setError(response.data?.error || 'Failed to delete message');
+        setTimeout(() => setError(null), 5000);
+        // Reload messages to restore the deleted message if deletion failed
+        setTimeout(() => loadMessages(), 1000);
+      }
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to delete message');
+      setTimeout(() => setError(null), 5000);
+      // Reload messages to restore the deleted message if deletion failed
+      setTimeout(() => loadMessages(), 1000);
+    } finally {
+      // Resume polling after delete completes (with a delay to ensure DB is updated)
+      setTimeout(() => {
+        setIsOperationInProgress(false);
+      }, 2000); // Wait 2 seconds to ensure database is updated before resuming polling
     }
+  };
+
+  const cancelDelete = () => {
+    setDeleteModal(null);
   };
 
   if (loading) {
@@ -561,7 +784,7 @@ function ConversationView({ userId = 1 }) {
             <div className="messages-container">
               {messages.length === 0 ? (
                 <div className="empty-messages">
-                  <p>No messages yet. Start the conversation!</p>
+                  <p>No messages yet. {conversationInitialized ? 'Start the conversation!' : 'Messages will appear here once ingestion is complete.'}</p>
                 </div>
               ) : (
                 messages.map((msg, idx) => {
@@ -651,7 +874,16 @@ function ConversationView({ userId = 1 }) {
                             <img src={msg.mediaUrl} alt="sent" style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6, objectFit: 'contain' }} />
                           ) : (
                             <div style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: 6, fontSize: '0.85rem' }}>
-                              📎 {msg.fileName || 'Media file'}
+                              📎 {msg.fileName ? (
+                                <span>{msg.fileName}</span>
+                              ) : (
+                                <span>Media file</span>
+                              )}
+                              {msg.fileSize && (
+                                <span style={{ fontSize: '0.75rem', color: '#666', marginLeft: '4px' }}>
+                                  ({(msg.fileSize / 1024).toFixed(1)} KB)
+                                </span>
+                              )}
                             </div>
                           )}
                           {msg.text && (
@@ -719,11 +951,11 @@ function ConversationView({ userId = 1 }) {
                         </button>
                       </div>
                     )}
-                    {!msg.fromUser && (
+                    {!msg.fromUser && msg.messageId !== undefined && (
                       <div className="message-actions" style={{ display: 'flex', gap: 4, marginTop: 2 }}>
                         <button
                           className="btn btn-secondary btn-sm"
-                          style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem' }}
+                          style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem', background: '#f5f5f5', color: '#333' }}
                           onClick={() => {
                             setReplyingTo({
                               messageId: msg.messageId,
@@ -734,6 +966,13 @@ function ConversationView({ userId = 1 }) {
                           title="Reply to this message"
                         >
                           Reply
+                        </button>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem', background: '#f5f5f5', color: '#333' }}
+                          onClick={() => handleDelete(msg.messageId)}
+                        >
+                          Delete
                         </button>
                       </div>
                     )}
@@ -894,6 +1133,30 @@ function ConversationView({ userId = 1 }) {
                 {pendingMedia ? 'Send Media' : 'Send'}
               </button>
             </form>
+          </div>
+        )}
+        
+        {/* Delete Confirmation Modal */}
+        {deleteModal && (
+          <div className="modal-overlay" onClick={cancelDelete}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h3>Delete Message</h3>
+              <p>Do you want to delete this message?</p>
+              <div className="form-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={deleteModal.revoke}
+                    onChange={(e) => setDeleteModal({ ...deleteModal, revoke: e.target.checked })}
+                  />
+                  <span>Also delete for {target?.name || 'target user'}</span>
+                </label>
+              </div>
+              <div className="modal-actions">
+                <button onClick={cancelDelete} className="btn btn-secondary">Cancel</button>
+                <button onClick={performDelete} className="btn btn-danger">Delete</button>
+              </div>
+            </div>
           </div>
         )}
       </div>

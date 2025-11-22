@@ -67,8 +67,8 @@ export const conversationApi = {
       newText,
       { headers: { 'Content-Type': 'text/plain' } }
     ),
-  delete: (targetUserId, userId, messageId) =>
-    api.delete(`/conversations/message?targetUserId=${targetUserId}&userId=${userId}&messageId=${messageId}`),
+  delete: (targetUserId, userId, messageId, revoke) =>
+    api.delete(`/conversations/message?targetUserId=${targetUserId}&userId=${userId}&messageId=${messageId}&revoke=${revoke !== false}`),
   sendMedia: (targetUserId, userId, file) => {
     const form = new FormData();
     form.append('file', file);

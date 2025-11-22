@@ -578,19 +578,13 @@ function TargetManagement({ userId = 1 }) {
                 )}
                 <div className="card-content">
                   <p><strong>Username:</strong> {target.username}</p>
-                  <p>
-                    <strong>Platform:</strong> {target.platform}
-                    {target.platformAccountName && (
-                      <span style={{ marginLeft: '0.5rem' }}>
-                        <strong>Acct:</strong> {target.platformAccountName}
-                      </span>
-                    )}
-                    {!target.platformAccountName && target.platformAccountUsername && (
-                      <span style={{ marginLeft: '0.5rem' }}>
-                        <strong>Acct:</strong> {target.platformAccountUsername.startsWith('@') ? target.platformAccountUsername : '@' + target.platformAccountUsername}
-                      </span>
-                    )}
-                  </p>
+                  <p><strong>Platform:</strong> {target.platform}</p>
+                  {(target.platformAccountName || target.platformAccountUsername) && (
+                    <p>
+                      <strong>Acct:</strong>{' '}
+                      {target.platformAccountName || (target.platformAccountUsername.startsWith('@') ? target.platformAccountUsername : '@' + target.platformAccountUsername)}
+                    </p>
+                  )}
                   {target.bio && <p><strong>Bio:</strong> {target.bio}</p>}
                 </div>
                 <div className="card-actions">
