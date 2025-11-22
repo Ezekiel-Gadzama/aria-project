@@ -108,6 +108,127 @@ def save_message(dialog_id, message_id, sender, text, timestamp, has_media, raw_
         result = cur.fetchone()
         return result[0] if result else None
 
+def save_media(message_id, type_, file_path, file_name, file_size, mime_type):
+    """Save media record to database. Check if exists first to avoid duplicates."""
+    # Check if media already exists for this message
+    check_sql = "SELECT id FROM media WHERE message_id = %s LIMIT 1"
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(check_sql, (message_id,))
+        if cur.fetchone():
+            # Media already exists, skip
+            return
+        # Insert new media record
+        sql = """
+            INSERT INTO media (message_id, type, file_path, file_name, file_size, mime_type)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        cur.execute(sql, (message_id, type_, file_path, file_name, file_size, mime_type))
+        conn.commit()
+
+def create_safe_filename(name):
+    """Create a safe filename by removing/replacing invalid characters."""
+    if not name:
+        return "unknown"
+    # Remove or replace invalid characters for filesystem
+    safe = re.sub(r'[<>:"/\\|?*]', '_', name)
+    safe = safe.strip('. ')
+    if not safe:
+        return "unknown"
+    return safe
+
+async def download_media(client, message, chat_name, message_id):
+    """Download media from Telegram message and return metadata."""
+    if not message.media:
+        return None
+    try:
+        # Get user directory from environment
+        username = os.getenv('TELEGRAM_USERNAME', 'unknown')
+        USER_DIR = f"user_{username}"
+        BASE_MEDIA_ROOT = os.getenv('BASE_MEDIA_ROOT', 'media/telegramConnector')
+        
+        safe_chat_name = create_safe_filename(chat_name)
+        chat_dir = os.path.join(BASE_MEDIA_ROOT, USER_DIR, f"{safe_chat_name}_chat")
+        os.makedirs(chat_dir, exist_ok=True)
+        file_ext = ".bin"
+        media_type = "unknown"
+
+        if hasattr(message.media, 'photo'):
+            file_ext = ".jpg"
+            media_type = "photo"
+        elif hasattr(message.media, 'document'):
+            doc = message.media.document
+            if doc.mime_type:
+                if 'image' in doc.mime_type:
+                    file_ext = ".jpg"
+                    media_type = "image"
+                elif 'video' in doc.mime_type:
+                    file_ext = ".mp4"
+                    media_type = "video"
+                elif 'audio' in doc.mime_type:
+                    file_ext = ".mp3"
+                    media_type = "audio"
+                else:
+                    for attr in doc.attributes:
+                        if hasattr(attr, 'file_name'):
+                            original_name = attr.file_name or ''
+                            file_ext = os.path.splitext(original_name)[1] or ".bin"
+                            break
+                    media_type = "document"
+            else:
+                media_type = "document"
+                file_ext = ".bin"
+
+        # Try to get original filename from document attributes
+        original_filename = None
+        if hasattr(message.media, 'document'):
+            doc = message.media.document
+            if hasattr(doc, 'attributes'):
+                for attr in doc.attributes:
+                    if hasattr(attr, 'file_name') and attr.file_name:
+                        original_filename = attr.file_name
+                        break
+        
+        # Generate a safe filename for storage
+        if original_filename:
+            safe_original = create_safe_filename(original_filename)
+            filename = f"{safe_chat_name}_{message_id}_{safe_original}"
+        else:
+            filename = f"{safe_chat_name}_{message_id}_{media_type}{file_ext}"
+        
+        filepath = os.path.join(chat_dir, filename)
+        await client.download_media(message, file=filepath)
+        
+        # Verify file was downloaded
+        if not os.path.exists(filepath):
+            safe_print(f"Warning: Media file not found after download: {filepath}")
+            return None
+            
+        file_size = os.path.getsize(filepath)
+        if file_size == 0:
+            safe_print(f"Warning: Downloaded media file is empty: {filepath}")
+
+        # For display, prefer original filename, otherwise use cleaned generated one
+        display_filename = original_filename
+        if not display_filename:
+            parts = filename.split('_', 2)
+            if len(parts) >= 3:
+                display_filename = parts[2]  # Get the part after chat_name and message_id
+            else:
+                display_filename = filename
+
+        return {
+            "type": media_type,
+            "file_path": filepath,
+            "file_name": display_filename,
+            "file_size": file_size,
+            "mime_type": getattr(message.media.document, 'mime_type', None) if hasattr(message.media, 'document') else ("image/jpeg" if media_type == "photo" else None)
+        }
+    except Exception as e:
+        safe_print(f"Error downloading media for message {message_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
 async def ingest_priority_target(target_username: str):
     """
     Priority ingestion: Always re-ingest last 80 messages and check for deletions.
@@ -282,6 +403,17 @@ async def ingest_priority_target(target_username: str):
                 )
                 if msg_id:
                     messages_saved += 1
+                    # Download and save media if message has media
+                    if has_media:
+                        try:
+                            media_info = await download_media(client, message, safe_chat_name, message.id)
+                            if media_info:
+                                save_media(
+                                    msg_id, media_info["type"], media_info["file_path"],
+                                    media_info["file_name"], media_info["file_size"], media_info["mime_type"]
+                                )
+                        except Exception as e:
+                            safe_print(f"Warning: Failed to download/save media for message {message.id}: {e}")
         except Exception as e:
             safe_print(f"Error ingesting messages: {e}")
 

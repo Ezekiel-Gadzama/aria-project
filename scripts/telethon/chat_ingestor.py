@@ -262,6 +262,10 @@ async def download_media(client, message, chat_name, message_id):
                     if hasattr(attr, 'file_name') and attr.file_name:
                         original_filename = attr.file_name
                         break
+        # Also try to get filename from photo caption or other sources
+        if not original_filename and hasattr(message.media, 'photo'):
+            # For photos, there's usually no filename, use generated one
+            pass
         
         # Generate a safe filename for storage
         # Use original filename if available, otherwise generate one based on media type
@@ -274,20 +278,39 @@ async def download_media(client, message, chat_name, message_id):
         
         filepath = os.path.join(chat_dir, filename)
         await client.download_media(message, file=filepath)
-        file_size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
+        
+        # Verify file was downloaded
+        if not os.path.exists(filepath):
+            print(f"Warning: Media file not found after download: {filepath}")
+            return None
+            
+        file_size = os.path.getsize(filepath)
+        if file_size == 0:
+            print(f"Warning: Downloaded media file is empty: {filepath}")
+            # Still return it, might be a valid empty file
 
         # For display, prefer original filename, otherwise use the generated one
-        display_filename = original_filename if original_filename else filename
+        # But remove the chat prefix from generated filenames for display
+        display_filename = original_filename
+        if not display_filename:
+            # Remove chat prefix from generated filename for display
+            parts = filename.split('_', 2)
+            if len(parts) >= 3:
+                display_filename = parts[2]  # Get the part after chat_name and message_id
+            else:
+                display_filename = filename
 
         return {
             "type": media_type,
             "file_path": filepath,
-            "file_name": display_filename,  # Original filename for display, or generated one
+            "file_name": display_filename,  # Original filename for display, or cleaned generated one
             "file_size": file_size,
-            "mime_type": getattr(message.media.document, 'mime_type', None) if hasattr(message.media, 'document') else None
+            "mime_type": getattr(message.media.document, 'mime_type', None) if hasattr(message.media, 'document') else ("image/jpeg" if media_type == "photo" else None)
         }
     except Exception as e:
         print(f"Error downloading media for message {message_id}: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 

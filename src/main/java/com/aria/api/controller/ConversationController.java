@@ -351,16 +351,50 @@ public class ConversationController {
                             
                             // Get media metadata (fileName, mimeType, fileSize) from media table using internal message ID
                             if (rs.getBoolean(6)) { // hasMedia
-                                row.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + rs.getInt(2));
                                 try (java.sql.PreparedStatement mediaPs = conn.prepareStatement(
-                                        "SELECT file_name, mime_type, file_size FROM media WHERE message_id = ? ORDER BY id ASC LIMIT 1")) {
+                                        "SELECT file_name, mime_type, file_size, file_path FROM media WHERE message_id = ? ORDER BY id ASC LIMIT 1")) {
                                     mediaPs.setInt(1, internalMessageId); // Use internal message ID
                                     try (java.sql.ResultSet mediaRs = mediaPs.executeQuery()) {
                                         if (mediaRs.next()) {
+                                            // Only set mediaDownloadUrl if media record exists
+                                            row.put("mediaDownloadUrl", "/api/conversations/media/download?targetUserId=" + targetUserId + "&userId=" + currentUserId + "&messageId=" + rs.getInt(2));
                                             String fn = mediaRs.getString(1);
-                                            if (fn != null && !fn.isEmpty()) {
-                                                row.put("fileName", fn);
+                                            String filePath = mediaRs.getString(4); // Get file_path too
+                                            // Always extract clean filename - remove chat prefix if present
+                                            // If fileName is null/empty, extract from file_path
+                                            if (fn == null || fn.trim().isEmpty()) {
+                                                if (filePath != null && !filePath.isEmpty()) {
+                                                    // Extract filename from path
+                                                    int lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+                                                    if (lastSlash >= 0 && lastSlash < filePath.length() - 1) {
+                                                        fn = filePath.substring(lastSlash + 1);
+                                                    } else {
+                                                        fn = filePath;
+                                                    }
+                                                }
                                             }
+                                            // Clean up filename - remove chat prefix if present (e.g., "chat_name_messageId_original.ext")
+                                            if (fn != null && !fn.trim().isEmpty()) {
+                                                // If filename has prefix pattern like "chat_name_messageId_original.ext"
+                                                if (fn.contains("_")) {
+                                                    String[] parts = fn.split("_", 3);
+                                                    if (parts.length >= 3) {
+                                                        // Check if first two parts look like chat name and message ID
+                                                        boolean isPrefixed = false;
+                                                        try {
+                                                            // If second part is numeric (message ID), likely prefixed
+                                                            Long.parseLong(parts[1]);
+                                                            isPrefixed = true;
+                                                        } catch (NumberFormatException e) {
+                                                            // Not numeric, might be part of original filename
+                                                        }
+                                                        if (isPrefixed) {
+                                                            fn = parts[2]; // Extract original filename
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            row.put("fileName", fn != null && !fn.trim().isEmpty() ? fn : "");
                                             String mt = mediaRs.getString(2);
                                             if (mt != null && !mt.isEmpty()) {
                                                 row.put("mimeType", mt);
@@ -369,6 +403,11 @@ public class ConversationController {
                                             if (fs != null && !mediaRs.wasNull()) {
                                                 row.put("fileSize", fs);
                                             }
+                                        } else {
+                                            // Media record doesn't exist, but hasMedia is true
+                                            // This can happen if media wasn't downloaded yet
+                                            // Don't set mediaDownloadUrl to avoid 404 errors - media will be downloaded by priority ingestion
+                                            // Only set hasMedia flag, but no download URL until media is actually downloaded
                                         }
                                     }
                                 }
@@ -404,11 +443,17 @@ public class ConversationController {
             TargetUserService targetUserService = new TargetUserService(databaseManager);
             TargetUser targetUser = targetUserService.getTargetUserById(targetUserId);
             if (targetUser == null) {
-                return ResponseEntity.badRequest().body(ApiResponse.error("Target user not found"));
+                // Return plain text error, not JSON (to avoid browser downloading JSON as "media.json")
+                return ResponseEntity.status(404)
+                        .contentType(org.springframework.http.MediaType.TEXT_PLAIN)
+                        .body("Target user not found");
             }
             com.aria.platform.UserPlatform selected = targetUser.getSelectedPlatform();
             if (selected == null) {
-                return ResponseEntity.badRequest().body(ApiResponse.error("Target user has no selected platform"));
+                // Return plain text error, not JSON (to avoid browser downloading JSON as "media.json")
+                return ResponseEntity.status(404)
+                        .contentType(org.springframework.http.MediaType.TEXT_PLAIN)
+                        .body("Target user has no selected platform");
             }
 
             try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
@@ -452,9 +497,10 @@ public class ConversationController {
                 
                 if (dialogRowId == null) {
                     System.err.println("Dialog not found for targetUserId=" + targetUserId + ", userId=" + currentUserId + ", platformAccountId=" + selected.getPlatformId() + ", messageId=" + messageId);
+                    // Return plain text error, not JSON (to avoid browser downloading JSON as "media.json")
                     return ResponseEntity.status(404)
-                            .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
-                            .body(ApiResponse.error("Dialog not found"));
+                            .contentType(org.springframework.http.MediaType.TEXT_PLAIN)
+                            .body("Dialog not found");
                 }
 
                 Integer internalMsgId = null;
@@ -494,9 +540,10 @@ public class ConversationController {
                         }
                     }
                     if (internalMsgId == null) {
+                        // Return plain text error, not JSON (to avoid browser downloading JSON as "media.json")
                         return ResponseEntity.status(404)
-                                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
-                                .body(ApiResponse.error("Message not found"));
+                                .contentType(org.springframework.http.MediaType.TEXT_PLAIN)
+                                .body("Message not found");
                     }
                 }
 
@@ -518,9 +565,10 @@ public class ConversationController {
                 }
                 if (filePath == null) {
                     System.err.println("No media found for message ID: " + messageId + ", internal message ID: " + internalMsgId);
+                    // Return 404 with proper headers, not JSON (to avoid browser downloading JSON as "media.json")
                     return ResponseEntity.status(404)
-                            .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
-                            .body(ApiResponse.error("No media for this message"));
+                            .contentType(org.springframework.http.MediaType.TEXT_PLAIN)
+                            .body("No media for this message");
                 }
 
                 // Handle both absolute and relative paths
@@ -591,19 +639,69 @@ public class ConversationController {
                         System.err.println("  - " + tried + " (exists: " + java.nio.file.Files.exists(java.nio.file.Paths.get(tried)) + ")");
                     }
                     System.err.println("============================");
+                    // Return 404 with proper headers, not JSON (to avoid browser downloading JSON as "media.json")
                     return ResponseEntity.status(404)
-                            .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
-                            .body(ApiResponse.error("File not found on disk. Path from DB: " + filePath));
+                            .contentType(org.springframework.http.MediaType.TEXT_PLAIN)
+                            .body("File not found on disk. Path from DB: " + filePath);
                 }
                 
                 byte[] bytes = java.nio.file.Files.readAllBytes(path);
+                
+                // Sanitize fileName for Content-Disposition header (remove quotes, newlines, etc.)
+                String safeFileName = fileName.replace("\"", "").replace("\n", "").replace("\r", "").replace("\\", "");
+                if (safeFileName.isEmpty() || safeFileName.equals("media.bin")) {
+                    // Try to infer filename from file path
+                    String pathStr = path.toString();
+                    int lastSlash = pathStr.lastIndexOf('/');
+                    int lastBackslash = pathStr.lastIndexOf('\\');
+                    int lastSeparator = Math.max(lastSlash, lastBackslash);
+                    if (lastSeparator >= 0 && lastSeparator < pathStr.length() - 1) {
+                        safeFileName = pathStr.substring(lastSeparator + 1);
+                    } else {
+                        safeFileName = "media"; // Fallback if filename is empty
+                    }
+                }
+                
+                // Determine if it should be inline (for images/videos) or attachment (for other files)
+                boolean isInline = mimeType != null && (mimeType.startsWith("image/") || mimeType.startsWith("video/"));
+                String contentDisposition = isInline 
+                    ? "inline; filename=\"" + safeFileName + "\""
+                    : "attachment; filename=\"" + safeFileName + "\"";
+                
+                // Set proper Content-Type based on file extension if mimeType is generic
+                String finalMimeType = mimeType;
+                if (mimeType == null || mimeType.equals("application/octet-stream")) {
+                    String lowerFileName = safeFileName.toLowerCase();
+                    if (lowerFileName.endsWith(".csv")) {
+                        finalMimeType = "text/csv";
+                    } else if (lowerFileName.endsWith(".pdf")) {
+                        finalMimeType = "application/pdf";
+                    } else if (lowerFileName.endsWith(".txt")) {
+                        finalMimeType = "text/plain";
+                    } else if (lowerFileName.endsWith(".json")) {
+                        finalMimeType = "application/json";
+                    } else if (lowerFileName.endsWith(".jpg") || lowerFileName.endsWith(".jpeg")) {
+                        finalMimeType = "image/jpeg";
+                    } else if (lowerFileName.endsWith(".png")) {
+                        finalMimeType = "image/png";
+                    } else if (lowerFileName.endsWith(".gif")) {
+                        finalMimeType = "image/gif";
+                    } else if (lowerFileName.endsWith(".mp4")) {
+                        finalMimeType = "video/mp4";
+                    }
+                }
+                
                 return ResponseEntity.ok()
-                        .header("Content-Disposition", "attachment; filename=\"" + fileName.replace("\"", "\\\"") + "\"")
-                        .header("Content-Type", mimeType)
+                        .header("Content-Disposition", contentDisposition)
+                        .header("Content-Type", finalMimeType)
                         .body(bytes);
             }
         } catch (Exception e) {
-            return ResponseEntity.internalServerError().body(ApiResponse.error("Error downloading media: " + e.getMessage()));
+            // Return plain text error, not JSON (to avoid browser downloading JSON/CSV)
+            e.printStackTrace();
+            return ResponseEntity.status(500)
+                    .contentType(org.springframework.http.MediaType.TEXT_PLAIN)
+                    .body("Error downloading media: " + e.getMessage());
         }
     }
 

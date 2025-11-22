@@ -1171,15 +1171,14 @@ function ConversationView({ userId = 1 }) {
                       }}
                       onContextMenu={(e) => e.stopPropagation()}
                     >
-                      {msg.hasMedia || msg.mediaUrl ? (
+                      {/* First check if text contains a link without actual media attachment - if so, treat as link */}
+                      {isUrl(msg.text) && (!msg.hasMedia || (msg.mediaUrl && isUrl(msg.mediaUrl) && !msg.fileName)) ? (
+                        // It's a link in text without real media attachment, render it as a clickable link
+                        renderTextWithLinks(msg.text)
+                      ) : msg.hasMedia || msg.mediaUrl ? (
                         <div>
-                          {/* Check if it's actually a link/URL (not a file download) */}
-                          {!msg.hasMedia && isUrl(msg.text) ? (
-                            // It's a link in text, render it as a clickable link
-                            <div>
-                              {renderTextWithLinks(msg.text)}
-                            </div>
-                          ) : msg.mediaUrl && isUrl(msg.mediaUrl) ? (
+                          {/* Check if mediaUrl is an external link (not a download endpoint) */}
+                          {msg.mediaUrl && isUrl(msg.mediaUrl) && !msg.fileName ? (
                             // mediaUrl is an external link, render as clickable link
                             <a
                               href={msg.mediaUrl}
@@ -1190,41 +1189,213 @@ function ConversationView({ userId = 1 }) {
                             >
                               {msg.mediaUrl}
                             </a>
-                          ) : msg.mediaUrl && (msg.mediaUrl.match(/\.mp4$|video\//) || msg.mimeType?.match(/^video\//)) ? (
-                            <video src={msg.mediaUrl} controls style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6 }} onClick={(e) => e.stopPropagation()} />
-                          ) : msg.mediaUrl && (msg.mediaUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) || msg.mimeType?.match(/^image\//)) ? (
-                            <img src={msg.mediaUrl} alt="sent" style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6, objectFit: 'contain' }} onClick={(e) => e.stopPropagation()} />
-                          ) : (
-                            <div style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: 6, fontSize: '0.85rem' }}>
-                              📎 {msg.fileName ? (
-                                <span>{msg.fileName}</span>
-                              ) : (
-                                <span>Media file</span>
-                              )}
-                              {msg.fileSize && (
-                                <span style={{ fontSize: '0.75rem', color: '#666', marginLeft: '4px' }}>
-                                  ({(msg.fileSize / 1024).toFixed(1)} KB)
-                                </span>
+                          ) : msg.hasMedia && msg.mediaUrl && (msg.mediaUrl.match(/\.mp4$|video\//) || msg.mimeType?.match(/^video\//)) ? (
+                            <div>
+                              <video 
+                                src={msg.mediaUrl} 
+                                controls 
+                                style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6 }} 
+                                onClick={(e) => e.stopPropagation()}
+                                onError={(e) => {
+                                  // If video fails to load, hide it
+                                  e.target.style.display = 'none';
+                                  console.error('Failed to load video:', msg.mediaUrl);
+                                }}
+                              />
+                              {/* Download button for videos */}
+                              {msg.mediaUrl && (
+                                <div style={{ marginTop: 4, fontSize: '0.75rem' }}>
+                                  <a 
+                                    href={msg.mediaUrl} 
+                                    download={msg.fileName || 'video.mp4'}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      // Force download
+                                      e.preventDefault();
+                                      const link = document.createElement('a');
+                                      link.href = msg.mediaUrl;
+                                      link.download = msg.fileName || 'video.mp4';
+                                      link.target = '_blank';
+                                      document.body.appendChild(link);
+                                      link.click();
+                                      document.body.removeChild(link);
+                                    }}
+                                    style={{ color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
+                                  >
+                                    Download
+                                  </a>
+                                  {msg.fileName && (
+                                    <span style={{ fontSize: '0.7rem', color: '#666', marginLeft: '4px' }}>
+                                      ({msg.fileName})
+                                    </span>
+                                  )}
+                                  {msg.fileSize && (
+                                    <span style={{ fontSize: '0.7rem', color: '#666', marginLeft: '4px' }}>
+                                      ({(msg.fileSize / 1024).toFixed(1)} KB)
+                                    </span>
+                                  )}
+                                </div>
                               )}
                             </div>
-                          )}
-                          {msg.text && !isUrl(msg.text) && !isUrl(msg.mediaUrl) && (
+                          ) : msg.hasMedia && msg.mediaUrl && (msg.mediaUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) || msg.mimeType?.match(/^image\//)) ? (
+                            <div>
+                              <img 
+                                src={msg.mediaUrl} 
+                                alt="sent" 
+                                style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6, objectFit: 'contain' }} 
+                                onClick={(e) => e.stopPropagation()}
+                                onError={(e) => {
+                                  // If image fails to load, show placeholder or file info
+                                  e.target.style.display = 'none';
+                                  const parent = e.target.parentElement;
+                                  if (parent) {
+                                    parent.innerHTML = `
+                                      <div style="padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.85rem;">
+                                        📎 ${msg.fileName && msg.fileName.trim() ? `<span>${msg.fileName}</span>` : '<span>Media file</span>'}
+                                        ${msg.fileSize ? `<span style="font-size: 0.75rem; color: #666; margin-left: 4px;">(${(msg.fileSize / 1024).toFixed(1)} KB)</span>` : ''}
+                                      </div>
+                                    `;
+                                  }
+                                  console.error('Failed to load image:', msg.mediaUrl);
+                                }}
+                              />
+                              {/* Download button for images */}
+                              {msg.mediaUrl && (
+                                <div style={{ marginTop: 4, fontSize: '0.75rem' }}>
+                                  <a 
+                                    href={msg.mediaUrl} 
+                                    download={msg.fileName || 'image.jpg'}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      // Force download
+                                      e.preventDefault();
+                                      const link = document.createElement('a');
+                                      link.href = msg.mediaUrl;
+                                      link.download = msg.fileName || 'image.jpg';
+                                      link.target = '_blank';
+                                      document.body.appendChild(link);
+                                      link.click();
+                                      document.body.removeChild(link);
+                                    }}
+                                    style={{ color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
+                                  >
+                                    Download
+                                  </a>
+                                  {msg.fileName && (
+                                    <span style={{ fontSize: '0.7rem', color: '#666', marginLeft: '4px' }}>
+                                      ({msg.fileName})
+                                    </span>
+                                  )}
+                                  {msg.fileSize && (
+                                    <span style={{ fontSize: '0.7rem', color: '#666', marginLeft: '4px' }}>
+                                      ({(msg.fileSize / 1024).toFixed(1)} KB)
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ) : msg.hasMedia && msg.mediaUrl ? (
+                            // Display files (PDF, documents, etc.) - similar to Telegram style
+                            <div 
+                              style={{ 
+                                padding: '8px 12px', 
+                                border: '1px solid rgba(255,255,255,0.3)', 
+                                borderRadius: 8, 
+                                background: 'rgba(255,255,255,0.1)',
+                                cursor: msg.mediaUrl ? 'pointer' : 'default',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '12px'
+                              }}
+                              onClick={(e) => {
+                                if (!msg.mediaUrl) {
+                                  e.stopPropagation();
+                                  return;
+                                }
+                                e.stopPropagation();
+                                // Open file in new tab
+                                window.open(msg.mediaUrl, '_blank');
+                              }}
+                            >
+                              {/* File icon - circular with document icon */}
+                              <div style={{
+                                width: '40px',
+                                height: '40px',
+                                borderRadius: '50%',
+                                background: 'rgba(255,255,255,0.2)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '20px',
+                                flexShrink: 0
+                              }}>
+                                📄
+                              </div>
+                              {/* File info */}
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ 
+                                  fontWeight: 'bold', 
+                                  color: 'white',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                  fontSize: '0.9rem'
+                                }}>
+                                  {msg.fileName && msg.fileName.trim() ? msg.fileName : 'Media file'}
+                                </div>
+                                {msg.fileSize && (
+                                  <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.7)', marginTop: '2px' }}>
+                                    {(msg.fileSize / 1024).toFixed(1)} KB
+                                  </div>
+                                )}
+                              </div>
+                              {/* Download button - only show if mediaUrl exists */}
+                              {msg.mediaUrl && (
+                                <a 
+                                  href={msg.mediaUrl} 
+                                  download={msg.fileName && msg.fileName.trim() ? msg.fileName : 'media'}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    // Force download
+                                    e.preventDefault();
+                                    const link = document.createElement('a');
+                                    link.href = msg.mediaUrl;
+                                    link.download = msg.fileName && msg.fileName.trim() ? msg.fileName : 'media';
+                                    document.body.appendChild(link);
+                                    link.click();
+                                    document.body.removeChild(link);
+                                  }}
+                                  style={{ 
+                                    padding: '6px 12px', 
+                                    background: 'rgba(255,255,255,0.2)', 
+                                    color: 'white', 
+                                    textDecoration: 'none', 
+                                    borderRadius: 6,
+                                    fontSize: '0.75rem',
+                                    cursor: 'pointer',
+                                    fontWeight: 'bold',
+                                    flexShrink: 0
+                                  }}
+                                >
+                                  Download
+                                </a>
+                              )}
+                            </div>
+                          ) : null}
+                          {/* Show text below media if it exists and is not just a link */}
+                          {msg.text && !isUrl(msg.text) && (
                             <div style={{ marginTop: '4px', fontSize: '0.9rem' }}>
                               {msg.text}
                             </div>
                           )}
-                          {/* Only show download button if it's actual media (not a link) */}
-                          {!isUrl(msg.mediaUrl) && !isUrl(msg.text) && msg.hasMedia && msg.mediaUrl && !msg.mediaUrl.match(/^https?:\/\//) && (
-                            <div style={{ marginTop: 2, fontSize: '0.75rem' }}>
-                              <a 
-                                href={msg.mediaUrl || conversationApi.downloadMediaUrl(targetId, userId, msg.messageId)} 
-                                download={msg.fileName || 'media'}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                Download
-                              </a>
+                          {/* If text is a link and we have media, show the link separately */}
+                          {msg.text && isUrl(msg.text) && msg.hasMedia && (
+                            <div style={{ marginTop: '4px', fontSize: '0.9rem' }}>
+                              {renderTextWithLinks(msg.text)}
                             </div>
                           )}
                         </div>
