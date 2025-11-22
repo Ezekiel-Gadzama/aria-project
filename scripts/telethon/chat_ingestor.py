@@ -116,22 +116,93 @@ def save_dialog(user_id, dialog_id, name, type_, message_count, media_count):
         return result[0] if result else None
 
 
-def save_message(dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id=None):
-    sql = """
-        INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
-        ON CONFLICT (dialog_id, message_id) DO UPDATE SET
-            timestamp = EXCLUDED.timestamp,
-            has_media = EXCLUDED.has_media,
-            raw_json = EXCLUDED.raw_json,
-            reference_id = EXCLUDED.reference_id
-            -- Note: We DON'T update text or sender here to preserve edits made through the app
-        RETURNING id
+def save_message(dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id=None, is_edited_on_telegram=False):
     """
+    Save message to database. If message already exists:
+    - If edited on Telegram (is_edited_on_telegram=True): Update text, timestamp, and set last_updated
+    - If not edited on Telegram: Preserve text to keep edits made through the app
+    """
+    if is_edited_on_telegram:
+        # Message was edited on Telegram - update text, timestamp, and set last_updated
+        sql = """
+            INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            ON CONFLICT (dialog_id, message_id) DO UPDATE SET
+                text = EXCLUDED.text,
+                timestamp = EXCLUDED.timestamp,
+                has_media = EXCLUDED.has_media,
+                raw_json = EXCLUDED.raw_json,
+                reference_id = EXCLUDED.reference_id,
+                last_updated = NOW()
+            RETURNING id
+        """
+    else:
+        # Message not edited on Telegram - preserve text to keep app edits
+        sql = """
+            INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            ON CONFLICT (dialog_id, message_id) DO UPDATE SET
+                timestamp = EXCLUDED.timestamp,
+                has_media = EXCLUDED.has_media,
+                raw_json = EXCLUDED.raw_json,
+                reference_id = EXCLUDED.reference_id
+                -- Note: We DON'T update text or sender here to preserve edits made through the app
+            RETURNING id
+        """
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(sql, (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id))
         result = cur.fetchone()
         return result[0] if result else None
+
+
+async def check_and_delete_messages(dialog_id, telegram_message_ids_batch, min_msg_id, max_msg_id):
+    """
+    Check for deleted messages in a specific batch range.
+    Compares DB messages in the range [min_msg_id, max_msg_id] with Telegram message IDs.
+    Deletes messages from DB that don't exist in Telegram.
+    """
+    if not telegram_message_ids_batch:
+        return 0
+    
+    try:
+        # Get message IDs from database in this batch range
+        db_sql = """
+            SELECT message_id FROM messages 
+            WHERE dialog_id = %s 
+            AND message_id >= %s 
+            AND message_id <= %s
+        """
+        with get_connection() as conn, conn.cursor() as cur:
+            cur.execute(db_sql, (dialog_id, min_msg_id, max_msg_id))
+            db_message_ids_in_range = {row[0] for row in cur.fetchall()}
+        
+        # Find messages in database that don't exist in Telegram (were deleted)
+        deleted_message_ids = db_message_ids_in_range - telegram_message_ids_batch
+        
+        if deleted_message_ids:
+            safe_print(f"  Found {len(deleted_message_ids)} deleted message(s) in batch range [{min_msg_id}, {max_msg_id}], removing from database...")
+            # Delete messages and their associated media
+            with get_connection() as conn_del, conn_del.cursor() as cur_del:
+                for deleted_msg_id in deleted_message_ids:
+                    # Get internal message ID to delete media
+                    internal_sql = "SELECT id FROM messages WHERE dialog_id = %s AND message_id = %s"
+                    cur_del.execute(internal_sql, (dialog_id, deleted_msg_id))
+                    internal_result = cur_del.fetchone()
+                    if internal_result:
+                        internal_msg_id = internal_result[0]
+                        # Delete media first (foreign key constraint)
+                        media_delete_sql = "DELETE FROM media WHERE message_id = %s"
+                        cur_del.execute(media_delete_sql, (internal_msg_id,))
+                        # Delete message
+                        msg_delete_sql = "DELETE FROM messages WHERE dialog_id = %s AND message_id = %s"
+                        cur_del.execute(msg_delete_sql, (dialog_id, deleted_msg_id))
+                conn_del.commit()
+            safe_print(f"  Removed {len(deleted_message_ids)} deleted message(s) from database")
+            return len(deleted_message_ids)
+        return 0
+    except Exception as e:
+        safe_print(f"  Warning: Failed to check for deleted messages in batch: {e}")
+        return 0
 
 
 def save_media(message_id, type_, file_path, file_name, file_size, mime_type):
@@ -489,26 +560,73 @@ async def ingest_chat_history():
             # This ensures we have enough messages even if some are deleted (UI displays last 50)
             is_priority_target = (priority_dialog and dialog == priority_dialog)
             
+            # Get existing message info from database to detect edits
+            db_messages_info = {}  # {message_id: (db_text, db_timestamp)}
+            try:
+                db_sql = """
+                    SELECT message_id, text, timestamp FROM messages 
+                    WHERE dialog_id = %s 
+                    ORDER BY message_id DESC 
+                    LIMIT 500
+                """
+                with get_connection() as conn, conn.cursor() as cur:
+                    cur.execute(db_sql, (dialog_id,))
+                    for row in cur.fetchall():
+                        msg_id_db, text_db, timestamp_db = row
+                        db_messages_info[msg_id_db] = (text_db, timestamp_db)
+            except Exception as e:
+                safe_print(f"  Warning: Failed to fetch existing messages from DB: {e}")
+            
             if last_message_id:
                 safe_print(f"  Resuming from message ID {last_message_id} (incremental update)")
                 # Robust incremental: loop with reconnect on disconnect and database lock retry
                 resume_from_id = last_message_id
+                batch_telegram_ids = set()
+                batch_min_id = None
+                batch_max_id = None
+                
                 while True:
-                        try:
-                            async for message in client.iter_messages(dialog.entity, limit=200, offset_id=resume_from_id):
-                                # Yield to sender/priority ingestion; if we disconnect, outer except will handle
-                                await _wait_for_sender_priority(max_wait_ms=100)  # Check for priority lock every 100ms
-                                await _disconnect_if_sending(client)
-                                await _ensure_connected(client)
+                    try:
+                        async for message in client.iter_messages(dialog.entity, limit=200, offset_id=resume_from_id):
+                            # Yield to sender/priority ingestion; if we disconnect, outer except will handle
+                            await _wait_for_sender_priority(max_wait_ms=100)  # Check for priority lock every 100ms
+                            await _disconnect_if_sending(client)
+                            await _ensure_connected(client)
 
                             # Stop if we reach messages older than or equal to last_message_id
                             if message.id <= last_message_id:
                                 break
 
+                            # Track message IDs in this batch for deletion detection
+                            batch_telegram_ids.add(message.id)
+                            if batch_min_id is None or message.id < batch_min_id:
+                                batch_min_id = message.id
+                            if batch_max_id is None or message.id > batch_max_id:
+                                batch_max_id = message.id
+
                             has_new_messages = True
                             sender = "me" if message.out else safe_chat_name
                             has_media = message.media is not None
-                            raw_json = json.dumps(message.to_dict(), default=str)
+                            message_dict = message.to_dict()
+                            raw_json = json.dumps(message_dict, default=str)
+                            
+                            # Check if message was edited on Telegram
+                            edit_date = message_dict.get('edit_date')
+                            is_edited_on_telegram = False
+                            
+                            # If message exists in DB, check if it was edited on Telegram
+                            if message.id in db_messages_info:
+                                db_text, db_timestamp = db_messages_info[message.id]
+                                if edit_date:
+                                    # Definitely edited on Telegram (has edit_date)
+                                    is_edited_on_telegram = True
+                                elif db_text and message.text and db_text.strip() != message.text.strip():
+                                    # Text changed - check if timestamp is newer
+                                    if db_timestamp and message.date.timestamp() > db_timestamp.timestamp():
+                                        is_edited_on_telegram = True
+                            elif edit_date:
+                                # New message with edit_date
+                                is_edited_on_telegram = True
                             
                             # Extract reference_id from reply_to if present
                             reference_id = None
@@ -518,7 +636,8 @@ async def ingest_chat_history():
 
                             msg_id = save_message(
                                 dialog_id, message.id, sender, message.text,
-                                message.date, has_media, raw_json, reference_id
+                                message.date, has_media, raw_json, reference_id,
+                                is_edited_on_telegram=is_edited_on_telegram
                             )
                             if msg_id:  # Only count if message was actually saved (not duplicate)
                                 message_count += 1
@@ -536,12 +655,26 @@ async def ingest_chat_history():
                             # Advance resume point to the newest processed id
                             if message.id > resume_from_id:
                                 resume_from_id = message.id
+                        
+                        # After processing batch, check for deleted messages in this batch range
+                        if batch_telegram_ids and batch_min_id is not None and batch_max_id is not None:
+                            await check_and_delete_messages(dialog_id, batch_telegram_ids, batch_min_id, batch_max_id)
+                            batch_telegram_ids.clear()  # Reset for next batch
+                            batch_min_id = None
+                            batch_max_id = None
+                        
                         # Completed iteration without disconnect
                         break
                     except Exception as e:
                         # If disconnected mid-iteration, reconnect and continue
                         if "Cannot send requests while disconnected" in str(e) or "disconnected" in str(e).lower():
                             await _ensure_connected(client)
+                            # Check for deletions before continuing
+                            if batch_telegram_ids and batch_min_id is not None and batch_max_id is not None:
+                                await check_and_delete_messages(dialog_id, batch_telegram_ids, batch_min_id, batch_max_id)
+                                batch_telegram_ids.clear()
+                                batch_min_id = None
+                                batch_max_id = None
                             # Loop continues with same resume_from_id
                             continue
                         # If database locked, wait and retry
@@ -613,7 +746,7 @@ async def ingest_chat_history():
                                 continue
                             raise
                     
-                    # For priority targets: Also check for deleted messages after phase 1
+                    # After phase 1, check for deleted messages in the last 80 range
                     if is_priority_target:
                         try:
                             # Get all message IDs from Telegram (from the 80 we just fetched)
@@ -621,39 +754,22 @@ async def ingest_chat_history():
                             async for msg in client.iter_messages(dialog.entity, limit=80, offset_id=0):
                                 telegram_message_ids_phase1.add(msg.id)
                             
-                            # Get all message IDs from database for this dialog
-                            db_sql = "SELECT message_id FROM messages WHERE dialog_id = %s"
-                            with get_connection() as conn, conn.cursor() as cur:
-                                cur.execute(db_sql, (dialog_id,))
-                                db_message_ids = {row[0] for row in cur.fetchall()}
-                            
-                            # Find messages in database that don't exist in Telegram (were deleted)
-                            deleted_message_ids = db_message_ids - telegram_message_ids_phase1
-                            
-                            if deleted_message_ids:
-                                safe_print(f"  Priority target: Found {len(deleted_message_ids)} deleted message(s), removing from database...")
-                                for deleted_msg_id in deleted_message_ids:
-                                    # Get internal message ID to delete media
-                                    internal_sql = "SELECT id FROM messages WHERE dialog_id = %s AND message_id = %s"
-                                    cur.execute(internal_sql, (dialog_id, deleted_msg_id))
-                                    internal_result = cur.fetchone()
-                                    if internal_result:
-                                        internal_msg_id = internal_result[0]
-                                        # Delete media first (foreign key constraint)
-                                        media_delete_sql = "DELETE FROM media WHERE message_id = %s"
-                                        cur.execute(media_delete_sql, (internal_msg_id,))
-                                        # Delete message
-                                        msg_delete_sql = "DELETE FROM messages WHERE dialog_id = %s AND message_id = %s"
-                                        cur.execute(msg_delete_sql, (dialog_id, deleted_msg_id))
-                                conn.commit()
-                                safe_print(f"  Priority target: Removed {len(deleted_message_ids)} deleted message(s) from database")
+                            # Check for deletions only in this range
+                            if telegram_message_ids_phase1:
+                                batch_min_id = min(telegram_message_ids_phase1)
+                                batch_max_id = max(telegram_message_ids_phase1)
+                                await check_and_delete_messages(dialog_id, telegram_message_ids_phase1, batch_min_id, batch_max_id)
                         except Exception as e:
-                            safe_print(f"  Warning: Failed to check for deleted messages in priority target: {e}")
+                            safe_print(f"  Warning: Failed to check for deleted messages in priority target phase 1: {e}")
                     
                     safe_print(f"  Priority target: Phase 1 complete (80 messages). Now continuing with full history from beginning")
                     # Phase 2: Continue with full ingestion from the oldest message we got
                     # This ensures we get the complete history
                     resume_from_id = oldest_message_id_phase1 if oldest_message_id_phase1 else 0
+                    batch_telegram_ids = set()
+                    batch_min_id = None
+                    batch_max_id = None
+                    
                     while True:
                         try:
                             async for message in client.iter_messages(dialog.entity, limit=200, offset_id=resume_from_id):
@@ -666,10 +782,33 @@ async def ingest_chat_history():
                                 if oldest_message_id_phase1 and message.id >= oldest_message_id_phase1:
                                     continue
 
+                                # Track message IDs in this batch for deletion detection
+                                batch_telegram_ids.add(message.id)
+                                if batch_min_id is None or message.id < batch_min_id:
+                                    batch_min_id = message.id
+                                if batch_max_id is None or message.id > batch_max_id:
+                                    batch_max_id = message.id
+
                                 has_new_messages = True
                                 sender = "me" if message.out else safe_chat_name
                                 has_media = message.media is not None
-                                raw_json = json.dumps(message.to_dict(), default=str)
+                                message_dict = message.to_dict()
+                                raw_json = json.dumps(message_dict, default=str)
+                                
+                                # Check if message was edited on Telegram
+                                edit_date = message_dict.get('edit_date')
+                                is_edited_on_telegram = False
+                                
+                                # If message exists in DB, check if it was edited on Telegram
+                                if message.id in db_messages_info:
+                                    db_text, db_timestamp = db_messages_info[message.id]
+                                    if edit_date:
+                                        is_edited_on_telegram = True
+                                    elif db_text and message.text and db_text.strip() != message.text.strip():
+                                        if db_timestamp and message.date.timestamp() > db_timestamp.timestamp():
+                                            is_edited_on_telegram = True
+                                elif edit_date:
+                                    is_edited_on_telegram = True
                                 
                                 # Extract reference_id from reply_to if present
                                 reference_id = None
@@ -679,7 +818,8 @@ async def ingest_chat_history():
 
                                 msg_id = save_message(
                                     dialog_id, message.id, sender, message.text,
-                                    message.date, has_media, raw_json, reference_id
+                                    message.date, has_media, raw_json, reference_id,
+                                    is_edited_on_telegram=is_edited_on_telegram
                                 )
                                 if msg_id:
                                     message_count += 1
@@ -696,10 +836,26 @@ async def ingest_chat_history():
 
                                 if message.id > resume_from_id:
                                     resume_from_id = message.id
+                            
+                            # After processing batch, check for deleted messages in this batch range
+                            if batch_telegram_ids:
+                                batch_min_id = min(batch_telegram_ids)
+                                batch_max_id = max(batch_telegram_ids)
+                                await check_and_delete_messages(dialog_id, batch_telegram_ids, batch_min_id, batch_max_id)
+                                batch_telegram_ids.clear()  # Reset for next batch
+                                batch_start_id = resume_from_id  # Reset for next batch
+                            
                             break
                         except Exception as e:
                             if "Cannot send requests while disconnected" in str(e) or "disconnected" in str(e).lower():
                                 await _ensure_connected(client)
+                                # Check for deletions before continuing
+                                if batch_telegram_ids:
+                                    batch_min_id = min(batch_telegram_ids) if batch_telegram_ids else 0
+                                    batch_max_id = max(batch_telegram_ids) if batch_telegram_ids else 0
+                                    await check_and_delete_messages(dialog_id, batch_telegram_ids, batch_min_id, batch_max_id)
+                                    batch_telegram_ids.clear()
+                                    batch_start_id = resume_from_id
                                 continue
                             if "database is locked" in str(e).lower():
                                 await asyncio.sleep(0.2)
@@ -711,6 +867,10 @@ async def ingest_chat_history():
                     safe_print(f"  First time ingestion (all messages)")
                     # Robust full ingestion with reconnect on disconnect and database lock retry
                     resume_from_id = 0
+                    batch_telegram_ids = set()
+                    batch_min_id = None
+                    batch_max_id = None
+                    
                     while True:
                         try:
                             async for message in client.iter_messages(dialog.entity, limit=200, offset_id=resume_from_id):
@@ -719,10 +879,33 @@ async def ingest_chat_history():
                                 await _disconnect_if_sending(client)
                                 await _ensure_connected(client)
 
+                                # Track message IDs in this batch for deletion detection
+                                batch_telegram_ids.add(message.id)
+                                if batch_min_id is None or message.id < batch_min_id:
+                                    batch_min_id = message.id
+                                if batch_max_id is None or message.id > batch_max_id:
+                                    batch_max_id = message.id
+
                                 has_new_messages = True
                                 sender = "me" if message.out else safe_chat_name
                                 has_media = message.media is not None
-                                raw_json = json.dumps(message.to_dict(), default=str)
+                                message_dict = message.to_dict()
+                                raw_json = json.dumps(message_dict, default=str)
+                                
+                                # Check if message was edited on Telegram
+                                edit_date = message_dict.get('edit_date')
+                                is_edited_on_telegram = False
+                                
+                                # If message exists in DB, check if it was edited on Telegram
+                                if message.id in db_messages_info:
+                                    db_text, db_timestamp = db_messages_info[message.id]
+                                    if edit_date:
+                                        is_edited_on_telegram = True
+                                    elif db_text and message.text and db_text.strip() != message.text.strip():
+                                        if db_timestamp and message.date.timestamp() > db_timestamp.timestamp():
+                                            is_edited_on_telegram = True
+                                elif edit_date:
+                                    is_edited_on_telegram = True
                                 
                                 # Extract reference_id from reply_to if present
                                 reference_id = None
@@ -732,7 +915,8 @@ async def ingest_chat_history():
 
                                 msg_id = save_message(
                                     dialog_id, message.id, sender, message.text,
-                                    message.date, has_media, raw_json, reference_id
+                                    message.date, has_media, raw_json, reference_id,
+                                    is_edited_on_telegram=is_edited_on_telegram
                                 )
                                 if msg_id:
                                     message_count += 1
@@ -749,10 +933,26 @@ async def ingest_chat_history():
 
                                 if message.id > resume_from_id:
                                     resume_from_id = message.id
+                            
+                            # After processing batch, check for deleted messages in this batch range
+                            if batch_telegram_ids:
+                                batch_min_id = min(batch_telegram_ids)
+                                batch_max_id = max(batch_telegram_ids)
+                                await check_and_delete_messages(dialog_id, batch_telegram_ids, batch_min_id, batch_max_id)
+                                batch_telegram_ids.clear()  # Reset for next batch
+                                batch_start_id = resume_from_id  # Reset for next batch
+                            
                             break
                         except Exception as e:
                             if "Cannot send requests while disconnected" in str(e) or "disconnected" in str(e).lower():
                                 await _ensure_connected(client)
+                                # Check for deletions before continuing
+                                if batch_telegram_ids:
+                                    batch_min_id = min(batch_telegram_ids) if batch_telegram_ids else 0
+                                    batch_max_id = max(batch_telegram_ids) if batch_telegram_ids else 0
+                                    await check_and_delete_messages(dialog_id, batch_telegram_ids, batch_min_id, batch_max_id)
+                                    batch_telegram_ids.clear()
+                                    batch_start_id = resume_from_id
                                 continue
                             if "database is locked" in str(e).lower():
                                 await asyncio.sleep(0.2)

@@ -26,6 +26,7 @@ function ConversationView({ userId = 1 }) {
   const [deleteModal, setDeleteModal] = useState(null); // { messageId, revoke: true/false } for delete confirmation
   const [recentlyEditedMessages, setRecentlyEditedMessages] = useState(new Set()); // Track recently edited message IDs to prevent polling from overwriting
   const [isOperationInProgress, setIsOperationInProgress] = useState(false); // Track if delete/edit is in progress to pause polling
+  const [deletedMessageIds, setDeletedMessageIds] = useState(new Set()); // Track deleted message IDs to prevent them from being re-added
   const messageInputRef = useRef(null); // Ref for message input field to focus when replying
 
   useEffect(() => {
@@ -91,103 +92,159 @@ function ConversationView({ userId = 1 }) {
         // Only trigger if not already running (backend will check and skip if already running)
         try {
           await conversationApi.ingestTarget(targetId, userId);
+          // Wait for priority ingestion to complete and update the database
+          // Priority ingestion deletes messages from DB, so we need to wait before fetching
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds for ingestion to complete
         } catch (ingestErr) {
           // Ignore ingestion errors - it's a background process
           // The backend will skip if ingestion is already running
           if (ingestErr.response?.status !== 200) {
             console.warn('Priority ingestion failed:', ingestErr);
           }
+          // Still wait a bit even on error (ingestion might have partially completed)
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
         
         // Then fetch messages from database
         const resp = await conversationApi.getMessages(targetId, userId, 50);
         if (resp.data?.success) {
           const rows = resp.data.data || [];
-          if (rows.length > 0) {
-            // Always update messages (in case order changed or messages were edited/deleted)
-            const loadedMessages = rows.map((r) => ({
-              text: r.text || '',
-              fromUser: !!r.fromUser,
-              timestamp: r.timestamp ? new Date(r.timestamp) : new Date(),
-              mediaUrl: r.mediaDownloadUrl || null,
-              messageId: r.messageId,
-              hasMedia: r.hasMedia || false,
-              fileName: r.fileName || null,
-              mimeType: r.mimeType || null,
-              edited: r.edited || false,
-              referenceId: r.referenceId || null,
-            }));
+          // Always update messages (database is the source of truth after priority ingestion)
+          // The database has already been updated by priority ingestion with deletions and edits
+          const loadedMessages = rows.map((r) => ({
+            text: r.text || '',
+            fromUser: !!r.fromUser,
+            timestamp: r.timestamp ? new Date(r.timestamp) : new Date(),
+            mediaUrl: r.mediaDownloadUrl || null,
+            messageId: r.messageId,
+            hasMedia: r.hasMedia || false,
+            fileName: r.fileName || null,
+            mimeType: r.mimeType || null,
+            edited: r.edited || false,
+            referenceId: r.referenceId || null,
+          }));
+          
+          // Always sync messages to reflect deletions and updates from database
+          // Database is the source of truth after priority ingestion has run
+          setMessages(prev => {
+            // Create map for quick lookup
+            const prevMap = new Map(prev.map(m => [m.messageId, m]));
             
-            // Always sync messages to reflect deletions and updates
-            // But preserve edited messages that might not be updated in DB yet
-            setMessages(prev => {
-              // Create maps for quick lookup
-              const prevMap = new Map(prev.map(m => [m.messageId, m]));
-              
-              // Merge loaded messages with previous state, preserving edited messages
-              // If a message was marked as edited in previous state or was recently edited, preserve it
-              const syncedMessages = loadedMessages.map(newMsg => {
-                const prevMsg = prevMap.get(newMsg.messageId);
+            // Track if there are changes
+            const prevIds = new Set(prev.map(m => m.messageId));
+            const newIds = new Set(loadedMessages.map(m => m.messageId));
+            const prevHighest = prev.length > 0 ? Math.max(...prev.map(m => m.messageId || 0)) : 0;
+            const newHighest = loadedMessages.length > 0 ? Math.max(...loadedMessages.map(m => m.messageId || 0)) : 0;
+            
+            // Always use loaded messages from database (source of truth)
+            // But preserve recently edited messages that might not be committed yet
+            // Also filter out messages that were deleted from the app UI
+            const syncedMessages = loadedMessages
+              .filter(newMsg => !deletedMessageIds.has(newMsg.messageId)) // Filter out deleted messages
+              .map(newMsg => {
                 const isRecentlyEdited = recentlyEditedMessages.has(newMsg.messageId);
                 
-                if (prevMsg) {
-                  // If this message was recently edited (within last 5 seconds), keep the previous version
-                  // This prevents polling from overwriting edits before database is updated
-                  if (isRecentlyEdited) {
+                // ALWAYS show Telegram edits immediately - don't preserve them
+                // If message is marked as edited in DB, it was edited on Telegram
+                if (newMsg.edited) {
+                  // Message was edited on Telegram - always show the updated text
+                  return newMsg;
+                }
+                
+                // If this message was recently edited in the app (within last 5 seconds), 
+                // keep the previous version ONLY if it's not marked as edited in DB
+                // This prevents polling from overwriting app edits before database is updated
+                if (isRecentlyEdited) {
+                  const prevMsg = prevMap.get(newMsg.messageId);
+                  if (prevMsg && !prevMsg.edited) {
+                    // Only preserve if previous version wasn't marked as edited
+                    // This means it was an app-side edit, not a Telegram edit
                     return prevMsg; // Keep the edited version from previous state
                   }
-                  
-                  // If the message was previously edited and the text matches, keep it as edited
-                  if (prevMsg.edited && prevMsg.text === newMsg.text) {
-                    return { ...newMsg, edited: true };
-                  }
-                  
-                  // If text changed, it was edited - use the new text from DB and mark as edited
-                  if (prevMsg.text !== newMsg.text) {
-                    return { ...newMsg, edited: true };
-                  }
                 }
+                
+                // For all other messages, use what's in the database
                 return newMsg;
               });
-              
-              const prevIds = new Set(prev.map(m => m.messageId));
-              const newIds = new Set(syncedMessages.map(m => m.messageId));
-              const prevHighest = prev.length > 0 ? Math.max(...prev.map(m => m.messageId || 0)) : 0;
-              const newHighest = syncedMessages.length > 0 ? Math.max(...syncedMessages.map(m => m.messageId || 0)) : 0;
-              
-              // Check if messages are different (added, removed, or edited)
-              const hasNewMessages = newHighest > prevHighest;
-              const hasRemovedMessages = prevIds.size > newIds.size;
-              
-              // Check if any existing message was edited (text changed)
-              let hasEditedMessages = false;
-              for (const newMsg of syncedMessages) {
-                const prevMsg = prevMap.get(newMsg.messageId);
-                if (prevMsg && prevMsg.text !== newMsg.text) {
+            
+            // Check if messages are different (added, removed, or edited)
+            const hasNewMessages = newHighest > prevHighest;
+            const hasRemovedMessages = prevIds.size > newIds.size;
+            const hasDifferentLength = prev.length !== loadedMessages.length;
+            
+            // Check if any existing message was edited (text changed)
+            // Also check if message is marked as edited in DB (Telegram edit)
+            let hasEditedMessages = false;
+            for (const newMsg of loadedMessages) {
+              if (deletedMessageIds.has(newMsg.messageId)) continue; // Skip deleted messages
+              const prevMsg = prevMap.get(newMsg.messageId);
+              const isRecentlyEdited = recentlyEditedMessages.has(newMsg.messageId);
+              // Detect edits if text changed OR message is marked as edited in DB
+              if (prevMsg) {
+                if (newMsg.edited || (prevMsg.text !== newMsg.text && !isRecentlyEdited)) {
                   hasEditedMessages = true;
                   break;
                 }
               }
-              
-              const hasChanged = hasNewMessages || hasRemovedMessages || hasEditedMessages || 
-                prevIds.size !== newIds.size || syncedMessages.length !== prev.length;
-              
-              // Update if messages changed (new, deleted, or edited)
-              if (hasChanged) {
-                // Auto-scroll to bottom if we're near the bottom and have new messages
-                setTimeout(() => {
-                  const messagesContainer = document.querySelector('.messages-container');
-                  if (messagesContainer && hasNewMessages) {
-                    const isNearBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 200;
-                    if (isNearBottom) {
-                      messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                    }
+            }
+            
+            // ALWAYS update messages after priority ingestion to reflect deletions
+            // Database is the source of truth after priority ingestion has run
+            // Priority ingestion has deleted messages from DB, so we must sync
+            const hasChanged = hasNewMessages || hasRemovedMessages || hasEditedMessages || 
+              prevIds.size !== newIds.size || hasDifferentLength;
+            
+            // ALWAYS update if there are any differences (messages added, removed, or edited)
+            // After priority ingestion runs, database is authoritative
+            // Check if messages differ in any way
+            const idsDiffer = prevIds.size !== newIds.size || 
+              [...prevIds].some(id => !newIds.has(id)) || 
+              [...newIds].some(id => !prevIds.has(id));
+            const lengthDiffers = prev.length !== loadedMessages.length;
+            
+            // If IDs or length differ, definitely update (deletions detected)
+            if (idsDiffer || lengthDiffers || hasChanged) {
+              // Auto-scroll to bottom if we're near the bottom and have new messages
+              setTimeout(() => {
+                const messagesContainer = document.querySelector('.messages-container');
+                if (messagesContainer && hasNewMessages) {
+                  const isNearBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 200;
+                  if (isNearBottom) {
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
                   }
-                }, 100);
-                // Return synced messages (preserving edited state where appropriate)
-                return syncedMessages;
+                }
+              }, 100);
+              
+              // Return synced messages (database is source of truth, except for recently edited)
+              // If there were deletions, syncedMessages will have fewer messages than prev
+              return syncedMessages;
+            }
+            
+            // After priority ingestion runs, database is the source of truth
+            // Always check for ID differences to catch deletions that might not change the count
+            // Compare sets directly to detect any ID differences (more reliable)
+            const hasIdDifference = prevIds.size !== newIds.size || 
+              Array.from(prevIds).some(id => !newIds.has(id)) || 
+              Array.from(newIds).some(id => !prevIds.has(id));
+            
+            // If IDs or length differ, always update (deletions or additions detected)
+            // This ensures deletions are immediately reflected in UI
+            if (hasIdDifference || prev.length !== loadedMessages.length) {
+              return syncedMessages;
+            }
+            
+            // If everything matches exactly, keep previous messages
+            return prev;
+          });
+          
+          // Also update if messages array is empty (no messages in database after deletion)
+          if (rows.length === 0) {
+            setMessages(prev => {
+              // Only clear if we previously had messages (avoid clearing on initial load)
+              if (prev.length > 0) {
+                return [];
               }
-              return prev; // No changes, keep previous messages
+              return prev;
             });
           }
         }
@@ -209,7 +266,7 @@ function ConversationView({ userId = 1 }) {
     }, 5000); // Changed to 5 seconds to give ingestion time to complete
     
     return () => clearInterval(messageInterval);
-  }, [conversationInitialized, targetId, userId, isOperationInProgress]); // Include isOperationInProgress to pause/resume polling
+  }, [conversationInitialized, targetId, userId, isOperationInProgress, deletedMessageIds, recentlyEditedMessages]); // Include dependencies
 
   const loadTarget = async () => {
     try {
@@ -570,11 +627,14 @@ function ConversationView({ userId = 1 }) {
     // Remove message from UI optimistically (immediately)
     setMessages(prev => prev.filter(m => m.messageId !== messageIdToDelete));
     
+    // Track this message as deleted to prevent it from being re-added by polling
+    setDeletedMessageIds(prev => new Set([...prev, messageIdToDelete]));
+    
     try {
       const response = await conversationApi.delete(targetId, userId, messageIdToDelete, revoke);
       
       // Wait a bit to ensure database update is committed
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Increased wait time
       
       if (response.data?.success) {
         if (response.data?.data?.message) {
@@ -582,23 +642,44 @@ function ConversationView({ userId = 1 }) {
           setError(response.data.data.message);
           setTimeout(() => setError(null), 5000);
         }
+        // Message successfully deleted - keep it in deletedMessageIds to prevent re-adding
+        // Remove from deletedMessageIds after priority ingestion has time to sync (30 seconds)
+        setTimeout(() => {
+          setDeletedMessageIds(prev => {
+            const updated = new Set(prev);
+            updated.delete(messageIdToDelete);
+            return updated;
+          });
+        }, 30000); // Remove from tracking after 30 seconds to allow priority ingestion to sync
       } else {
         // Show error if deletion failed - message will be restored by polling
         setError(response.data?.error || 'Failed to delete message');
         setTimeout(() => setError(null), 5000);
+        // Remove from deleted tracking since deletion failed
+        setDeletedMessageIds(prev => {
+          const updated = new Set(prev);
+          updated.delete(messageIdToDelete);
+          return updated;
+        });
         // Reload messages to restore the deleted message if deletion failed
         setTimeout(() => loadMessages(), 1000);
       }
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to delete message');
       setTimeout(() => setError(null), 5000);
+      // Remove from deleted tracking since deletion failed
+      setDeletedMessageIds(prev => {
+        const updated = new Set(prev);
+        updated.delete(messageIdToDelete);
+        return updated;
+      });
       // Reload messages to restore the deleted message if deletion failed
       setTimeout(() => loadMessages(), 1000);
     } finally {
       // Resume polling after delete completes (with a delay to ensure DB is updated)
       setTimeout(() => {
         setIsOperationInProgress(false);
-      }, 2000); // Wait 2 seconds to ensure database is updated before resuming polling
+      }, 2500); // Wait 2.5 seconds to ensure database is updated before resuming polling
     }
   };
 

@@ -253,6 +253,8 @@ public class DatabaseManager {
             stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS raw_json JSONB");
             // Ensure reference_id column exists for message replies
             stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS reference_id BIGINT");
+            // Ensure last_updated column exists for detecting edited messages
+            stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS last_updated TIMESTAMPTZ");
             // Ensure account_name column exists in platform_accounts
             stmt.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS account_name TEXT");
             stmt.execute(createMediaTable);

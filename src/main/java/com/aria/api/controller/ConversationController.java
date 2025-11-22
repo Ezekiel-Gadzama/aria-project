@@ -290,7 +290,8 @@ public class ConversationController {
 
                 try (java.sql.PreparedStatement ps = conn.prepareStatement(
                         "SELECT m.id, m.message_id, m.sender, m.text, m.timestamp, m.has_media, m.reference_id, " +
-                                "CASE WHEN m.text IS NOT NULL AND EXISTS (SELECT 1 FROM messages m2 WHERE m2.dialog_id = m.dialog_id AND m2.message_id = m.message_id AND m2.timestamp < m.timestamp) THEN TRUE ELSE FALSE END as edited " +
+                                "CASE WHEN m.last_updated IS NOT NULL AND m.last_updated > m.timestamp THEN TRUE ELSE FALSE END as edited, " +
+                                "m.last_updated " +
                                 "FROM messages m WHERE m.dialog_id = ? " +
                                 "ORDER BY m.message_id DESC LIMIT ?")) {
                     ps.setInt(1, dialogRowId);
@@ -325,10 +326,28 @@ public class ConversationController {
                                 row.put("referenceId", referenceId);
                             }
                             
-                            // Get edited flag (column 8) - check if message was edited by comparing text with raw_json
-                            // For now, we'll check if the message text differs from what would be in the original raw_json
-                            // Since we don't have an edited column, we'll mark all as false and let the edit endpoint set it
-                            row.put("edited", false);
+                            // Get edited flag (column 8) - check if message was edited by comparing last_updated with timestamp
+                            // If last_updated exists and is after timestamp, message was edited
+                            boolean isEdited = false;
+                            try {
+                                java.sql.Timestamp lastUpdated = rs.getTimestamp(9); // last_updated column (column 9)
+                                java.sql.Timestamp messageTimestamp = rs.getTimestamp(5); // timestamp column
+                                if (lastUpdated != null && messageTimestamp != null) {
+                                    // If last_updated is after timestamp, message was edited
+                                    isEdited = lastUpdated.after(messageTimestamp);
+                                } else {
+                                    // Fallback: use the CASE expression result (column 8)
+                                    isEdited = rs.getBoolean(8);
+                                }
+                            } catch (Exception e) {
+                                // If last_updated column doesn't exist, use CASE expression result (column 8)
+                                try {
+                                    isEdited = rs.getBoolean(8);
+                                } catch (Exception e2) {
+                                    isEdited = false;
+                                }
+                            }
+                            row.put("edited", isEdited);
                             
                             // Get media metadata (fileName, mimeType, fileSize) from media table using internal message ID
                             if (rs.getBoolean(6)) { // hasMedia
