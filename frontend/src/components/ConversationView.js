@@ -115,6 +115,23 @@ function ConversationView({ userId = 1 }) {
     })();
   }, [targetId]);
 
+  // Auto-scroll to bottom when new messages are added (especially when sending)
+  useEffect(() => {
+    // Only scroll if we're near the bottom (user hasn't scrolled up)
+    const messagesContainer = messagesContainerRef.current;
+    if (messagesContainer && messages.length > 0) {
+      const isNearBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 300;
+      if (isNearBottom) {
+        // Small delay to ensure DOM has updated
+        setTimeout(() => {
+          if (messagesContainerRef.current) {
+            messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+          }
+        }, 50);
+      }
+    }
+  }, [messages.length]); // Trigger when message count changes (new message added)
+
   // Poll for online status when conversation is initialized
   useEffect(() => {
     if (!conversationInitialized || !target) return;
@@ -204,17 +221,23 @@ function ConversationView({ userId = 1 }) {
           // Always sync messages to reflect deletions and updates from database
           // Database is the source of truth after priority ingestion has run
           setMessages(prev => {
-            // Check if operation started during message processing (use ref for synchronous check)
-            if (operationInProgressRef.current) {
-              return prev; // Don't update messages if operation is in progress
-            }
-            
-            // Create map for quick lookup
-            const prevMap = new Map(prev.map(m => [m.messageId, m]));
+            // CRITICAL: Capture deletedMessageIds at the start to use latest value
+            // This ensures we always use the most current deleted message IDs
+            const currentDeletedIds = deletedMessageIds;
             
             // CRITICAL: Filter out deleted messages from prev FIRST before any processing
-            // This ensures we never compare or return messages that were deleted
-            const prevFiltered = prev.filter(msg => !deletedMessageIds.has(msg.messageId));
+            // This must happen BEFORE checking operationInProgress to ensure deleted messages are always removed
+            const prevFiltered = prev.filter(msg => !currentDeletedIds.has(msg.messageId));
+            
+            // Check if operation started during message processing (use ref for synchronous check)
+            // But still filter deleted messages even if operation is in progress
+            if (operationInProgressRef.current) {
+              // Return filtered prev (with deleted messages removed) even if operation is in progress
+              // This ensures deleted messages don't reappear
+              return prevFiltered;
+            }
+            
+            // Create map for quick lookup (using filtered prev)
             const prevMapFiltered = new Map(prevFiltered.map(m => [m.messageId, m]));
             
             // Track if there are changes (using filtered prev)
@@ -222,9 +245,10 @@ function ConversationView({ userId = 1 }) {
             
             // CRITICAL: Filter out deleted messages from loaded messages
             // This ensures deleted messages never appear in the UI, even if they come back from API
+            // Use the captured currentDeletedIds to ensure we're using the latest deleted IDs
             const filteredMessages = loadedMessages.filter(newMsg => {
-              // Always exclude deleted messages
-              if (deletedMessageIds.has(newMsg.messageId)) {
+              // Always exclude deleted messages - use captured set
+              if (currentDeletedIds.has(newMsg.messageId)) {
                 return false;
               }
               return true;
@@ -271,10 +295,11 @@ function ConversationView({ userId = 1 }) {
             
             // Also preserve any pending messages that aren't in the database yet (newly sent messages)
             // BUT: Filter out any pending messages that were deleted
-            // Use prevFiltered which already excludes deleted messages
+            // Use prevFiltered which already excludes deleted messages, but double-check with currentDeletedIds
             const pendingMessages = prevFiltered.filter(msg => 
               msg.isPending && 
-              !newIds.has(msg.messageId)
+              !newIds.has(msg.messageId) &&
+              !currentDeletedIds.has(msg.messageId) // Double-check with captured set
             );
             const finalMessages = pendingMessages.length > 0 
               ? [...syncedMessages, ...pendingMessages]
@@ -282,7 +307,8 @@ function ConversationView({ userId = 1 }) {
             
             // FINAL SAFETY CHECK: Remove any deleted messages that might have slipped through
             // This is a last line of defense to ensure deleted messages never appear
-            const finalFilteredMessages = finalMessages.filter(msg => !deletedMessageIds.has(msg.messageId));
+            // Use captured currentDeletedIds to ensure we use the latest value
+            const finalFilteredMessages = finalMessages.filter(msg => !currentDeletedIds.has(msg.messageId));
             
             // Check if messages are different (added, removed, or edited)
             // Use prevFiltered for all comparisons to ensure deleted messages don't affect the logic
@@ -379,8 +405,10 @@ function ConversationView({ userId = 1 }) {
           // But preserve any pending messages that aren't deleted
           if (rows.length === 0) {
             setMessages(prev => {
+              // Capture deletedMessageIds to use latest value
+              const currentDeletedIds = deletedMessageIds;
               // Filter out ALL deleted messages first
-              const filtered = prev.filter(msg => !deletedMessageIds.has(msg.messageId));
+              const filtered = prev.filter(msg => !currentDeletedIds.has(msg.messageId));
               // Only clear if we previously had messages and all were deleted (avoid clearing on initial load)
               if (prev.length > 0 && filtered.length === 0) {
                 return [];
@@ -505,6 +533,14 @@ function ConversationView({ userId = 1 }) {
       setPendingMedia(null);
       const replyToId = replyingTo?.messageId;
       setReplyingTo(null); // Clear reply immediately
+      
+      // INSTANT SCROLL: Scroll to bottom immediately when message is added
+      setTimeout(() => {
+        const messagesContainer = messagesContainerRef.current;
+        if (messagesContainer) {
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+      }, 0); // Use 0ms timeout to scroll after React updates DOM
 
       // Send in background (don't block UI)
       conversationApi.sendMediaWithText(
@@ -573,6 +609,14 @@ function ConversationView({ userId = 1 }) {
       setNewMessage(''); // Clear input immediately
       const replyToId = replyingTo?.messageId;
       setReplyingTo(null); // Clear reply immediately
+      
+      // INSTANT SCROLL: Scroll to bottom immediately when message is added
+      setTimeout(() => {
+        const messagesContainer = messagesContainerRef.current;
+        if (messagesContainer) {
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+      }, 0); // Use 0ms timeout to scroll after React updates DOM
 
       // Send in background (don't block UI)
       conversationApi.respond(
@@ -812,8 +856,11 @@ function ConversationView({ userId = 1 }) {
             fileSize: r.fileSize || null, // Include file size
           };
         });
-        setMessages(loadedMessages);
-        console.log(`Loaded ${loadedMessages.length} messages for target ${targetId}`);
+        // CRITICAL: Filter out deleted messages before setting state
+        // This ensures deleted messages never appear even on initial load
+        const filteredLoadedMessages = loadedMessages.filter(msg => !deletedMessageIds.has(msg.messageId));
+        setMessages(filteredLoadedMessages);
+        console.log(`Loaded ${filteredLoadedMessages.length} messages for target ${targetId}`);
         
         // Track highest message ID for new message detection
         if (loadedMessages.length > 0) {
@@ -851,12 +898,29 @@ function ConversationView({ userId = 1 }) {
     const messageIdToDelete = messageId;
     setDeleteModal(null);
     
-    // INSTANT UI UPDATE: Remove message optimistically immediately
-    setMessages(prev => prev.filter(m => m.messageId !== messageIdToDelete));
+    // CRITICAL: Track this message as deleted FIRST (before removing from UI)
+    // This ensures polling can't re-add it even if it runs during deletion
+    // Use functional update to ensure we're working with latest state
+    setDeletedMessageIds(prev => {
+      const updated = new Set(prev);
+      updated.add(messageIdToDelete);
+      return updated;
+    });
     
-    // Track this message as deleted to prevent it from being re-added by polling
-    // Keep it in the set for longer to ensure it never reappears
-    setDeletedMessageIds(prev => new Set([...prev, messageIdToDelete]));
+    // INSTANT UI UPDATE: Remove message optimistically immediately
+    // Use functional update to ensure we're working with latest state
+    setMessages(prev => {
+      // Filter out the deleted message immediately
+      return prev.filter(m => m.messageId !== messageIdToDelete);
+    });
+    
+    // Also ensure deletedMessageIds is updated synchronously by using a callback
+    // This ensures the state is updated before any polling can run
+    setDeletedMessageIds(prev => {
+      const updated = new Set(prev);
+      updated.add(messageIdToDelete);
+      return updated;
+    });
     
     // Delete in background (don't block UI)
     conversationApi.delete(targetId, userId, messageIdToDelete, revoke)
