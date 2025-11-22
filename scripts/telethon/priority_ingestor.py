@@ -1,10 +1,11 @@
 """
 Priority ingestion script for active target user conversation.
 This script:
-1. Ingests the last 80 messages (even if already ingested before)
+1. Ingests the last 50 messages (even if already ingested before)
 2. Checks for deleted messages (messages in DB but not in Telegram)
 3. Deletes messages from DB that no longer exist in Telegram
 4. This runs every 5 seconds when a conversation is open
+5. Skips media downloads if media already exists (for faster sync)
 """
 import asyncio
 from telethon import TelegramClient
@@ -16,6 +17,7 @@ import pathlib
 import sys
 import re
 from typing import Optional
+from datetime import datetime, timezone
 
 load_dotenv()
 
@@ -137,7 +139,7 @@ def create_safe_filename(name):
     return safe
 
 async def download_media(client, message, chat_name, message_id):
-    """Download media from Telegram message and return metadata."""
+    """Download media from Telegram message and return metadata. Skips if already exists."""
     if not message.media:
         return None
     try:
@@ -196,6 +198,28 @@ async def download_media(client, message, chat_name, message_id):
             filename = f"{safe_chat_name}_{message_id}_{media_type}{file_ext}"
         
         filepath = os.path.join(chat_dir, filename)
+        
+        # Check if media file already exists - skip download if it does
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+            # Media already exists, return metadata without downloading
+            file_size = os.path.getsize(filepath)
+            display_filename = original_filename
+            if not display_filename:
+                parts = filename.split('_', 2)
+                if len(parts) >= 3:
+                    display_filename = parts[2]  # Get the part after chat_name and message_id
+                else:
+                    display_filename = filename
+            
+            return {
+                "type": media_type,
+                "file_path": filepath,
+                "file_name": display_filename,
+                "file_size": file_size,
+                "mime_type": getattr(message.media.document, 'mime_type', None) if hasattr(message.media, 'document') else ("image/jpeg" if media_type == "photo" else None)
+            }
+        
+        # Media doesn't exist, download it
         await client.download_media(message, file=filepath)
         
         # Verify file was downloaded
@@ -231,9 +255,10 @@ async def download_media(client, message, chat_name, message_id):
 
 async def ingest_priority_target(target_username: str):
     """
-    Priority ingestion: Always re-ingest last 80 messages and check for deletions.
+    Priority ingestion: Always re-ingest last 50 messages and check for deletions.
     This runs every 5 seconds when a conversation is open.
     Uses a priority lock to pause main ingestion during execution.
+    Skips media downloads if files already exist for faster sync.
     """
     # Priority lock to pause main ingestion
     lock_env = os.getenv("TELETHON_LOCK_PATH", "/app/telethon_send.lock")
@@ -313,34 +338,55 @@ async def ingest_priority_target(target_username: str):
         # Save/update dialog
         dialog_id = save_dialog(user_id, entity.id, safe_chat_name, "private")
 
-        # STEP 1: Get message IDs and timestamps from database for last 80 messages
+        # STEP 1: Get message IDs and timestamps from database for last 50 messages
         # This will help us detect edits and deletions
-        db_messages_info = {}  # {message_id: (db_text, db_timestamp)}
+        # Also get last_updated to detect app-side edits that should be preserved
+        db_messages_info = {}  # {message_id: (db_text, db_timestamp, last_updated)}
         try:
             db_sql = """
-                SELECT message_id, text, timestamp FROM messages 
+                SELECT message_id, text, timestamp, last_updated FROM messages 
                 WHERE dialog_id = %s 
                 ORDER BY message_id DESC 
-                LIMIT 100
+                LIMIT 75
             """
             with get_connection() as conn, conn.cursor() as cur:
                 cur.execute(db_sql, (dialog_id,))
                 for row in cur.fetchall():
-                    msg_id_db, text_db, timestamp_db = row
-                    db_messages_info[msg_id_db] = (text_db, timestamp_db)
+                    msg_id_db, text_db, timestamp_db, last_updated_db = row
+                    db_messages_info[msg_id_db] = (text_db, timestamp_db, last_updated_db)
         except Exception as e:
             safe_print(f"Warning: Failed to fetch existing messages from DB: {e}")
 
-        # STEP 2: Always re-ingest last 80 messages (even if already ingested)
+        # STEP 1.5: Get list of messages deleted via app (to prevent re-adding them)
+        app_deleted_message_ids = set()
+        try:
+            deleted_sql = """
+                SELECT message_id FROM app_deleted_messages 
+                WHERE dialog_id = %s 
+                AND deleted_at > NOW() - INTERVAL '1 hour'
+            """
+            with get_connection() as conn, conn.cursor() as cur:
+                cur.execute(deleted_sql, (dialog_id,))
+                for row in cur.fetchall():
+                    app_deleted_message_ids.add(row[0])
+        except Exception as e:
+            safe_print(f"Warning: Failed to fetch app-deleted messages: {e}")
+
+        # STEP 2: Always re-ingest last 50 messages (reduced from 80 for faster sync)
         # This ensures we get new messages, edits, and can check for deletions
-        safe_print(f"Priority ingestion: Re-ingesting last 80 messages for {safe_chat_name}")
+        # 50 messages is enough for UI display and faster than 80
+        safe_print(f"Priority ingestion: Re-ingesting last 50 messages for {safe_chat_name}")
         telegram_message_ids = set()
         telegram_message_info = {}  # {message_id: (text, timestamp, edit_date)}
         messages_saved = 0
         messages_updated = 0
 
         try:
-            async for message in client.iter_messages(entity, limit=80, offset_id=0):
+            async for message in client.iter_messages(entity, limit=50, offset_id=0):
+                # Skip messages that were deleted via app (don't re-add them)
+                if message.id in app_deleted_message_ids:
+                    safe_print(f"Priority ingestion: Skipping message {message.id} (deleted via app)")
+                    continue
                 telegram_message_ids.add(message.id)
                 
                 sender = "me" if message.out else safe_chat_name
@@ -354,38 +400,54 @@ async def ingest_priority_target(target_username: str):
                 is_edited_on_telegram = False
                 
                 # If message exists in DB, check if it was edited on Telegram
-                # If edit_date exists, it was definitely edited on Telegram
-                # Also check if text or timestamp changed (but preserve app edits)
+                # IMPORTANT: If message was recently edited via app (last_updated within last 30 seconds),
+                # preserve the DB text and don't overwrite it with Telegram text
                 if message.id in db_messages_info:
-                    db_text, db_timestamp = db_messages_info[message.id]
-                    # Check if message was edited by comparing edit_date, text, or timestamp
-                    if edit_date:
-                        # Definitely edited on Telegram (has edit_date)
-                        is_edited_on_telegram = True
-                        messages_updated += 1
-                    elif db_text and message.text and db_text.strip() != message.text.strip():
-                        # Text changed - could be edited on Telegram or via app
-                        # If timestamp is newer than DB timestamp, it was likely edited on Telegram
-                        if db_timestamp and message.date.timestamp() > db_timestamp.timestamp():
+                    db_text, db_timestamp, last_updated_db = db_messages_info[message.id]
+                    
+                    # Check if message was recently edited via app (within last 30 seconds)
+                    # If so, preserve the DB text and don't treat it as a Telegram edit
+                    is_recently_edited_via_app = False
+                    if last_updated_db:
+                        # last_updated_db is a timezone-aware datetime from PostgreSQL
+                        # Compare with current UTC time
+                        time_diff = datetime.now(timezone.utc) - last_updated_db
+                        if time_diff.total_seconds() < 30:
+                            # Message was edited via app within last 30 seconds - preserve DB text
+                            is_recently_edited_via_app = True
+                    
+                    # Only treat as Telegram edit if:
+                    # 1. Not recently edited via app (to preserve app edits)
+                    # 2. Has edit_date OR text/timestamp changed in Telegram
+                    if not is_recently_edited_via_app:
+                        # Check if message was edited by comparing edit_date, text, or timestamp
+                        if edit_date:
+                            # Definitely edited on Telegram (has edit_date)
                             is_edited_on_telegram = True
                             messages_updated += 1
-                    elif db_timestamp and message.date.timestamp() > db_timestamp.timestamp():
-                        # Timestamp changed (newer) - might have been edited on Telegram
-                        # Check if text also changed or if edit_date exists in raw_json
-                        if db_text and message.text and db_text.strip() != message.text.strip():
-                            # Text changed and timestamp is newer - likely edited on Telegram
-                            is_edited_on_telegram = True
-                            messages_updated += 1
-                        else:
-                            # Timestamp changed but text same - check raw_json for edit_date
-                            try:
-                                raw_json_dict = json.loads(raw_json) if raw_json else {}
-                                if raw_json_dict.get('edit_date'):
-                                    # Has edit_date in raw_json - definitely edited on Telegram
-                                    is_edited_on_telegram = True
-                                    messages_updated += 1
-                            except:
-                                pass
+                        elif db_text and message.text and db_text.strip() != message.text.strip():
+                            # Text changed - could be edited on Telegram or via app
+                            # If timestamp is newer than DB timestamp, it was likely edited on Telegram
+                            if db_timestamp and message.date.timestamp() > db_timestamp.timestamp():
+                                is_edited_on_telegram = True
+                                messages_updated += 1
+                        elif db_timestamp and message.date.timestamp() > db_timestamp.timestamp():
+                            # Timestamp changed (newer) - might have been edited on Telegram
+                            # Check if text also changed or if edit_date exists in raw_json
+                            if db_text and message.text and db_text.strip() != message.text.strip():
+                                # Text changed and timestamp is newer - likely edited on Telegram
+                                is_edited_on_telegram = True
+                                messages_updated += 1
+                            else:
+                                # Timestamp changed but text same - check raw_json for edit_date
+                                try:
+                                    raw_json_dict = json.loads(raw_json) if raw_json else {}
+                                    if raw_json_dict.get('edit_date'):
+                                        # Has edit_date in raw_json - definitely edited on Telegram
+                                        is_edited_on_telegram = True
+                                        messages_updated += 1
+                                except:
+                                    pass
                 elif edit_date:
                     # New message with edit_date (shouldn't happen, but handle it)
                     is_edited_on_telegram = True
@@ -404,14 +466,22 @@ async def ingest_priority_target(target_username: str):
                 if msg_id:
                     messages_saved += 1
                     # Download and save media if message has media
+                    # But only if it doesn't already exist (check happens in download_media function)
+                    # This makes priority ingestion faster by skipping already-downloaded media
                     if has_media:
                         try:
                             media_info = await download_media(client, message, safe_chat_name, message.id)
                             if media_info:
-                                save_media(
-                                    msg_id, media_info["type"], media_info["file_path"],
-                                    media_info["file_name"], media_info["file_size"], media_info["mime_type"]
-                                )
+                                # Check if media already exists in database before saving
+                                with get_connection() as conn, conn.cursor() as cur:
+                                    check_sql = "SELECT id FROM media WHERE message_id = %s LIMIT 1"
+                                    cur.execute(check_sql, (msg_id,))
+                                    if not cur.fetchone():
+                                        # Media doesn't exist in DB, save it
+                                        save_media(
+                                            msg_id, media_info["type"], media_info["file_path"],
+                                            media_info["file_name"], media_info["file_size"], media_info["mime_type"]
+                                        )
                         except Exception as e:
                             safe_print(f"Warning: Failed to download/save media for message {message.id}: {e}")
         except Exception as e:
@@ -423,33 +493,33 @@ async def ingest_priority_target(target_username: str):
             safe_print(f"Priority ingestion: Saved/updated {messages_saved} messages")
 
         # STEP 3: Check for deleted messages - compare DB with Telegram
-        # Get all message IDs from database that should be in the last 80 messages
+        # Get all message IDs from database that should be in the last 50 messages
         try:
-            # Get message IDs from DB that are in the last 80 range
-            # We check messages that are likely in the last 80 messages range
+            # Get message IDs from DB that are in the last 50 range
+            # We check messages that are likely in the last 50 messages range
             # Get all message IDs from DB for this dialog (we'll filter by what exists in Telegram)
             db_sql = """
                 SELECT message_id FROM messages 
                 WHERE dialog_id = %s 
                 ORDER BY message_id DESC 
-                LIMIT 200
+                LIMIT 150
             """
             with get_connection() as conn, conn.cursor() as cur:
                 cur.execute(db_sql, (dialog_id,))
                 db_message_ids = {row[0] for row in cur.fetchall()}
             
             # Find messages in database that don't exist in Telegram (were deleted)
-            # Check ALL messages in DB that are in the range of the last 80 messages we fetched from Telegram
+            # Check ALL messages in DB that are in the range of the last 50 messages we fetched from Telegram
             # We need to check messages that are >= lowest_telegram_id (inclusive) to account for all recent messages
             if telegram_message_ids:
                 highest_telegram_id = max(telegram_message_ids)
                 lowest_telegram_id = min(telegram_message_ids)
                 # Check ALL DB messages that are in the range [lowest_telegram_id, highest_telegram_id + buffer]
-                # We add a buffer of 100 to account for message ID gaps
-                # This ensures we catch all messages that should exist in the last 80 but don't
+                # We add a buffer of 50 to account for message ID gaps (reduced from 100 since we're checking 50 messages)
+                # This ensures we catch all messages that should exist in the last 50 but don't
                 db_message_ids_in_range = {
                     msg_id for msg_id in db_message_ids 
-                    if msg_id >= lowest_telegram_id and msg_id <= highest_telegram_id + 100
+                    if msg_id >= lowest_telegram_id and msg_id <= highest_telegram_id + 50
                 }
                 deleted_message_ids = db_message_ids_in_range - telegram_message_ids
             else:

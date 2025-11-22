@@ -257,6 +257,30 @@ public class DatabaseManager {
             stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS last_updated TIMESTAMPTZ");
             // Ensure account_name column exists in platform_accounts
             stmt.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS account_name TEXT");
+            
+            // Table to track messages deleted via app (to prevent priority ingestion from re-adding them)
+            String createAppDeletedMessagesTable = """
+                CREATE TABLE IF NOT EXISTS app_deleted_messages (
+                    id SERIAL PRIMARY KEY,
+                    dialog_id INT NOT NULL REFERENCES dialogs(id) ON DELETE CASCADE,
+                    message_id BIGINT NOT NULL,
+                    deleted_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(dialog_id, message_id)
+                )
+            """;
+            stmt.execute(createAppDeletedMessagesTable);
+            // Create index for faster lookups
+            stmt.execute("CREATE INDEX IF NOT EXISTS app_deleted_messages_dialog_message_idx ON app_deleted_messages(dialog_id, message_id)");
+            // Clean up old deletion records (older than 1 hour) to prevent table from growing too large
+            stmt.execute("""
+                CREATE OR REPLACE FUNCTION cleanup_old_deleted_messages()
+                RETURNS void AS $$
+                BEGIN
+                    DELETE FROM app_deleted_messages WHERE deleted_at < NOW() - INTERVAL '1 hour';
+                END;
+                $$ LANGUAGE plpgsql;
+            """);
+            
             stmt.execute(createMediaTable);
             stmt.execute(createTargetUsersTable);
             stmt.execute(createTargetUserPlatformsTable);

@@ -796,99 +796,102 @@ public class ConversationController {
             Long telegramMessageId = sendResult.messageId;
             Long peerId = sendResult.peerId;
 
-            // Get or create dialog and save the message to the database
-            Integer dialogRowId = null;
-            try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
-                    System.getenv("DATABASE_URL") != null
-                            ? System.getenv("DATABASE_URL")
-                            : "jdbc:postgresql://localhost:5432/aria",
-                    System.getenv("DATABASE_USER") != null
-                            ? System.getenv("DATABASE_USER")
-                            : "postgres",
-                    System.getenv("DATABASE_PASSWORD") != null
-                            ? System.getenv("DATABASE_PASSWORD")
-                            : "Ezekiel(23)")) {
-                
-                // First, try to find existing dialog by name
-                try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                        "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' AND name = ? ORDER BY id DESC LIMIT 1")) {
-                    ps.setInt(1, currentUserId);
-                    ps.setInt(2, selected.getPlatformId());
-                    ps.setString(3, targetUser.getName());
-                    try (java.sql.ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) {
-                            dialogRowId = rs.getInt(1);
-                        }
-                    }
-                }
-                
-                // If no dialog found and we have peer ID, try to find by peer ID
-                if (dialogRowId == null && peerId != null && peerId > 0) {
-                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                            "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND dialog_id = ? LIMIT 1")) {
-                        ps.setInt(1, currentUserId);
-                        ps.setInt(2, selected.getPlatformId());
-                        ps.setLong(3, peerId);
-                        try (java.sql.ResultSet rs = ps.executeQuery()) {
-                            if (rs.next()) {
-                                dialogRowId = rs.getInt(1);
-                            }
-                        }
-                    }
-                }
-                
-                // If still no dialog, create one using peer ID if available
-                if (dialogRowId == null && peerId != null && peerId > 0) {
-                    try {
-                        dialogRowId = DatabaseManager.saveDialog(
-                            currentUserId,
-                            selected.getPlatformId(),
-                            peerId,
-                            targetUser.getName(),
-                            "private",
-                            0, // message_count
-                            0  // media_count
-                        );
-                        System.out.println("Created new dialog for target: " + targetUser.getName() + ", dialogId=" + dialogRowId);
-                    } catch (Exception e) {
-                        System.err.println("Warning: Failed to create dialog: " + e.getMessage());
-                        e.printStackTrace();
-                    }
-                }
-                
-                // Save the message if we have a dialog
-                if (dialogRowId != null && telegramMessageId > 0) {
-                    java.time.LocalDateTime now = java.time.LocalDateTime.now();
-                    try {
-                        DatabaseManager.saveMessage(
-                            dialogRowId,
-                            telegramMessageId,
-                            "me",
-                            incomingMessage,
-                            now,
-                            false, // hasMedia
-                            referenceId // reference_id for replies
-                        );
-                        System.out.println("Saved sent message to database: messageId=" + telegramMessageId + ", dialogId=" + dialogRowId);
-                    } catch (Exception e) {
-                        // Log but don't fail - message was sent, just couldn't save to DB
-                        System.err.println("Warning: Failed to save sent message to database: " + e.getMessage());
-                        e.printStackTrace();
-                    }
-                }
-            } catch (Exception e) {
-                // Log but don't fail - message was sent successfully
-                System.err.println("Warning: Error saving sent message to database: " + e.getMessage());
-                e.printStackTrace();
-            }
-
-            // Return the message data so UI can display it immediately
+            // Return the message data immediately so UI can display it instantly
+            // Database operations will happen in background (non-blocking)
             java.util.Map<String, Object> messageData = new java.util.HashMap<>();
             messageData.put("messageId", telegramMessageId.intValue());
             messageData.put("fromUser", true);
             messageData.put("text", incomingMessage);
             messageData.put("timestamp", System.currentTimeMillis());
             messageData.put("hasMedia", false);
+            
+            // Save to database in background (non-blocking) - don't wait for it
+            new Thread(() -> {
+                try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                        System.getenv("DATABASE_URL") != null
+                                ? System.getenv("DATABASE_URL")
+                                : "jdbc:postgresql://localhost:5432/aria",
+                        System.getenv("DATABASE_USER") != null
+                                ? System.getenv("DATABASE_USER")
+                                : "postgres",
+                        System.getenv("DATABASE_PASSWORD") != null
+                                ? System.getenv("DATABASE_PASSWORD")
+                                : "Ezekiel(23)")) {
+                    
+                    Integer dialogRowId = null;
+                    // First, try to find existing dialog by name
+                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                            "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' AND name = ? ORDER BY id DESC LIMIT 1")) {
+                        ps.setInt(1, currentUserId);
+                        ps.setInt(2, selected.getPlatformId());
+                        ps.setString(3, targetUser.getName());
+                        try (java.sql.ResultSet rs = ps.executeQuery()) {
+                            if (rs.next()) {
+                                dialogRowId = rs.getInt(1);
+                            }
+                        }
+                    }
+                    
+                    // If no dialog found and we have peer ID, try to find by peer ID
+                    if (dialogRowId == null && peerId != null && peerId > 0) {
+                        try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND dialog_id = ? LIMIT 1")) {
+                            ps.setInt(1, currentUserId);
+                            ps.setInt(2, selected.getPlatformId());
+                            ps.setLong(3, peerId);
+                            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                if (rs.next()) {
+                                    dialogRowId = rs.getInt(1);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // If still no dialog, create one using peer ID if available
+                    if (dialogRowId == null && peerId != null && peerId > 0) {
+                        try {
+                            dialogRowId = DatabaseManager.saveDialog(
+                                currentUserId,
+                                selected.getPlatformId(),
+                                peerId,
+                                targetUser.getName(),
+                                "private",
+                                0, // message_count
+                                0  // media_count
+                            );
+                            System.out.println("Created new dialog for target: " + targetUser.getName() + ", dialogId=" + dialogRowId);
+                        } catch (Exception e) {
+                            System.err.println("Warning: Failed to create dialog: " + e.getMessage());
+                            e.printStackTrace();
+                        }
+                    }
+                    
+                    // Save the message if we have a dialog
+                    if (dialogRowId != null && telegramMessageId > 0) {
+                        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+                        try {
+                            DatabaseManager.saveMessage(
+                                dialogRowId,
+                                telegramMessageId,
+                                "me",
+                                incomingMessage,
+                                now,
+                                false, // hasMedia
+                                referenceId // reference_id for replies
+                            );
+                            System.out.println("Saved sent message to database: messageId=" + telegramMessageId + ", dialogId=" + dialogRowId);
+                        } catch (Exception e) {
+                            // Log but don't fail - message was sent, just couldn't save to DB
+                            System.err.println("Warning: Failed to save sent message to database: " + e.getMessage());
+                            e.printStackTrace();
+                        }
+                    }
+                } catch (Exception e) {
+                    // Log but don't fail - message was sent successfully
+                    System.err.println("Warning: Error saving sent message to database: " + e.getMessage());
+                    e.printStackTrace();
+                }
+            }).start();
 
             return ResponseEntity.ok(ApiResponse.success("Message sent", messageData));
         } catch (Exception e) {
@@ -1023,58 +1026,13 @@ public class ConversationController {
                         // We'll still return hasMedia=true so frontend can display it properly
                     }
                     
-                    // Update the message in the database after successful edit in Telegram (encrypt it like saveMessage does)
-                    // Use transaction to ensure atomic update
-                    conn.setAutoCommit(false);
-                    try {
-                        try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                                "UPDATE messages SET text = ? WHERE dialog_id = ? AND message_id = ?")) {
-                            String encryptedText = newText != null && !newText.isEmpty() ? 
-                                com.aria.storage.SecureStorage.encrypt(newText) : null;
-                            ps.setString(1, encryptedText);
-                            ps.setInt(2, dialogsRowId);
-                            ps.setInt(3, lastMsgId);
-                            int updated = ps.executeUpdate();
-                            
-                            // Commit the transaction
-                            conn.commit();
-                            System.out.println("Database transaction committed for message edit (editLast): messageId=" + lastMsgId + ", rowsUpdated=" + updated);
-                        }
-                    } catch (Exception e) {
-                        // Rollback on error
-                        try {
-                            conn.rollback();
-                            System.err.println("Rolled back transaction due to error: " + e.getMessage());
-                        } catch (Exception rollbackEx) {
-                            System.err.println("Failed to rollback: " + rollbackEx.getMessage());
-                        }
-                        // Log but don't fail - message was edited in Telegram
-                        System.err.println("Warning: Failed to update message in database: " + e.getMessage());
-                    } finally {
-                        conn.setAutoCommit(true); // Restore auto-commit
-                    }
-                    
-                    // Return updated message data
+                    // Return updated message data immediately (database update happens in background)
                     java.util.Map<String, Object> messageData = new java.util.HashMap<>();
                     messageData.put("messageId", lastMsgId);
                     messageData.put("fromUser", true);
                     messageData.put("text", newText != null && !newText.isEmpty() ? newText : null);
                     messageData.put("edited", true);
-                    // Keep original timestamp, don't update to current time when editing
-                    try (java.sql.PreparedStatement tsPs = conn.prepareStatement(
-                            "SELECT timestamp FROM messages WHERE dialog_id = ? AND message_id = ?")) {
-                        tsPs.setInt(1, dialogsRowId);
-                        tsPs.setInt(2, lastMsgId);
-                        try (java.sql.ResultSet tsRs = tsPs.executeQuery()) {
-                            if (tsRs.next() && tsRs.getTimestamp(1) != null) {
-                                messageData.put("timestamp", tsRs.getTimestamp(1).getTime());
-                            } else {
-                                messageData.put("timestamp", System.currentTimeMillis());
-                            }
-                        }
-                    } catch (Exception e) {
-                        messageData.put("timestamp", System.currentTimeMillis());
-                    }
+                    messageData.put("timestamp", System.currentTimeMillis()); // Use current time, will be corrected by polling
                     messageData.put("hasMedia", hasMedia);
                     if (hasMedia) {
                         // Always include mediaDownloadUrl when hasMedia is true
@@ -1087,6 +1045,55 @@ public class ConversationController {
                             messageData.put("mimeType", mimeType);
                         }
                     }
+                    
+                    // Update database in background (non-blocking) - don't wait for it
+                    final Integer finalDialogsRowId = dialogsRowId;
+                    final Integer finalLastMsgId = lastMsgId;
+                    final String finalNewText = newText;
+                    new Thread(() -> {
+                        try (java.sql.Connection bgConn = java.sql.DriverManager.getConnection(
+                                System.getenv("DATABASE_URL") != null
+                                        ? System.getenv("DATABASE_URL")
+                                        : "jdbc:postgresql://localhost:5432/aria",
+                                System.getenv("DATABASE_USER") != null
+                                        ? System.getenv("DATABASE_USER")
+                                        : "postgres",
+                                System.getenv("DATABASE_PASSWORD") != null
+                                        ? System.getenv("DATABASE_PASSWORD")
+                                        : "Ezekiel(23)")) {
+                            bgConn.setAutoCommit(false);
+                            try {
+                                try (java.sql.PreparedStatement ps = bgConn.prepareStatement(
+                                        "UPDATE messages SET text = ?, last_updated = NOW() WHERE dialog_id = ? AND message_id = ?")) {
+                                    String encryptedText = finalNewText != null && !finalNewText.isEmpty() ? 
+                                        com.aria.storage.SecureStorage.encrypt(finalNewText) : null;
+                                    ps.setString(1, encryptedText);
+                                    ps.setInt(2, finalDialogsRowId);
+                                    ps.setInt(3, finalLastMsgId);
+                                    int updated = ps.executeUpdate();
+                                    
+                                    // Commit the transaction
+                                    bgConn.commit();
+                                    System.out.println("Database transaction committed for message edit (editLast): messageId=" + finalLastMsgId + ", rowsUpdated=" + updated);
+                                }
+                            } catch (Exception e) {
+                                // Rollback on error
+                                try {
+                                    bgConn.rollback();
+                                    System.err.println("Rolled back transaction due to error: " + e.getMessage());
+                                } catch (Exception rollbackEx) {
+                                    System.err.println("Failed to rollback: " + rollbackEx.getMessage());
+                                }
+                                // Log but don't fail - message was edited in Telegram
+                                System.err.println("Warning: Failed to update message in database: " + e.getMessage());
+                            } finally {
+                                bgConn.setAutoCommit(true); // Restore auto-commit
+                            }
+                        } catch (Exception e) {
+                            System.err.println("Warning: Failed to update message in database: " + e.getMessage());
+                            e.printStackTrace();
+                        }
+                    }).start();
                     
                     return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
                 } else {
@@ -1244,57 +1251,13 @@ public class ConversationController {
                                 // The mediaDownloadUrl will work because downloadMedia endpoint can fetch from Telegram if needed
                             }
                             
-                            // Update message text in database (encrypt it like saveMessage does)
-                            // Use transaction to ensure atomic update
-                            conn.setAutoCommit(false);
-                            try {
-                                try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                                        "UPDATE messages SET text = ? WHERE dialog_id = ? AND message_id = ?")) {
-                                    String encryptedText = newText != null && !newText.isEmpty() ? 
-                                        com.aria.storage.SecureStorage.encrypt(newText) : null;
-                                    ps.setString(1, encryptedText);
-                                    ps.setInt(2, dialogsRowId);
-                                    ps.setInt(3, messageId);
-                                    int updated = ps.executeUpdate();
-                                    
-                                    // Commit the transaction
-                                    conn.commit();
-                                    System.out.println("Database transaction committed for message edit: messageId=" + messageId + ", rowsUpdated=" + updated);
-                                }
-                            } catch (Exception e) {
-                                // Rollback on error
-                                try {
-                                    conn.rollback();
-                                    System.err.println("Rolled back transaction due to error: " + e.getMessage());
-                                } catch (Exception rollbackEx) {
-                                    System.err.println("Failed to rollback: " + rollbackEx.getMessage());
-                                }
-                                throw e; // Re-throw to be caught by outer catch
-                            } finally {
-                                conn.setAutoCommit(true); // Restore auto-commit
-                            }
-                            
-                            // Return updated message data
+                            // Return updated message data immediately (database update happens in background)
                             java.util.Map<String, Object> messageData = new java.util.HashMap<>();
                             messageData.put("messageId", messageId);
                             messageData.put("fromUser", true);
                             messageData.put("text", newText != null && !newText.isEmpty() ? newText : null);
                             messageData.put("edited", true);
-                            // Keep original timestamp, don't update to current time when editing
-                            try (java.sql.PreparedStatement tsPs = conn.prepareStatement(
-                                    "SELECT timestamp FROM messages WHERE dialog_id = ? AND message_id = ?")) {
-                                tsPs.setInt(1, dialogsRowId);
-                                tsPs.setInt(2, messageId);
-                                try (java.sql.ResultSet tsRs = tsPs.executeQuery()) {
-                                    if (tsRs.next() && tsRs.getTimestamp(1) != null) {
-                                        messageData.put("timestamp", tsRs.getTimestamp(1).getTime());
-                                    } else {
-                                        messageData.put("timestamp", System.currentTimeMillis());
-                                    }
-                                }
-                            } catch (Exception e) {
-                                messageData.put("timestamp", System.currentTimeMillis());
-                            }
+                            messageData.put("timestamp", System.currentTimeMillis()); // Use current time, will be corrected by polling
                             messageData.put("hasMedia", hasMedia);
                             if (hasMedia) {
                                 // Always include mediaDownloadUrl when hasMedia is true
@@ -1307,6 +1270,54 @@ public class ConversationController {
                                     messageData.put("mimeType", mimeType);
                                 }
                             }
+                            
+                            // Update database in background (non-blocking) - don't wait for it
+                            final Integer finalDialogsRowId = dialogsRowId;
+                            final Integer finalMessageId = messageId;
+                            final String finalNewText = newText;
+                            new Thread(() -> {
+                                try (java.sql.Connection bgConn = java.sql.DriverManager.getConnection(
+                                        System.getenv("DATABASE_URL") != null
+                                                ? System.getenv("DATABASE_URL")
+                                                : "jdbc:postgresql://localhost:5432/aria",
+                                        System.getenv("DATABASE_USER") != null
+                                                ? System.getenv("DATABASE_USER")
+                                                : "postgres",
+                                        System.getenv("DATABASE_PASSWORD") != null
+                                                ? System.getenv("DATABASE_PASSWORD")
+                                                : "Ezekiel(23)")) {
+                                    bgConn.setAutoCommit(false);
+                                    try {
+                                        try (java.sql.PreparedStatement ps = bgConn.prepareStatement(
+                                                "UPDATE messages SET text = ?, last_updated = NOW() WHERE dialog_id = ? AND message_id = ?")) {
+                                            String encryptedText = finalNewText != null && !finalNewText.isEmpty() ? 
+                                                com.aria.storage.SecureStorage.encrypt(finalNewText) : null;
+                                            ps.setString(1, encryptedText);
+                                            ps.setInt(2, finalDialogsRowId);
+                                            ps.setInt(3, finalMessageId);
+                                            int updated = ps.executeUpdate();
+                                            
+                                            // Commit the transaction
+                                            bgConn.commit();
+                                            System.out.println("Database transaction committed for message edit: messageId=" + finalMessageId + ", rowsUpdated=" + updated);
+                                        }
+                                    } catch (Exception e) {
+                                        // Rollback on error
+                                        try {
+                                            bgConn.rollback();
+                                            System.err.println("Rolled back transaction due to error: " + e.getMessage());
+                                        } catch (Exception rollbackEx) {
+                                            System.err.println("Failed to rollback: " + rollbackEx.getMessage());
+                                        }
+                                        System.err.println("Warning: Failed to update message in database: " + e.getMessage());
+                                    } finally {
+                                        bgConn.setAutoCommit(true); // Restore auto-commit
+                                    }
+                                } catch (Exception e) {
+                                    System.err.println("Warning: Failed to update message in database: " + e.getMessage());
+                                    e.printStackTrace();
+                                }
+                            }).start();
                             
                             return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
                         } else {
@@ -1532,6 +1543,17 @@ public class ConversationController {
                                     ps.setInt(2, messageId);
                                     int deleted = ps.executeUpdate();
                                     System.out.println("Deleted message from database: messageId=" + messageId + ", dialogId=" + dialogsRowId + ", rowsDeleted=" + deleted);
+                                    
+                                    // Record this deletion in app_deleted_messages to prevent priority ingestion from re-adding it
+                                    // This is especially important when revoke=false (message still exists in Telegram)
+                                    try (java.sql.PreparedStatement delTrackPs = conn.prepareStatement(
+                                            "INSERT INTO app_deleted_messages (dialog_id, message_id, deleted_at) VALUES (?, ?, NOW()) " +
+                                            "ON CONFLICT (dialog_id, message_id) DO UPDATE SET deleted_at = NOW()")) {
+                                        delTrackPs.setInt(1, dialogsRowId);
+                                        delTrackPs.setInt(2, messageId);
+                                        delTrackPs.executeUpdate();
+                                        System.out.println("Recorded app-side deletion for messageId=" + messageId);
+                                    }
                                     
                                     // Commit the transaction
                                     conn.commit();

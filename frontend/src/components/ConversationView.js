@@ -84,6 +84,8 @@ function ConversationView({ userId = 1 }) {
   const [recentlyEditedMessages, setRecentlyEditedMessages] = useState(new Set()); // Track recently edited message IDs to prevent polling from overwriting
   const [isOperationInProgress, setIsOperationInProgress] = useState(false); // Track if delete/edit is in progress to pause polling
   const [deletedMessageIds, setDeletedMessageIds] = useState(new Set()); // Track deleted message IDs to prevent them from being re-added
+  const operationInProgressRef = useRef(false); // Ref to track operation status synchronously
+  const pollForNewMessagesRef = useRef(null); // Ref to store polling function so we can call it after operations complete
   const messageInputRef = useRef(null); // Ref for message input field to focus when replying
   const messagesContainerRef = useRef(null); // Ref for messages container for scroll tracking
   const [showNewMessageNotification, setShowNewMessageNotification] = useState(false); // Show new message notification when scrolled up
@@ -142,11 +144,11 @@ function ConversationView({ userId = 1 }) {
 
   // Poll for new messages and trigger priority ingestion every 5 seconds
   useEffect(() => {
-    if (!conversationInitialized || !targetId || isOperationInProgress) return; // Don't poll if operation is in progress
+    if (!conversationInitialized || !targetId) return; // Don't poll if conversation not initialized
     
     const pollForNewMessages = async () => {
-      // Skip polling if an operation (delete/edit) is in progress
-      if (isOperationInProgress) {
+      // IMMEDIATELY stop if an operation (delete/edit) is in progress (check ref for synchronous check)
+      if (operationInProgressRef.current || isOperationInProgress) {
         return;
       }
       
@@ -154,23 +156,34 @@ function ConversationView({ userId = 1 }) {
         // Trigger priority ingestion every 5 seconds to sync with Telegram
         // This will check for new messages and delete messages that no longer exist in Telegram
         // Only trigger if not already running (backend will check and skip if already running)
-        try {
-          await conversationApi.ingestTarget(targetId, userId);
-          // Wait for priority ingestion to complete and update the database
-          // Priority ingestion deletes messages from DB, so we need to wait before fetching
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds for ingestion to complete
-        } catch (ingestErr) {
-          // Ignore ingestion errors - it's a background process
-          // The backend will skip if ingestion is already running
-          if (ingestErr.response?.status !== 200) {
-            console.warn('Priority ingestion failed:', ingestErr);
-          }
-          // Still wait a bit even on error (ingestion might have partially completed)
-          await new Promise(resolve => setTimeout(resolve, 500));
+        // BUT: Skip priority ingestion if operation is in progress
+        // IMPORTANT: Don't wait for ingestion - trigger it and fetch messages immediately
+        // Ingestion runs in background and will update database asynchronously
+        if (!operationInProgressRef.current && !isOperationInProgress) {
+          // Trigger ingestion in background (non-blocking) - don't wait for it
+          conversationApi.ingestTarget(targetId, userId).catch(err => {
+            // Ignore ingestion errors - it's a background process
+            // The backend will skip if ingestion is already running
+            if (err.response?.status !== 200) {
+              console.warn('Priority ingestion failed:', err);
+            }
+          });
+          // Don't wait - fetch messages immediately while ingestion runs in background
+          // The next polling cycle will pick up the changes
+        }
+        
+        // Final check before fetching messages (use ref for synchronous check)
+        if (operationInProgressRef.current) {
+          return; // Stop immediately if operation started
         }
         
         // Then fetch messages from database
         const resp = await conversationApi.getMessages(targetId, userId, 50);
+        
+        // Check again after API call (use ref for synchronous check)
+        if (operationInProgressRef.current) {
+          return; // Stop immediately if operation started during API call
+        }
         if (resp.data?.success) {
           const rows = resp.data.data || [];
           // Always update messages (database is the source of truth after priority ingestion)
@@ -191,50 +204,91 @@ function ConversationView({ userId = 1 }) {
           // Always sync messages to reflect deletions and updates from database
           // Database is the source of truth after priority ingestion has run
           setMessages(prev => {
+            // Check if operation started during message processing (use ref for synchronous check)
+            if (operationInProgressRef.current) {
+              return prev; // Don't update messages if operation is in progress
+            }
+            
             // Create map for quick lookup
             const prevMap = new Map(prev.map(m => [m.messageId, m]));
             
-            // Track if there are changes
-            const prevIds = new Set(prev.map(m => m.messageId));
-            const newIds = new Set(loadedMessages.map(m => m.messageId));
-            const prevHighest = prev.length > 0 ? Math.max(...prev.map(m => m.messageId || 0)) : 0;
-            const newHighest = loadedMessages.length > 0 ? Math.max(...loadedMessages.map(m => m.messageId || 0)) : 0;
+            // CRITICAL: Filter out deleted messages from prev FIRST before any processing
+            // This ensures we never compare or return messages that were deleted
+            const prevFiltered = prev.filter(msg => !deletedMessageIds.has(msg.messageId));
+            const prevMapFiltered = new Map(prevFiltered.map(m => [m.messageId, m]));
+            
+            // Track if there are changes (using filtered prev)
+            const prevIds = new Set(prevFiltered.map(m => m.messageId));
+            
+            // CRITICAL: Filter out deleted messages from loaded messages
+            // This ensures deleted messages never appear in the UI, even if they come back from API
+            const filteredMessages = loadedMessages.filter(newMsg => {
+              // Always exclude deleted messages
+              if (deletedMessageIds.has(newMsg.messageId)) {
+                return false;
+              }
+              return true;
+            });
+            
+            const newIds = new Set(filteredMessages.map(m => m.messageId));
+            const prevHighest = prevFiltered.length > 0 ? Math.max(...prevFiltered.map(m => m.messageId || 0)) : 0;
+            const newHighest = filteredMessages.length > 0 ? Math.max(...filteredMessages.map(m => m.messageId || 0)) : 0;
             
             // Always use loaded messages from database (source of truth)
-            // But preserve recently edited messages that might not be committed yet
-            // Also filter out messages that were deleted from the app UI
-            const syncedMessages = loadedMessages
-              .filter(newMsg => !deletedMessageIds.has(newMsg.messageId)) // Filter out deleted messages
+            // But preserve recently edited messages and pending messages that might not be committed yet
+            // Note: deleted messages are already filtered out above
+            // Use prevMapFiltered (which excludes deleted messages) for lookups
+            const syncedMessages = filteredMessages
               .map(newMsg => {
+                const prevMsg = prevMapFiltered.get(newMsg.messageId);
                 const isRecentlyEdited = recentlyEditedMessages.has(newMsg.messageId);
+                
+                // CRITICAL: If message was recently edited in the app, ALWAYS preserve the optimistic version
+                // This prevents polling from overwriting app edits before database is updated
+                // Check this FIRST before any other logic
+                if (isRecentlyEdited && prevMsg) {
+                  // Always preserve the optimistic edit, even if database has different text
+                  // The database might not be updated yet, so we trust the optimistic version
+                  return prevMsg; // Keep the edited version from previous state
+                }
+                
+                // If message is pending (being sent/edited), preserve the optimistic version
+                if (prevMsg && prevMsg.isPending) {
+                  return prevMsg; // Keep the pending version until backend confirms
+                }
                 
                 // ALWAYS show Telegram edits immediately - don't preserve them
                 // If message is marked as edited in DB, it was edited on Telegram
-                if (newMsg.edited) {
+                // BUT: Only if it wasn't recently edited by the app (checked above)
+                if (newMsg.edited && !isRecentlyEdited) {
                   // Message was edited on Telegram - always show the updated text
                   return newMsg;
-                }
-                
-                // If this message was recently edited in the app (within last 5 seconds), 
-                // keep the previous version ONLY if it's not marked as edited in DB
-                // This prevents polling from overwriting app edits before database is updated
-                if (isRecentlyEdited) {
-                  const prevMsg = prevMap.get(newMsg.messageId);
-                  if (prevMsg && !prevMsg.edited) {
-                    // Only preserve if previous version wasn't marked as edited
-                    // This means it was an app-side edit, not a Telegram edit
-                    return prevMsg; // Keep the edited version from previous state
-                  }
                 }
                 
                 // For all other messages, use what's in the database
                 return newMsg;
               });
             
+            // Also preserve any pending messages that aren't in the database yet (newly sent messages)
+            // BUT: Filter out any pending messages that were deleted
+            // Use prevFiltered which already excludes deleted messages
+            const pendingMessages = prevFiltered.filter(msg => 
+              msg.isPending && 
+              !newIds.has(msg.messageId)
+            );
+            const finalMessages = pendingMessages.length > 0 
+              ? [...syncedMessages, ...pendingMessages]
+              : syncedMessages;
+            
+            // FINAL SAFETY CHECK: Remove any deleted messages that might have slipped through
+            // This is a last line of defense to ensure deleted messages never appear
+            const finalFilteredMessages = finalMessages.filter(msg => !deletedMessageIds.has(msg.messageId));
+            
             // Check if messages are different (added, removed, or edited)
+            // Use prevFiltered for all comparisons to ensure deleted messages don't affect the logic
             const hasNewMessages = newHighest > prevHighest;
             const hasRemovedMessages = prevIds.size > newIds.size;
-            const hasDifferentLength = prev.length !== loadedMessages.length;
+            const hasDifferentLength = prevFiltered.length !== filteredMessages.length;
             
             // Track new messages for notification when scrolled up
             if (hasNewMessages && newHighest > lastHighestMessageId) {
@@ -253,10 +307,10 @@ function ConversationView({ userId = 1 }) {
             
             // Check if any existing message was edited (text changed)
             // Also check if message is marked as edited in DB (Telegram edit)
+            // Use filteredMessages (deleted messages already excluded) and prevMapFiltered
             let hasEditedMessages = false;
-            for (const newMsg of loadedMessages) {
-              if (deletedMessageIds.has(newMsg.messageId)) continue; // Skip deleted messages
-              const prevMsg = prevMap.get(newMsg.messageId);
+            for (const newMsg of filteredMessages) {
+              const prevMsg = prevMapFiltered.get(newMsg.messageId);
               const isRecentlyEdited = recentlyEditedMessages.has(newMsg.messageId);
               // Detect edits if text changed OR message is marked as edited in DB
               if (prevMsg) {
@@ -279,9 +333,10 @@ function ConversationView({ userId = 1 }) {
             const idsDiffer = prevIds.size !== newIds.size || 
               [...prevIds].some(id => !newIds.has(id)) || 
               [...newIds].some(id => !prevIds.has(id));
-            const lengthDiffers = prev.length !== loadedMessages.length;
+            const lengthDiffers = prevFiltered.length !== filteredMessages.length;
             
             // If IDs or length differ, definitely update (deletions detected)
+            // Use prevFiltered for all comparisons
             if (idsDiffer || lengthDiffers || hasChanged) {
               // Auto-scroll to bottom if we're near the bottom and have new messages
               setTimeout(() => {
@@ -295,9 +350,10 @@ function ConversationView({ userId = 1 }) {
                 }
               }, 100);
               
-              // Return synced messages (database is source of truth, except for recently edited)
-              // If there were deletions, syncedMessages will have fewer messages than prev
-              return syncedMessages;
+              // Return synced messages (database is source of truth, except for recently edited and pending)
+              // If there were deletions, finalFilteredMessages will have fewer messages than prev
+              // Use finalFilteredMessages to ensure no deleted messages slip through
+              return finalFilteredMessages;
             }
             
             // After priority ingestion runs, database is the source of truth
@@ -309,22 +365,28 @@ function ConversationView({ userId = 1 }) {
             
             // If IDs or length differ, always update (deletions or additions detected)
             // This ensures deletions are immediately reflected in UI
-            if (hasIdDifference || prev.length !== loadedMessages.length) {
-              return syncedMessages;
+            // Use finalFilteredMessages to ensure no deleted messages slip through
+            if (hasIdDifference || prevFiltered.length !== filteredMessages.length) {
+              return finalFilteredMessages;
             }
             
-            // If everything matches exactly, keep previous messages
-            return prev;
+            // If everything matches exactly, return finalFilteredMessages to ensure no deleted messages
+            // This is a safety check - even if nothing changed, we want to make sure deleted messages are removed
+            return finalFilteredMessages;
           });
           
           // Also update if messages array is empty (no messages in database after deletion)
+          // But preserve any pending messages that aren't deleted
           if (rows.length === 0) {
             setMessages(prev => {
-              // Only clear if we previously had messages (avoid clearing on initial load)
-              if (prev.length > 0) {
+              // Filter out ALL deleted messages first
+              const filtered = prev.filter(msg => !deletedMessageIds.has(msg.messageId));
+              // Only clear if we previously had messages and all were deleted (avoid clearing on initial load)
+              if (prev.length > 0 && filtered.length === 0) {
                 return [];
               }
-              return prev;
+              // Return filtered version to ensure deleted messages are removed
+              return filtered;
             });
           }
         }
@@ -334,16 +396,22 @@ function ConversationView({ userId = 1 }) {
       }
     };
 
-    // Poll immediately (to check for new messages)
-    pollForNewMessages();
+    // Store polling function in ref so we can call it after operations complete
+    pollForNewMessagesRef.current = pollForNewMessages;
+    
+    // Poll immediately (to check for new messages) - but only if no operation in progress
+    if (!operationInProgressRef.current && !isOperationInProgress) {
+      pollForNewMessages();
+    }
     
     // Then poll every 5 seconds for new messages (only if no operation in progress)
     // This also triggers priority ingestion to sync with Telegram
     const messageInterval = setInterval(() => {
-      if (!isOperationInProgress) {
+      // Check flag at the start of each interval (use ref for synchronous check)
+      if (!operationInProgressRef.current && !isOperationInProgress) {
         pollForNewMessages();
       }
-    }, 5000); // Changed to 5 seconds to give ingestion time to complete
+    }, 5000);
     
     return () => clearInterval(messageInterval);
   }, [conversationInitialized, targetId, userId, isOperationInProgress, deletedMessageIds, recentlyEditedMessages]); // Include dependencies
@@ -414,79 +482,134 @@ function ConversationView({ userId = 1 }) {
     if (pendingMedia) {
       const messageText = newMessage.trim() || null;
       const file = pendingMedia.file;
+      const preview = pendingMedia.preview;
+      
+      // INSTANT UI UPDATE: Add message optimistically immediately
+      const tempMessageId = Date.now(); // Temporary ID until we get real one
+      const optimisticMsg = {
+        text: messageText || null,
+        fromUser: true,
+        timestamp: new Date(),
+        mediaUrl: preview || null, // Use preview immediately
+        messageId: tempMessageId,
+        hasMedia: true,
+        fileName: file.name || null,
+        mimeType: file.type || null,
+        fileSize: file.size || null,
+        referenceId: replyingTo?.messageId || null,
+        isPending: true, // Mark as pending until backend confirms
+      };
+      
+      setMessages(prev => [...prev, optimisticMsg]);
       setNewMessage('');
-      setPendingMedia(null); // Clear pending media immediately for better UX
+      setPendingMedia(null);
+      const replyToId = replyingTo?.messageId;
+      setReplyingTo(null); // Clear reply immediately
 
-      try {
-        const response = await conversationApi.sendMediaWithText(
-          targetId, 
-          userId, 
-          file, 
-          messageText,
-          replyingTo?.messageId
-        );
+      // Send in background (don't block UI)
+      conversationApi.sendMediaWithText(
+        targetId, 
+        userId, 
+        file, 
+        messageText,
+        replyToId
+      ).then(response => {
         if (response.data?.success && response.data?.data) {
           const messageData = response.data.data;
-          const newMsg = {
-            text: messageData.text || messageText || null,
-            fromUser: messageData.fromUser !== undefined ? messageData.fromUser : true,
-            timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
-            mediaUrl: messageData.mediaDownloadUrl || null,
-            messageId: messageData.messageId,
-            hasMedia: messageData.hasMedia || true,
-            fileName: messageData.fileName || null,
-            mimeType: messageData.mimeType || null,
-            fileSize: messageData.fileSize || null, // Include file size
-            referenceId: replyingTo?.messageId || null,
-          };
-          setMessages(prev => [...prev, newMsg]);
-          setReplyingTo(null); // Clear reply after sending
+          // Replace optimistic message with real one
+          setMessages(prev => prev.map(msg => 
+            msg.messageId === tempMessageId 
+              ? {
+                  text: messageData.text || messageText || null,
+                  fromUser: true,
+                  timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
+                  mediaUrl: messageData.mediaDownloadUrl || preview,
+                  messageId: messageData.messageId,
+                  hasMedia: true,
+                  fileName: messageData.fileName || file.name || null,
+                  mimeType: messageData.mimeType || file.type || null,
+                  fileSize: messageData.fileSize || file.size || null,
+                  referenceId: replyToId || null,
+                }
+              : msg
+          ));
         } else {
-          await loadMessages();
+          // Remove optimistic message if send failed
+          setMessages(prev => prev.filter(msg => msg.messageId !== tempMessageId));
+          setError('Failed to send media');
+          setTimeout(() => setError(null), 5000);
+          // Restore state
+          setPendingMedia({ file, preview });
+          setNewMessage(messageText || '');
         }
-      } catch (err) {
+      }).catch(err => {
+        // Remove optimistic message on error
+        setMessages(prev => prev.filter(msg => msg.messageId !== tempMessageId));
         setError(err.response?.data?.error || err.message || 'Failed to send media');
-        // Restore state if sending failed
-        setPendingMedia({ file, preview: pendingMedia.preview });
+        setTimeout(() => setError(null), 5000);
+        // Restore state
+        setPendingMedia({ file, preview });
         setNewMessage(messageText || '');
-      }
+      });
     } else {
       // Send text-only message
       if (!newMessage.trim()) return;
 
       const messageText = newMessage.trim();
-      setNewMessage(''); // Clear input immediately for better UX
+      
+      // INSTANT UI UPDATE: Add message optimistically immediately
+      const tempMessageId = Date.now(); // Temporary ID until we get real one
+      const optimisticMsg = {
+        text: messageText,
+        fromUser: true,
+        timestamp: new Date(),
+        mediaUrl: null,
+        messageId: tempMessageId,
+        referenceId: replyingTo?.messageId || null,
+        isPending: true, // Mark as pending until backend confirms
+      };
+      
+      setMessages(prev => [...prev, optimisticMsg]);
+      setNewMessage(''); // Clear input immediately
+      const replyToId = replyingTo?.messageId;
+      setReplyingTo(null); // Clear reply immediately
 
-      try {
-        const response = await conversationApi.respond(
-          targetId, 
-          messageText, 
-          userId,
-          replyingTo?.messageId
-        );
-        // If response includes message data, add it immediately to the UI
+      // Send in background (don't block UI)
+      conversationApi.respond(
+        targetId, 
+        messageText, 
+        userId,
+        replyToId
+      ).then(response => {
         if (response.data?.success && response.data?.data) {
           const messageData = response.data.data;
-          const newMsg = {
-            text: messageData.text || messageText,
-            fromUser: messageData.fromUser !== undefined ? messageData.fromUser : true,
-            timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
-            mediaUrl: messageData.mediaDownloadUrl || null,
-            messageId: messageData.messageId,
-            referenceId: replyingTo?.messageId || null,
-          };
-          // Add to messages list immediately
-          setMessages(prev => [...prev, newMsg]);
-          setReplyingTo(null); // Clear reply after sending
+          // Replace optimistic message with real one
+          setMessages(prev => prev.map(msg => 
+            msg.messageId === tempMessageId 
+              ? {
+                  text: messageData.text || messageText,
+                  fromUser: true,
+                  timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
+                  mediaUrl: messageData.mediaDownloadUrl || null,
+                  messageId: messageData.messageId,
+                  referenceId: replyToId || null,
+                }
+              : msg
+          ));
         } else {
-          // Fallback: reload all messages if no message data in response
-          await loadMessages();
+          // Remove optimistic message if send failed
+          setMessages(prev => prev.filter(msg => msg.messageId !== tempMessageId));
+          setError('Failed to send message');
+          setTimeout(() => setError(null), 5000);
+          setNewMessage(messageText); // Restore message text
         }
-      } catch (err) {
+      }).catch(err => {
+        // Remove optimistic message on error
+        setMessages(prev => prev.filter(msg => msg.messageId !== tempMessageId));
         setError(err.response?.data?.error || err.message || 'Failed to send message');
-        // Restore message text if sending failed
-        setNewMessage(messageText);
-      }
+        setTimeout(() => setError(null), 5000);
+        setNewMessage(messageText); // Restore message text
+      });
     }
   };
 
@@ -553,100 +676,107 @@ function ConversationView({ userId = 1 }) {
     const messageText = selectedMessageHasMedia ? editText : editText.trim();
     const msgId = selectedMessageId;
     
+    // INSTANT UI UPDATE: Update message optimistically immediately
+    setMessages(prev => {
+      const updated = prev.map(msg => {
+        if (msg.messageId === msgId) {
+          // Preserve all existing properties, just update text and mark as edited
+          return { 
+            ...msg, 
+            text: messageText || null,
+            edited: true,
+            isPending: true, // Mark as pending until backend confirms
+          };
+        }
+        return msg;
+      });
+      return updated;
+    });
+    
     setEditText('');
     setSelectedMessageId(null);
     
-    // Pause polling while edit is in progress
-    setIsOperationInProgress(true);
+    // Mark this message as recently edited to prevent polling from overwriting it
+    // Use longer timeout to ensure database has time to update (10 seconds)
+    setRecentlyEditedMessages(prev => new Set(prev).add(msgId));
+    setTimeout(() => {
+      setRecentlyEditedMessages(prev => {
+        const next = new Set(prev);
+        next.delete(msgId);
+        return next;
+      });
+    }, 10000); // Increased to 10 seconds to give database more time to update
     
-    try {
-      let response;
-      if (msgId) {
-        response = await conversationApi.edit(targetId, userId, msgId, messageText);
-      } else {
-        response = await conversationApi.editLast(targetId, userId, messageText);
-      }
-      
-      // Wait a bit to ensure database update is committed
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // If response includes updated message data, update it in the UI
+    // Edit in background (don't block UI)
+    const editPromise = msgId 
+      ? conversationApi.edit(targetId, userId, msgId, messageText)
+      : conversationApi.editLast(targetId, userId, messageText);
+    
+    editPromise.then(response => {
       if (response.data?.success && response.data?.data) {
         const messageData = response.data.data;
-        const updatedMsg = {
-          text: messageData.text || messageText || null,
-          fromUser: messageData.fromUser !== undefined ? messageData.fromUser : true,
-          timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
-          mediaUrl: messageData.mediaDownloadUrl || null,
-          messageId: messageData.messageId,
-          edited: messageData.edited || true, // Mark as edited
-          hasMedia: messageData.hasMedia || false,
-          fileName: messageData.fileName || null,
-          mimeType: messageData.mimeType || null,
-        };
-        
-        // Update the message in the messages list, preserving media info
-        // Use functional update to ensure we're working with the latest state
-        setMessages(prev => {
-          const updated = prev.map(msg => {
-            if (msg.messageId === updatedMsg.messageId) {
-              // Preserve media info if the original message had media
-              // This ensures media shows even if backend doesn't return hasMedia=true
-              if (msg.hasMedia || msg.mediaUrl) {
-                return { 
-                  ...updatedMsg, 
-                  hasMedia: true, // Ensure hasMedia is true if original had media
-                  mediaUrl: updatedMsg.mediaUrl || msg.mediaUrl, // Use new URL if available, otherwise keep old
-                  fileName: updatedMsg.fileName || msg.fileName,
-                  mimeType: updatedMsg.mimeType || msg.mimeType,
-                  edited: true // Explicitly mark as edited
-                };
-              }
-              return { ...updatedMsg, edited: true }; // Explicitly mark as edited
-            }
-            return msg;
-          });
-          // Force re-render by returning a new array reference
-          return updated;
-        });
-        
-        // Mark this message as recently edited to prevent polling from overwriting it
-        setRecentlyEditedMessages(prev => new Set(prev).add(updatedMsg.messageId));
-        // After 5 seconds, allow polling to sync normally (database should be updated by then)
-        setTimeout(() => {
-          setRecentlyEditedMessages(prev => {
-            const next = new Set(prev);
-            next.delete(updatedMsg.messageId);
-            return next;
-          });
-        }, 5000);
-      } else {
-        // Fallback: update locally and reload
-        setMessages(prev => prev.map(msg => 
-          msg.messageId === msgId ? { ...msg, text: messageText, edited: true } : msg
-        ));
-        // Mark as recently edited even for fallback
-        setRecentlyEditedMessages(prev => new Set(prev).add(msgId));
+        // Update with real data from backend, but keep isPending until we're sure it's in DB
+        setMessages(prev => prev.map(msg => {
+          if (msg.messageId === messageData.messageId || msg.messageId === msgId) {
+            return {
+              ...msg,
+              text: messageData.text || messageText || null,
+              edited: true,
+              timestamp: messageData.timestamp ? new Date(messageData.timestamp) : msg.timestamp,
+              mediaUrl: messageData.mediaDownloadUrl || msg.mediaUrl,
+              hasMedia: messageData.hasMedia !== undefined ? messageData.hasMedia : msg.hasMedia,
+              fileName: messageData.fileName || msg.fileName,
+              mimeType: messageData.mimeType || msg.mimeType,
+              messageId: messageData.messageId, // Use real messageId if different
+              isPending: false, // Clear pending flag after backend confirms
+            };
+          }
+          return msg;
+        }));
+        // Keep in recentlyEditedMessages for a bit longer to ensure polling doesn't overwrite
+        // The backend confirmed, but database might take a moment to update
         setTimeout(() => {
           setRecentlyEditedMessages(prev => {
             const next = new Set(prev);
             next.delete(msgId);
+            next.delete(messageData.messageId);
             return next;
           });
-        }, 5000);
-        setTimeout(loadMessages, 300);
+        }, 5000); // Keep protection for 5 more seconds after backend confirms
+      } else {
+        // Edit failed - restore original text
+        setMessages(prev => prev.map(msg => 
+          msg.messageId === msgId ? { ...msg, isPending: false } : msg
+        ));
+        setError('Failed to edit message');
+        setTimeout(() => setError(null), 5000);
+        // Remove from recentlyEditedMessages since edit failed
+        setRecentlyEditedMessages(prev => {
+          const next = new Set(prev);
+          next.delete(msgId);
+          return next;
+        });
+        // Restore edit state
+        setSelectedMessageId(msgId);
+        setEditText(messageText);
       }
-    } catch (err) {
+    }).catch(err => {
+      // Edit failed - restore original text
+      setMessages(prev => prev.map(msg => 
+        msg.messageId === msgId ? { ...msg, isPending: false } : msg
+      ));
       setError(err.response?.data?.error || err.message || 'Failed to edit message');
-      // Restore edit state if editing failed
+      setTimeout(() => setError(null), 5000);
+      // Remove from recentlyEditedMessages since edit failed
+      setRecentlyEditedMessages(prev => {
+        const next = new Set(prev);
+        next.delete(msgId);
+        return next;
+      });
+      // Restore edit state
       setSelectedMessageId(msgId);
       setEditText(messageText);
-    } finally {
-      // Resume polling after edit completes (with a delay to ensure DB is updated)
-      setTimeout(() => {
-        setIsOperationInProgress(false);
-      }, 2000); // Wait 2 seconds to ensure database is updated before resuming polling
-    }
+    });
   };
 
   const loadMessages = async () => {
@@ -721,39 +851,48 @@ function ConversationView({ userId = 1 }) {
     const messageIdToDelete = messageId;
     setDeleteModal(null);
     
-    // Pause polling while delete is in progress
-    setIsOperationInProgress(true);
-    
-    // Remove message from UI optimistically (immediately)
+    // INSTANT UI UPDATE: Remove message optimistically immediately
     setMessages(prev => prev.filter(m => m.messageId !== messageIdToDelete));
     
     // Track this message as deleted to prevent it from being re-added by polling
+    // Keep it in the set for longer to ensure it never reappears
     setDeletedMessageIds(prev => new Set([...prev, messageIdToDelete]));
     
-    try {
-      const response = await conversationApi.delete(targetId, userId, messageIdToDelete, revoke);
-      
-      // Wait a bit to ensure database update is committed
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Increased wait time
-      
-      if (response.data?.success) {
-        if (response.data?.data?.message) {
-          // Show info if message was only deleted for user (not revoked)
-          setError(response.data.data.message);
+    // Delete in background (don't block UI)
+    conversationApi.delete(targetId, userId, messageIdToDelete, revoke)
+      .then(response => {
+        if (response.data?.success) {
+          if (response.data?.data?.message) {
+            // Show info if message was only deleted for user (not revoked)
+            setError(response.data.data.message);
+            setTimeout(() => setError(null), 5000);
+          }
+          // Message successfully deleted - keep it in deletedMessageIds to prevent re-adding
+          // Remove from deletedMessageIds after priority ingestion has time to sync and record the deletion
+          // Use longer timeout to ensure it's fully removed from database
+          setTimeout(() => {
+            setDeletedMessageIds(prev => {
+              const updated = new Set(prev);
+              updated.delete(messageIdToDelete);
+              return updated;
+            });
+          }, 60000); // Remove from tracking after 60 seconds to ensure it's fully synced
+        } else {
+          // Show error if deletion failed - restore message
+          setError(response.data?.error || 'Failed to delete message');
           setTimeout(() => setError(null), 5000);
-        }
-        // Message successfully deleted - keep it in deletedMessageIds to prevent re-adding
-        // Remove from deletedMessageIds after priority ingestion has time to sync (30 seconds)
-        setTimeout(() => {
+          // Remove from deleted tracking since deletion failed
           setDeletedMessageIds(prev => {
             const updated = new Set(prev);
             updated.delete(messageIdToDelete);
             return updated;
           });
-        }, 30000); // Remove from tracking after 30 seconds to allow priority ingestion to sync
-      } else {
-        // Show error if deletion failed - message will be restored by polling
-        setError(response.data?.error || 'Failed to delete message');
+          // Reload messages to restore the deleted message if deletion failed
+          setTimeout(() => loadMessages(), 1000);
+        }
+      })
+      .catch(err => {
+        setError(err.response?.data?.error || err.message || 'Failed to delete message');
         setTimeout(() => setError(null), 5000);
         // Remove from deleted tracking since deletion failed
         setDeletedMessageIds(prev => {
@@ -763,24 +902,7 @@ function ConversationView({ userId = 1 }) {
         });
         // Reload messages to restore the deleted message if deletion failed
         setTimeout(() => loadMessages(), 1000);
-      }
-    } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Failed to delete message');
-      setTimeout(() => setError(null), 5000);
-      // Remove from deleted tracking since deletion failed
-      setDeletedMessageIds(prev => {
-        const updated = new Set(prev);
-        updated.delete(messageIdToDelete);
-        return updated;
       });
-      // Reload messages to restore the deleted message if deletion failed
-      setTimeout(() => loadMessages(), 1000);
-    } finally {
-      // Resume polling after delete completes (with a delay to ensure DB is updated)
-      setTimeout(() => {
-        setIsOperationInProgress(false);
-      }, 2500); // Wait 2.5 seconds to ensure database is updated before resuming polling
-    }
   };
 
   const cancelDelete = () => {

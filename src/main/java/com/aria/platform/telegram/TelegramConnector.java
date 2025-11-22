@@ -62,9 +62,9 @@ public class TelegramConnector implements PlatformConnector {
     }
 
     /**
-     * Priority ingestion: Always re-ingest last 80 messages and check for deletions.
+     * Priority ingestion: Always re-ingest last 50 messages and check for deletions.
      * This runs every 5 seconds when a conversation is open.
-     * @param targetUsername Username of target to ingest (last 80 messages)
+     * @param targetUsername Username of target to ingest (last 50 messages)
      * @param account Platform account information
      */
     public void ingestPriorityTarget(String targetUsername, com.aria.storage.DatabaseManager.PlatformAccount account) {
