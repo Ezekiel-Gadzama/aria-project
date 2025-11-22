@@ -1,0 +1,169 @@
+.api-key-management {
+  padding: 2rem 0;
+}
+
+.credits-section {
+  margin-bottom: 2rem;
+}
+
+.credits-card {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 2rem;
+  border-radius: 12px;
+  text-align: center;
+}
+
+.credits-card h2 {
+  margin: 0 0 1rem 0;
+  font-size: 1.5rem;
+}
+
+.credits-amount {
+  font-size: 3rem;
+  font-weight: bold;
+  margin: 1rem 0;
+}
+
+.credits-info {
+  margin: 1rem 0;
+  opacity: 0.9;
+}
+
+.subscription-section {
+  margin-bottom: 2rem;
+}
+
+.subscription-card {
+  background: white;
+  border: 2px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 2rem;
+  text-align: center;
+}
+
+.subscription-card.active {
+  border-color: #4caf50;
+  background: #f1f8f4;
+}
+
+.subscription-card h3 {
+  margin: 0 0 1rem 0;
+}
+
+.price {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #667eea;
+  margin: 1rem 0;
+}
+
+.free-tier-section {
+  margin-bottom: 2rem;
+}
+
+.info-card {
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 2rem;
+}
+
+.info-card h3 {
+  margin: 0 0 1rem 0;
+}
+
+.info-card ul {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0;
+}
+
+.info-card li {
+  padding: 0.5rem 0;
+  font-size: 1rem;
+}
+
+.note {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: #fff3cd;
+  border-radius: 6px;
+  color: #856404;
+}
+
+.api-keys-section {
+  margin-bottom: 2rem;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.create-key-form {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 2rem;
+  margin-bottom: 2rem;
+}
+
+.key-display {
+  text-align: center;
+}
+
+.secret-key {
+  display: block;
+  background: #f8f9fa;
+  padding: 1rem;
+  border-radius: 6px;
+  font-family: monospace;
+  word-break: break-all;
+  margin: 1rem 0;
+  font-size: 0.9rem;
+}
+
+.api-keys-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.api-key-card {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.key-info h4 {
+  margin: 0 0 0.5rem 0;
+}
+
+.api-key {
+  display: block;
+  background: #f8f9fa;
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+}
+
+.key-meta {
+  font-size: 0.85rem;
+  color: #666;
+  margin: 0.5rem 0 0 0;
+}
+
+.form-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+

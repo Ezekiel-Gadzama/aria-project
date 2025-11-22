@@ -113,6 +113,19 @@ public class ConversationController {
             int currentUserId = userId != null ? userId : 1;
             int lim = (limit == null || limit <= 0 || limit > 500) ? 100 : limit;
 
+            // Try to get from cache first
+            com.aria.cache.RedisCacheManager cache = com.aria.cache.RedisCacheManager.getInstance();
+            java.util.List<java.util.Map<String, Object>> cachedMessages = cache.getCachedMessagesAsMapList(
+                currentUserId, targetUserId);
+            if (cachedMessages != null && cachedMessages.size() >= lim) {
+                // Return cached messages (limit to requested amount)
+                java.util.List<java.util.Map<String, Object>> limited = new java.util.ArrayList<>();
+                for (int i = 0; i < Math.min(lim, cachedMessages.size()); i++) {
+                    limited.add(cachedMessages.get(i));
+                }
+                return ResponseEntity.ok(ApiResponse.success("OK", limited));
+            }
+
             DatabaseManager databaseManager = new DatabaseManager();
             TargetUserService targetUserService = new TargetUserService(databaseManager);
             TargetUser targetUser = targetUserService.getTargetUserById(targetUserId);
@@ -291,7 +304,7 @@ public class ConversationController {
                 try (java.sql.PreparedStatement ps = conn.prepareStatement(
                         "SELECT m.id, m.message_id, m.sender, m.text, m.timestamp, m.has_media, m.reference_id, " +
                                 "CASE WHEN m.last_updated IS NOT NULL AND m.last_updated > m.timestamp THEN TRUE ELSE FALSE END as edited, " +
-                                "m.last_updated " +
+                                "m.last_updated, COALESCE(m.status, 'sent') as status " +
                                 "FROM messages m WHERE m.dialog_id = ? " +
                                 "ORDER BY m.message_id DESC LIMIT ?")) {
                     ps.setInt(1, dialogRowId);
@@ -348,6 +361,13 @@ public class ConversationController {
                                 }
                             }
                             row.put("edited", isEdited);
+                            
+                            // Get message status (default to 'sent' if null)
+                            String status = rs.getString(10); // status column (column 10)
+                            if (status == null || status.isEmpty()) {
+                                status = "sent";
+                            }
+                            row.put("status", status);
                             
                             // Get media metadata (fileName, mimeType, fileSize) from media table using internal message ID
                             if (rs.getBoolean(6)) { // hasMedia
@@ -419,6 +439,10 @@ public class ConversationController {
             }
             // reverse chronological to chronological
             java.util.Collections.reverse(out);
+            
+            // Cache the results for 5 minutes
+            cache.cacheMessages(currentUserId, targetUserId, out, 300);
+            
             return ResponseEntity.ok(ApiResponse.success("OK", out));
         } catch (Exception e) {
             return ResponseEntity.internalServerError()
@@ -877,7 +901,8 @@ public class ConversationController {
                                 incomingMessage,
                                 now,
                                 false, // hasMedia
-                                referenceId // reference_id for replies
+                                referenceId, // reference_id for replies
+                                "sent" // status
                             );
                             System.out.println("Saved sent message to database: messageId=" + telegramMessageId + ", dialogId=" + dialogRowId);
                         } catch (Exception e) {
@@ -893,6 +918,10 @@ public class ConversationController {
                 }
             }).start();
 
+            // Invalidate cache when message is sent
+            com.aria.cache.RedisCacheManager cache = com.aria.cache.RedisCacheManager.getInstance();
+            cache.invalidateMessages(currentUserId, targetUserId);
+            
             return ResponseEntity.ok(ApiResponse.success("Message sent", messageData));
         } catch (Exception e) {
             return ResponseEntity.internalServerError()
@@ -1075,6 +1104,11 @@ public class ConversationController {
                                     // Commit the transaction
                                     bgConn.commit();
                                     System.out.println("Database transaction committed for message edit (editLast): messageId=" + finalLastMsgId + ", rowsUpdated=" + updated);
+                                    
+                                    // Invalidate cache
+                                    com.aria.cache.RedisCacheManager cache = com.aria.cache.RedisCacheManager.getInstance();
+                                    // Note: We need targetUserId here - this is a background thread, so we'd need to pass it
+                                    // For now, we'll invalidate in the main response handler
                                 }
                             } catch (Exception e) {
                                 // Rollback on error
@@ -1094,6 +1128,10 @@ public class ConversationController {
                             e.printStackTrace();
                         }
                     }).start();
+                    
+                    // Invalidate cache when message is edited
+                    com.aria.cache.RedisCacheManager cache = com.aria.cache.RedisCacheManager.getInstance();
+                    cache.invalidateMessages(currentUserId, targetUserId);
                     
                     return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
                 } else {
@@ -1319,6 +1357,10 @@ public class ConversationController {
                                 }
                             }).start();
                             
+                            // Invalidate cache when message is edited
+                            com.aria.cache.RedisCacheManager cache = com.aria.cache.RedisCacheManager.getInstance();
+                            cache.invalidateMessages(currentUserId, targetUserId);
+                            
                             return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
                         } else {
                             // Dialog not found, but message was edited in Telegram
@@ -1329,6 +1371,11 @@ public class ConversationController {
                             messageData.put("text", newText != null && !newText.isEmpty() ? newText : null);
                             messageData.put("edited", true);
                             messageData.put("timestamp", System.currentTimeMillis());
+                            
+                            // Invalidate cache
+                            com.aria.cache.RedisCacheManager cache = com.aria.cache.RedisCacheManager.getInstance();
+                            cache.invalidateMessages(currentUserId, targetUserId);
+                            
                             return ResponseEntity.ok(ApiResponse.success("Edited", messageData));
                         }
                     } catch (Exception e) {
@@ -1586,6 +1633,11 @@ public class ConversationController {
                     if (!result.revoked && revoke) {
                         resultMap.put("message", "Message deleted only for you (Telegram doesn't allow deleting for other user)");
                     }
+                    
+                    // Invalidate cache when message is deleted
+                    com.aria.cache.RedisCacheManager cache = com.aria.cache.RedisCacheManager.getInstance();
+                    cache.invalidateMessages(currentUserId, targetUserId);
+                    
                     return ResponseEntity.ok(ApiResponse.success("Deleted", resultMap));
                 } else {
                     return ResponseEntity.internalServerError().body(ApiResponse.error(result.error != null ? result.error : "Failed to delete message from Telegram"));

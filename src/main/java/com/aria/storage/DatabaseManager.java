@@ -105,6 +105,9 @@ public class DatabaseManager {
                     first_name TEXT NOT NULL,
                     last_name TEXT NOT NULL,
                     bio TEXT,
+                    email TEXT,
+                    two_factor_secret TEXT,
+                    two_factor_enabled BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """;
@@ -156,7 +159,9 @@ public class DatabaseManager {
                     timestamp TIMESTAMPTZ,
                     has_media BOOLEAN DEFAULT FALSE,
                     raw_json JSONB,
-                    reference_id BIGINT
+                    reference_id BIGINT,
+                    status TEXT DEFAULT 'sent',
+                    last_updated TIMESTAMPTZ
                 )
             """;
 
@@ -182,6 +187,7 @@ public class DatabaseManager {
                     user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     name TEXT NOT NULL,
                     profile_json JSONB,
+                    profile_picture_url TEXT,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     UNIQUE(user_id, name)
                 )
@@ -287,6 +293,90 @@ public class DatabaseManager {
             stmt.execute(createConversationsTable);
             stmt.execute(createIngestionStatusTable);
             stmt.execute(createAnalysisStatusUserTable);
+
+            // Add new columns to existing tables
+            stmt.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT");
+            stmt.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_secret TEXT");
+            stmt.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN DEFAULT FALSE");
+            stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'sent'");
+            stmt.execute("ALTER TABLE target_users ADD COLUMN IF NOT EXISTS profile_picture_url TEXT");
+
+            // API Keys table
+            String createApiKeysTable = """
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id SERIAL PRIMARY KEY,
+                    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    key_name TEXT NOT NULL,
+                    api_key TEXT UNIQUE NOT NULL,
+                    secret_key TEXT NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    last_used_at TIMESTAMPTZ
+                )
+            """;
+            stmt.execute(createApiKeysTable);
+            stmt.execute("CREATE INDEX IF NOT EXISTS api_keys_user_id_idx ON api_keys(user_id)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS api_keys_api_key_idx ON api_keys(api_key)");
+
+            // User Credits table
+            String createUserCreditsTable = """
+                CREATE TABLE IF NOT EXISTS user_credits (
+                    id SERIAL PRIMARY KEY,
+                    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    credits DECIMAL(20, 10) DEFAULT 0.0,
+                    last_updated TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(user_id)
+                )
+            """;
+            stmt.execute(createUserCreditsTable);
+
+            // Credit Transactions table (for tracking credit usage)
+            String createCreditTransactionsTable = """
+                CREATE TABLE IF NOT EXISTS credit_transactions (
+                    id SERIAL PRIMARY KEY,
+                    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    api_key_id INT REFERENCES api_keys(id) ON DELETE SET NULL,
+                    amount DECIMAL(20, 10) NOT NULL,
+                    transaction_type TEXT NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """;
+            stmt.execute(createCreditTransactionsTable);
+            stmt.execute("CREATE INDEX IF NOT EXISTS credit_transactions_user_id_idx ON credit_transactions(user_id)");
+
+            // Subscriptions table
+            String createSubscriptionsTable = """
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    id SERIAL PRIMARY KEY,
+                    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    subscription_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    stripe_subscription_id TEXT,
+                    stripe_customer_id TEXT,
+                    current_period_start TIMESTAMPTZ,
+                    current_period_end TIMESTAMPTZ,
+                    cancel_at_period_end BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(user_id)
+                )
+            """;
+            stmt.execute(createSubscriptionsTable);
+
+            // Free Tier Tracking table
+            String createFreeTierTable = """
+                CREATE TABLE IF NOT EXISTS free_tier_tracking (
+                    id SERIAL PRIMARY KEY,
+                    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    trial_started_at TIMESTAMPTZ DEFAULT NOW(),
+                    trial_ends_at TIMESTAMPTZ,
+                    requests_today INT DEFAULT 0,
+                    last_request_date DATE,
+                    UNIQUE(user_id)
+                )
+            """;
+            stmt.execute(createFreeTierTable);
 
         }
     }
@@ -693,15 +783,21 @@ public class DatabaseManager {
 
     public static int saveMessage(int dialogId, long messageId, String sender,
                                   String text, LocalDateTime timestamp, boolean hasMedia, Long referenceId) throws SQLException {
+        return saveMessage(dialogId, messageId, sender, text, timestamp, hasMedia, referenceId, "sent");
+    }
+    
+    public static int saveMessage(int dialogId, long messageId, String sender,
+                                  String text, LocalDateTime timestamp, boolean hasMedia, Long referenceId, String status) throws SQLException {
         String sql = """
-            INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, reference_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, reference_id, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (dialog_id, message_id) DO UPDATE SET
                 sender = EXCLUDED.sender,
                 text = EXCLUDED.text,
                 timestamp = EXCLUDED.timestamp,
                 has_media = EXCLUDED.has_media,
-                reference_id = EXCLUDED.reference_id
+                reference_id = EXCLUDED.reference_id,
+                status = COALESCE(EXCLUDED.status, messages.status)
             RETURNING id
         """;
         try (Connection conn = getConnection();
@@ -713,6 +809,7 @@ public class DatabaseManager {
             pstmt.setObject(5, timestamp);
             pstmt.setBoolean(6, hasMedia);
             pstmt.setObject(7, referenceId);
+            pstmt.setString(8, status != null ? status : "sent");
 
             ResultSet rs = pstmt.executeQuery();
             if (rs.next()) {

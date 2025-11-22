@@ -7,19 +7,33 @@ import ConversationView from './components/ConversationView';
 import PlatformRegistration from './components/PlatformRegistration';
 import Navigation from './components/Navigation';
 import Login from './components/Login';
+import ApiKeyManagement from './components/ApiKeyManagement';
+import AnalysisDashboard from './components/AnalysisDashboard';
 
 function App() {
-  const [currentUser, setCurrentUser] = useState(null);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  // Load user from localStorage on mount (session persistence)
+  const [currentUser, setCurrentUser] = useState(() => {
+    const savedUser = localStorage.getItem('aria_user');
+    return savedUser ? JSON.parse(savedUser) : null;
+  });
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    return !!localStorage.getItem('aria_user');
+  });
 
   const handleLogin = (user) => {
     setCurrentUser(user);
     setIsAuthenticated(true);
+    // Persist to localStorage
+    localStorage.setItem('aria_user', JSON.stringify(user));
+    localStorage.setItem('aria_session', Date.now().toString());
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
     setIsAuthenticated(false);
+    // Clear localStorage
+    localStorage.removeItem('aria_user');
+    localStorage.removeItem('aria_session');
   };
 
   return (
@@ -76,6 +90,36 @@ function App() {
               element={
                 isAuthenticated ? (
                   <ConversationView userId={currentUser?.id} />
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              } 
+            />
+            <Route 
+              path="/analysis" 
+              element={
+                isAuthenticated ? (
+                  <AnalysisDashboard userId={currentUser?.id} />
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              } 
+            />
+            <Route 
+              path="/analysis/:targetId" 
+              element={
+                isAuthenticated ? (
+                  <AnalysisDashboard userId={currentUser?.id} />
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              } 
+            />
+            <Route 
+              path="/api-keys" 
+              element={
+                isAuthenticated ? (
+                  <ApiKeyManagement userId={currentUser?.id} />
                 ) : (
                   <Navigate to="/" replace />
                 )

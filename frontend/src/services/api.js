@@ -15,11 +15,28 @@ export const userApi = {
   login: (data) => api.post('/users/login', data),
   deleteAll: () => api.delete('/users'),
   getCurrentUser: (userId) => api.get(`/users/me?userId=${userId}`),
+  get2FAQRCode: (tempSession) => api.get(`/users/2fa/qrcode?session=${tempSession}`),
+  verify2FA: (tempSession, code) => api.post(`/users/2fa/verify?session=${tempSession}`, { code }),
+  setup2FA: (userId) => api.post(`/users/2fa/setup?userId=${userId}`),
+  getApiKeys: (userId) => api.get(`/users/api-keys?userId=${userId}`),
+  createApiKey: (userId, data) => api.post(`/users/api-keys?userId=${userId}`, data),
+  deleteApiKey: (userId, keyId) => api.delete(`/users/api-keys/${keyId}?userId=${userId}`),
+  getCredits: (userId) => api.get(`/users/credits?userId=${userId}`),
+  addCredits: (userId, amount) => api.post(`/users/credits?userId=${userId}`, { amount }),
+  getSubscription: (userId) => api.get(`/users/subscription?userId=${userId}`),
+  subscribe: (userId) => api.post(`/users/subscribe?userId=${userId}`),
 };
 
 // Target API
 export const targetApi = {
   getAll: (userId) => api.get(`/targets?userId=${userId}`),
+  getAnalysis: (userId, targetId, filters) => {
+    const params = new URLSearchParams({ userId });
+    if (targetId) params.append('targetId', targetId);
+    if (filters?.platform) params.append('platform', filters.platform);
+    if (filters?.category) params.append('category', filters.category);
+    return api.get(`/targets/analysis?${params.toString()}`);
+  },
   getById: (id, userId) => api.get(`/targets/${id}?userId=${userId}`),
   create: (targetData, userId) => api.post(`/targets?userId=${userId}`, targetData),
   update: (id, targetData, userId) => api.put(`/targets/${id}?userId=${userId}`, targetData),

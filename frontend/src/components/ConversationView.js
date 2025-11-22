@@ -94,6 +94,7 @@ function ConversationView({ userId = 1 }) {
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false); // Track if in multi-select mode
   const [contextMenu, setContextMenu] = useState(null); // { x, y, messageId, fromUser } for right-click context menu
   const [lastHighestMessageId, setLastHighestMessageId] = useState(0); // Track highest message ID to detect new messages
+  const [mediaViewer, setMediaViewer] = useState(null); // { type: 'image'|'video'|'audio', url, fileName } for media viewer modal
 
   useEffect(() => {
     loadTarget();
@@ -1102,8 +1103,37 @@ function ConversationView({ userId = 1 }) {
         ) : (
           <div className="conversation-container" style={{ position: 'relative' }}>
             <div className="conversation-header">
-              <h2>
-                {target?.name || 'Conversation'}
+              <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                {target?.profilePictureUrl ? (
+                  <img 
+                    src={target.profilePictureUrl} 
+                    alt={target?.name}
+                    style={{ 
+                      width: '48px', 
+                      height: '48px', 
+                      borderRadius: '50%', 
+                      objectFit: 'cover'
+                    }}
+                  />
+                ) : (
+                  <div 
+                    style={{ 
+                      width: '48px', 
+                      height: '48px', 
+                      borderRadius: '50%', 
+                      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: 'white',
+                      fontWeight: 'bold',
+                      fontSize: '1.5rem'
+                    }}
+                  >
+                    {target?.name?.charAt(0).toUpperCase() || '?'}
+                  </div>
+                )}
+                <span>{target?.name || 'Conversation'}</span>
                 {targetOnline ? (
                   <>
                     <span className="online-indicator" title="Online" style={{ backgroundColor: '#4caf50' }}></span>
@@ -1355,31 +1385,32 @@ function ConversationView({ userId = 1 }) {
                       }}
                       onContextMenu={(e) => e.stopPropagation()}
                     >
-                      {/* First check if text contains a link without actual media attachment - if so, treat as link */}
-                      {isUrl(msg.text) && (!msg.hasMedia || (msg.mediaUrl && isUrl(msg.mediaUrl) && !msg.fileName)) ? (
-                        // It's a link in text without real media attachment, render it as a clickable link
-                        renderTextWithLinks(msg.text)
-                      ) : msg.hasMedia || msg.mediaUrl ? (
-                        <div>
-                          {/* Check if mediaUrl is an external link (not a download endpoint) */}
-                          {msg.mediaUrl && isUrl(msg.mediaUrl) && !msg.fileName ? (
-                            // mediaUrl is an external link, render as clickable link
-                            <a
-                              href={msg.mediaUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={(e) => e.stopPropagation()}
-                              style={{ color: 'inherit', textDecoration: 'underline', wordBreak: 'break-all' }}
-                            >
-                              {msg.mediaUrl}
-                            </a>
-                          ) : msg.hasMedia && msg.mediaUrl && (msg.mediaUrl.match(/\.mp4$|video\//) || msg.mimeType?.match(/^video\//)) ? (
+                      {(() => {
+                        // Check if this is just a link (not actual downloadable media)
+                        // A link is detected if:
+                        // 1. mediaUrl is a URL AND no fileName AND no mimeType, OR
+                        // 2. text contains a URL AND (no hasMedia OR mediaUrl is just a link)
+                        const isJustALink = (msg.mediaUrl && isUrl(msg.mediaUrl) && !msg.fileName && !msg.mimeType) ||
+                                          (msg.text && isUrl(msg.text) && (!msg.hasMedia || (msg.mediaUrl && isUrl(msg.mediaUrl) && !msg.fileName && !msg.mimeType)));
+                        
+                        // If it's just a link, render as clickable link only
+                        if (isJustALink) {
+                          const linkText = msg.text || msg.mediaUrl;
+                          return renderTextWithLinks(linkText);
+                        }
+                        
+                        // Otherwise, render actual media or text
+                        if (msg.hasMedia && msg.mediaUrl && (msg.mediaUrl.match(/\.mp4$|video\//) || msg.mimeType?.match(/^video\//))) {
+                          return (
                             <div>
                               <video 
                                 src={msg.mediaUrl} 
                                 controls 
-                                style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6 }} 
-                                onClick={(e) => e.stopPropagation()}
+                                style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6, cursor: 'pointer' }} 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setMediaViewer({ type: 'video', url: msg.mediaUrl, fileName: msg.fileName });
+                                }}
                                 onError={(e) => {
                                   // If video fails to load, hide it
                                   e.target.style.display = 'none';
@@ -1423,13 +1454,63 @@ function ConversationView({ userId = 1 }) {
                                 </div>
                               )}
                             </div>
-                          ) : msg.hasMedia && msg.mediaUrl && (msg.mediaUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) || msg.mimeType?.match(/^image\//)) ? (
+                          );
+                        } else if (msg.hasMedia && msg.mediaUrl && (msg.mediaUrl.match(/\.(ogg|oga|mp3|m4a|wav|opus)$/i) || msg.mimeType?.match(/^audio\//))) {
+                          // Audio/voice note player
+                          return (
+                            <div style={{ 
+                              padding: '12px', 
+                              background: 'rgba(255,255,255,0.1)', 
+                              borderRadius: 8,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '12px',
+                              minWidth: '200px'
+                            }}>
+                              <audio 
+                                src={msg.mediaUrl} 
+                                controls 
+                                style={{ flex: 1, maxWidth: '100%' }}
+                                onClick={(e) => e.stopPropagation()}
+                                onError={(e) => {
+                                  console.error('Failed to load audio:', msg.mediaUrl);
+                                }}
+                              />
+                              {msg.fileName && (
+                                <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.8)' }}>
+                                  {msg.fileName}
+                                </span>
+                              )}
+                              {msg.mediaUrl && (
+                                <a 
+                                  href={msg.mediaUrl} 
+                                  download={msg.fileName || 'audio.ogg'}
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{ 
+                                    padding: '4px 8px', 
+                                    background: 'rgba(255,255,255,0.2)', 
+                                    color: 'white', 
+                                    textDecoration: 'none', 
+                                    borderRadius: 4,
+                                    fontSize: '0.7rem'
+                                  }}
+                                >
+                                  ⬇
+                                </a>
+                              )}
+                            </div>
+                          );
+                        } else if (msg.hasMedia && msg.mediaUrl && (msg.mediaUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) || msg.mimeType?.match(/^image\//))) {
+                          return (
                             <div>
                               <img 
                                 src={msg.mediaUrl} 
                                 alt="sent" 
-                                style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6, objectFit: 'contain' }} 
-                                onClick={(e) => e.stopPropagation()}
+                                style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6, objectFit: 'contain', cursor: 'pointer' }} 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setMediaViewer({ type: 'image', url: msg.mediaUrl, fileName: msg.fileName });
+                                }}
                                 onError={(e) => {
                                   // If image fails to load, show placeholder or file info
                                   e.target.style.display = 'none';
@@ -1482,7 +1563,9 @@ function ConversationView({ userId = 1 }) {
                                 </div>
                               )}
                             </div>
-                          ) : msg.hasMedia && msg.mediaUrl ? (
+                          );
+                        } else if (msg.hasMedia && msg.mediaUrl) {
+                          return (
                             // Display files (PDF, documents, etc.) - similar to Telegram style
                             <div 
                               style={{ 
@@ -1569,33 +1652,49 @@ function ConversationView({ userId = 1 }) {
                                 </a>
                               )}
                             </div>
-                          ) : null}
-                          {/* Show text below media if it exists and is not just a link */}
-                          {msg.text && !isUrl(msg.text) && (
-                            <div style={{ marginTop: '4px', fontSize: '0.9rem' }}>
-                              {msg.text}
-                            </div>
-                          )}
-                          {/* If text is a link and we have media, show the link separately */}
-                          {msg.text && isUrl(msg.text) && msg.hasMedia && (
-                            <div style={{ marginTop: '4px', fontSize: '0.9rem' }}>
-                              {renderTextWithLinks(msg.text)}
-                            </div>
-                          )}
-                        </div>
-                      ) : isUrl(msg.text) ? (
-                        // Render text with clickable links if it's a URL
-                        renderTextWithLinks(msg.text)
-                      ) : (
-                        // Regular text
-                        msg.text
-                      )}
+                          );
+                        } else if (isUrl(msg.text)) {
+                          // Render text with clickable links if it's a URL (and no media)
+                          return renderTextWithLinks(msg.text);
+                        } else {
+                          // Regular text (no media, no link)
+                          return msg.text;
+                        }
+                      })()}
                     </div>
                     <div className="message-time" style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', marginTop: '0.2rem' }}>
                       <span>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                       {msg.edited && (
                         <span style={{ fontSize: '0.65rem', color: '#999', fontStyle: 'italic' }}>
                           (edited)
+                        </span>
+                      )}
+                      {/* Message status indicators */}
+                      {msg.fromUser && (
+                        <span style={{ marginLeft: '4px', fontSize: '0.7rem' }}>
+                          {msg.status === 'failed' ? (
+                            <span 
+                              style={{ color: '#d32f2f', cursor: 'pointer' }} 
+                              title="Failed to send. Click to retry or delete."
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                // Show retry/delete options
+                                if (window.confirm('Message failed to send. Retry?')) {
+                                  // Retry logic would go here
+                                }
+                              }}
+                            >
+                              •
+                            </span>
+                          ) : msg.status === 'read' ? (
+                            <span style={{ color: '#4caf50' }} title="Read">✓✓</span>
+                          ) : msg.status === 'delivered' ? (
+                            <span style={{ color: '#999' }} title="Delivered">✓✓</span>
+                          ) : msg.isPending ? (
+                            <span style={{ color: '#999', opacity: 0.5 }} title="Sending...">⏳</span>
+                          ) : (
+                            <span style={{ color: '#999' }} title="Sent">✓</span>
+                          )}
                         </span>
                       )}
                     </div>
@@ -2205,6 +2304,100 @@ function ConversationView({ userId = 1 }) {
               )}
             </div>
           )}
+
+        {/* Media Viewer Modal */}
+        {mediaViewer && (
+          <div 
+            className="modal-overlay" 
+            style={{ 
+              position: 'fixed', 
+              inset: 0, 
+              background: 'rgba(0,0,0,0.95)', 
+              zIndex: 2000,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+            onClick={() => setMediaViewer(null)}
+          >
+            <div 
+              style={{ 
+                position: 'relative', 
+                maxWidth: '90vw', 
+                maxHeight: '90vh',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => setMediaViewer(null)}
+                style={{
+                  position: 'absolute',
+                  top: '-40px',
+                  right: 0,
+                  background: 'rgba(255,255,255,0.2)',
+                  border: 'none',
+                  color: 'white',
+                  fontSize: '24px',
+                  width: '32px',
+                  height: '32px',
+                  borderRadius: '50%',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+              >
+                ×
+              </button>
+              {mediaViewer.type === 'image' ? (
+                <img 
+                  src={mediaViewer.url} 
+                  alt={mediaViewer.fileName || 'Media'} 
+                  style={{ 
+                    maxWidth: '90vw', 
+                    maxHeight: '90vh', 
+                    objectFit: 'contain',
+                    borderRadius: 8
+                  }} 
+                />
+              ) : mediaViewer.type === 'video' ? (
+                <video 
+                  src={mediaViewer.url} 
+                  controls 
+                  autoPlay
+                  style={{ 
+                    maxWidth: '90vw', 
+                    maxHeight: '90vh',
+                    borderRadius: 8
+                  }} 
+                />
+              ) : null}
+              {mediaViewer.fileName && (
+                <div style={{ marginTop: '16px', color: 'white', fontSize: '0.9rem' }}>
+                  {mediaViewer.fileName}
+                </div>
+              )}
+              <a
+                href={mediaViewer.url}
+                download={mediaViewer.fileName || 'media'}
+                style={{
+                  marginTop: '12px',
+                  padding: '8px 16px',
+                  background: '#667eea',
+                  color: 'white',
+                  textDecoration: 'none',
+                  borderRadius: 6,
+                  fontSize: '0.9rem'
+                }}
+              >
+                Download
+              </a>
+            </div>
+          </div>
+        )}
 
         {/* Delete Confirmation Modal */}
         {deleteModal && (

@@ -32,6 +32,8 @@ function TargetManagement({ userId = 1 }) {
     engagementLevel: 0.6,
     preferredOpening: 'Hey! How are you doing?',
   });
+  const [profilePicture, setProfilePicture] = useState(null); // File object
+  const [profilePicturePreview, setProfilePicturePreview] = useState(null); // Preview URL
 
   useEffect(() => {
     loadTargets();
@@ -134,18 +136,32 @@ function TargetManagement({ userId = 1 }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
+      // Create FormData if profile picture is included
+      const submitData = profilePicture 
+        ? (() => {
+            const formDataObj = new FormData();
+            Object.keys(formData).forEach(key => {
+              formDataObj.append(key, formData[key]);
+            });
+            formDataObj.append('profilePicture', profilePicture);
+            return formDataObj;
+          })()
+        : formData;
+
       let response;
       if (editingTarget) {
         // Update existing target
-        response = await targetApi.update(editingTarget.id, formData, userId);
+        response = await targetApi.update(editingTarget.id, submitData, userId);
       } else {
         // Create new target
-        response = await targetApi.create(formData, userId);
+        response = await targetApi.create(submitData, userId);
       }
       if (response.data.success) {
         setShowForm(false);
         setEditingTarget(null);
         setShowAdvanced(false);
+        setProfilePicture(null);
+        setProfilePicturePreview(null);
         setFormData({ 
           name: '', username: '', platform: '', bio: '', desiredOutcome: '', meetingContext: '', contextDetails: '',
           humorLevel: 0.4, formalityLevel: 0.5, empathyLevel: 0.7, responseTimeAverage: 120.0,
@@ -226,7 +242,49 @@ function TargetManagement({ userId = 1 }) {
         {showForm && (
           <div className="target-form-container">
             <h2>{editingTarget ? 'Edit Target User' : 'Add New Target User'}</h2>
-            <form onSubmit={handleSubmit} className="target-form">
+            <form onSubmit={handleSubmit} className="target-form" encType="multipart/form-data">
+              <div className="form-group">
+                <label htmlFor="profilePicture">Profile Picture (Optional)</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
+                  {profilePicturePreview && (
+                    <img 
+                      src={profilePicturePreview} 
+                      alt="Preview" 
+                      style={{ width: '80px', height: '80px', borderRadius: '50%', objectFit: 'cover' }}
+                    />
+                  )}
+                  <input
+                    type="file"
+                    id="profilePicture"
+                    name="profilePicture"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        setProfilePicture(file);
+                        const preview = URL.createObjectURL(file);
+                        setProfilePicturePreview(preview);
+                      }
+                    }}
+                  />
+                  {profilePicturePreview && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => {
+                        setProfilePicture(null);
+                        setProfilePicturePreview(null);
+                        URL.revokeObjectURL(profilePicturePreview);
+                      }}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                <p style={{ fontSize: '0.85rem', color: '#666' }}>
+                  If no picture is uploaded, we'll automatically fetch it from {formData.platform || 'the platform'}
+                </p>
+              </div>
               <div className="form-group">
                 <label htmlFor="name">Name *</label>
                 <input
@@ -501,6 +559,37 @@ function TargetManagement({ userId = 1 }) {
               <div key={target.id} className="card">
                 <div className="card-header">
                   <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    {target.profilePictureUrl ? (
+                      <img 
+                        src={target.profilePictureUrl} 
+                        alt={target.name}
+                        style={{ 
+                          width: '40px', 
+                          height: '40px', 
+                          borderRadius: '50%', 
+                          objectFit: 'cover',
+                          marginRight: '0.5rem'
+                        }}
+                      />
+                    ) : (
+                      <div 
+                        style={{ 
+                          width: '40px', 
+                          height: '40px', 
+                          borderRadius: '50%', 
+                          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: 'white',
+                          fontWeight: 'bold',
+                          fontSize: '1.2rem',
+                          marginRight: '0.5rem'
+                        }}
+                      >
+                        {target.name.charAt(0).toUpperCase()}
+                      </div>
+                    )}
                     {target.name}
                     {onlineStatus[target.id]?.online ? (
                       <span className="online-indicator" title="Online" style={{ 

@@ -22,10 +22,22 @@ function Navigation({ isAuthenticated, onLogout }) {
           Targets
         </Link>
         <Link 
+          to="/analysis" 
+          className={`nav-link ${location.pathname.startsWith('/analysis') ? 'active' : ''}`}
+        >
+          Analysis
+        </Link>
+        <Link 
           to="/platforms" 
           className={`nav-link ${location.pathname.startsWith('/platforms') ? 'active' : ''}`}
         >
           Platforms
+        </Link>
+        <Link 
+          to="/api-keys" 
+          className={`nav-link ${location.pathname.startsWith('/api-keys') ? 'active' : ''}`}
+        >
+          API Keys
         </Link>
         <button onClick={onLogout} className="btn btn-secondary">
           Logout
