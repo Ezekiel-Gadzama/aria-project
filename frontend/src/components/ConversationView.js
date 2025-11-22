@@ -3,6 +3,63 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { targetApi, conversationApi, platformApi } from '../services/api';
 import './ConversationView.css';
 
+// Utility function to detect and render links in text
+const renderTextWithLinks = (text) => {
+  if (!text) return null;
+  
+  // URL regex pattern
+  const urlPattern = /(https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s]*)?)/g;
+  const parts = [];
+  let lastIndex = 0;
+  let match;
+  
+  while ((match = urlPattern.exec(text)) !== null) {
+    // Add text before the URL
+    if (match.index > lastIndex) {
+      parts.push(text.substring(lastIndex, match.index));
+    }
+    
+    // Add the URL as a link
+    let url = match[0];
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = 'https://' + url;
+    }
+    
+    parts.push(
+      <a
+        key={match.index}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{ color: 'inherit', textDecoration: 'underline' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {match[0]}
+      </a>
+    );
+    
+    lastIndex = urlPattern.lastIndex;
+  }
+  
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push(text.substring(lastIndex));
+  }
+  
+  return parts.length > 0 ? parts : text;
+};
+
+// Utility function to check if text is a URL (and should not be treated as media)
+const isUrl = (text) => {
+  if (!text) return false;
+  // Check if it's an actual URL (http/https/www) and not a relative path or API endpoint
+  const urlPattern = /^(https?:\/\/|www\.)[^\s]+/;
+  const isAbsoluteUrl = urlPattern.test(text.trim());
+  // Exclude API endpoints and relative paths
+  const isApiEndpoint = text.includes('/api/') || text.startsWith('/');
+  return isAbsoluteUrl && !isApiEndpoint;
+};
+
 function ConversationView({ userId = 1 }) {
   const { targetId } = useParams();
   const navigate = useNavigate();
@@ -28,6 +85,13 @@ function ConversationView({ userId = 1 }) {
   const [isOperationInProgress, setIsOperationInProgress] = useState(false); // Track if delete/edit is in progress to pause polling
   const [deletedMessageIds, setDeletedMessageIds] = useState(new Set()); // Track deleted message IDs to prevent them from being re-added
   const messageInputRef = useRef(null); // Ref for message input field to focus when replying
+  const messagesContainerRef = useRef(null); // Ref for messages container for scroll tracking
+  const [showNewMessageNotification, setShowNewMessageNotification] = useState(false); // Show new message notification when scrolled up
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false); // Show scroll to bottom button
+  const [selectedMessages, setSelectedMessages] = useState(new Set()); // Track selected message IDs for multi-select
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false); // Track if in multi-select mode
+  const [contextMenu, setContextMenu] = useState(null); // { x, y, messageId, fromUser } for right-click context menu
+  const [lastHighestMessageId, setLastHighestMessageId] = useState(0); // Track highest message ID to detect new messages
 
   useEffect(() => {
     loadTarget();
@@ -172,6 +236,21 @@ function ConversationView({ userId = 1 }) {
             const hasRemovedMessages = prevIds.size > newIds.size;
             const hasDifferentLength = prev.length !== loadedMessages.length;
             
+            // Track new messages for notification when scrolled up
+            if (hasNewMessages && newHighest > lastHighestMessageId) {
+              setLastHighestMessageId(newHighest);
+              // Check if user is scrolled up (not near bottom)
+              setTimeout(() => {
+                const messagesContainer = messagesContainerRef.current;
+                if (messagesContainer) {
+                  const isNearBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 200;
+                  if (!isNearBottom) {
+                    setShowNewMessageNotification(true);
+                  }
+                }
+              }, 100);
+            }
+            
             // Check if any existing message was edited (text changed)
             // Also check if message is marked as edited in DB (Telegram edit)
             let hasEditedMessages = false;
@@ -206,11 +285,12 @@ function ConversationView({ userId = 1 }) {
             if (idsDiffer || lengthDiffers || hasChanged) {
               // Auto-scroll to bottom if we're near the bottom and have new messages
               setTimeout(() => {
-                const messagesContainer = document.querySelector('.messages-container');
+                const messagesContainer = messagesContainerRef.current;
                 if (messagesContainer && hasNewMessages) {
                   const isNearBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 200;
                   if (isNearBottom) {
                     messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                    setShowNewMessageNotification(false);
                   }
                 }
               }, 100);
@@ -575,25 +655,45 @@ function ConversationView({ userId = 1 }) {
       const resp = await conversationApi.getMessages(targetId, userId, 50);
       if (resp.data?.success) {
         const rows = resp.data.data || [];
-        const loadedMessages = rows.map((r) => ({
-          text: r.text || '',
-          fromUser: !!r.fromUser,
-          timestamp: r.timestamp ? new Date(r.timestamp) : new Date(),
-          mediaUrl: r.mediaDownloadUrl || null,
-          messageId: r.messageId,
-          hasMedia: r.hasMedia || false,
-          fileName: r.fileName || null,
-          mimeType: r.mimeType || null,
-          edited: r.edited || false, // Preserve edited flag from database or API
-          referenceId: r.referenceId || null, // Include reference_id for replies
-          fileSize: r.fileSize || null, // Include file size
-        }));
+        const loadedMessages = rows.map((r) => {
+          // Format mediaUrl as absolute URL if it's a relative path
+          let mediaUrl = null;
+          if (r.mediaDownloadUrl) {
+            if (r.mediaDownloadUrl.startsWith('http')) {
+              mediaUrl = r.mediaDownloadUrl;
+            } else {
+              // It's a relative path, convert to absolute using downloadMediaUrl function
+              // This ensures it works for both user and target user media
+              mediaUrl = conversationApi.downloadMediaUrl(targetId, userId, r.messageId);
+            }
+          }
+          
+          return {
+            text: r.text || '',
+            fromUser: !!r.fromUser,
+            timestamp: r.timestamp ? new Date(r.timestamp) : new Date(),
+            mediaUrl: mediaUrl,
+            messageId: r.messageId,
+            hasMedia: r.hasMedia || false,
+            fileName: r.fileName || null,
+            mimeType: r.mimeType || null,
+            edited: r.edited || false, // Preserve edited flag from database or API
+            referenceId: r.referenceId || null, // Include reference_id for replies
+            fileSize: r.fileSize || null, // Include file size
+          };
+        });
         setMessages(loadedMessages);
         console.log(`Loaded ${loadedMessages.length} messages for target ${targetId}`);
         
+        // Track highest message ID for new message detection
+        if (loadedMessages.length > 0) {
+          const highestId = Math.max(...loadedMessages.map(m => m.messageId || 0));
+          setLastHighestMessageId(highestId);
+        }
+        
         // Auto-scroll to bottom after messages are loaded
         setTimeout(() => {
-          const messagesContainer = document.querySelector('.messages-container');
+          const messagesContainer = messagesContainerRef.current;
           if (messagesContainer) {
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
           }
@@ -813,7 +913,7 @@ function ConversationView({ userId = 1 }) {
             </form>
           </div>
         ) : (
-          <div className="conversation-container">
+          <div className="conversation-container" style={{ position: 'relative' }}>
             <div className="conversation-header">
               <h2>
                 {target?.name || 'Conversation'}
@@ -843,8 +943,21 @@ function ConversationView({ userId = 1 }) {
                 End Conversation
               </button>
             </div>
-            <div className="toolbar" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-              <label className="btn btn-secondary" style={{ marginLeft: 8 }}>
+            <div className="toolbar" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8, gap: 8 }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  if (isMultiSelectMode) {
+                    // Clear selection when exiting multi-select mode
+                    setSelectedMessages(new Set());
+                  }
+                  setIsMultiSelectMode(!isMultiSelectMode);
+                }}
+                style={{ fontSize: '0.85rem' }}
+              >
+                {isMultiSelectMode ? '✕ Cancel Select' : '✓ Select Messages'}
+              </button>
+              <label className="btn btn-secondary" style={{ marginLeft: 0 }}>
                 Upload Media
                 <input
                   type="file"
@@ -878,7 +991,19 @@ function ConversationView({ userId = 1 }) {
                 </button>
               )}
             </div>
-            <div className="messages-container">
+            <div 
+              ref={messagesContainerRef}
+              className="messages-container"
+              onScroll={(e) => {
+                const container = e.target;
+                const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
+                setShowScrollToBottom(!isNearBottom);
+                // Hide new message notification if scrolled to bottom
+                if (isNearBottom) {
+                  setShowNewMessageNotification(false);
+                }
+              }}
+            >
               {messages.length === 0 ? (
                 <div className="empty-messages">
                   <p>No messages yet. {conversationInitialized ? 'Start the conversation!' : 'Messages will appear here once ingestion is complete.'}</p>
@@ -891,16 +1016,16 @@ function ConversationView({ userId = 1 }) {
                   return (
                   <div 
                     key={idx} 
-                    className={`message ${msg.fromUser ? 'from-user' : 'from-target'}`}
+                    className={`message ${msg.fromUser ? 'from-user' : 'from-target'} ${selectedMessages.has(msg.messageId) ? 'selected' : ''}`}
                     onTouchStart={(e) => {
                       // Track touch start for swipe-to-reply
-                      if (!msg.fromUser) { // Only allow replying to target's messages
+                      if (!msg.fromUser && !isMultiSelectMode) { // Only allow replying to target's messages
                         e.touchStartY = e.touches[0].clientY;
                       }
                     }}
                     onTouchEnd={(e) => {
-                      // Swipe up to reply
-                      if (!msg.fromUser && e.changedTouches[0]) {
+                      // Swipe up to reply (only if not in multi-select mode)
+                      if (!msg.fromUser && !isMultiSelectMode && e.changedTouches[0]) {
                         const touchEndY = e.changedTouches[0].clientY;
                         const touchStartY = e.touchStartY;
                         if (touchStartY && touchEndY < touchStartY - 50) { // Swipe up more than 50px
@@ -918,13 +1043,65 @@ function ConversationView({ userId = 1 }) {
                         }
                       }
                     }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      // Don't show context menu in multi-select mode
+                      if (isMultiSelectMode) return;
+                      setContextMenu({
+                        x: e.pageX,
+                        y: e.pageY,
+                        messageId: msg.messageId,
+                        fromUser: msg.fromUser,
+                        hasMedia: msg.hasMedia || false,
+                        text: msg.text || ''
+                      });
+                    }}
+                    onClick={(e) => {
+                      // Toggle selection in multi-select mode - disable all other interactions
+                      if (isMultiSelectMode) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setSelectedMessages(prev => {
+                          const updated = new Set(prev);
+                          if (updated.has(msg.messageId)) {
+                            updated.delete(msg.messageId);
+                          } else {
+                            updated.add(msg.messageId);
+                          }
+                          return updated;
+                        });
+                      }
+                    }}
                     style={{ 
-                      cursor: !msg.fromUser ? 'pointer' : 'default',
-                      position: 'relative'
+                      cursor: isMultiSelectMode ? 'pointer' : (!msg.fromUser ? 'pointer' : 'default'),
+                      position: 'relative',
+                      backgroundColor: selectedMessages.has(msg.messageId) ? 'rgba(102, 126, 234, 0.3)' : undefined
                     }}
                   >
+                    {/* Multi-select checkbox */}
+                    {isMultiSelectMode && (
+                      <div style={{
+                        position: 'absolute',
+                        right: '8px',
+                        top: '8px',
+                        width: '20px',
+                        height: '20px',
+                        borderRadius: '50%',
+                        border: '2px solid white',
+                        backgroundColor: selectedMessages.has(msg.messageId) ? '#667eea' : 'transparent',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 10,
+                        pointerEvents: 'none'
+                      }}>
+                        {selectedMessages.has(msg.messageId) && (
+                          <span style={{ color: 'white', fontSize: '12px', fontWeight: 'bold' }}>✓</span>
+                        )}
+                      </div>
+                    )}
                     {/* Reply indicator - show message being replied to */}
-                    {repliedToMsg && (
+                    {repliedToMsg && !isMultiSelectMode && (
                       <div 
                         style={{ 
                           padding: '4px 8px', 
@@ -935,16 +1112,20 @@ function ConversationView({ userId = 1 }) {
                           borderLeft: '2px solid #667eea',
                           cursor: 'pointer'
                         }}
-                        onClick={() => {
-                          // Scroll to the referenced message
-                          const messageEl = document.querySelector(`[data-message-id="${msg.referenceId}"]`);
-                          if (messageEl) {
-                            messageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            // Highlight the message briefly
-                            messageEl.style.background = 'rgba(102, 126, 234, 0.2)';
-                            setTimeout(() => {
-                              messageEl.style.background = '';
-                            }, 1000);
+                        onClick={(e) => {
+                          // Only allow scroll to reply if not in multi-select mode
+                          if (!isMultiSelectMode) {
+                            e.stopPropagation();
+                            // Scroll to the referenced message
+                            const messageEl = document.querySelector(`[data-message-id="${msg.referenceId}"]`);
+                            if (messageEl) {
+                              messageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                              // Highlight the message briefly
+                              messageEl.style.background = 'rgba(102, 126, 234, 0.2)';
+                              setTimeout(() => {
+                                messageEl.style.background = '';
+                              }, 1000);
+                            }
                           }
                         }}
                         title="Click to scroll to referenced message"
@@ -968,13 +1149,51 @@ function ConversationView({ userId = 1 }) {
                         Deleted message
                       </div>
                     )}
-                    <div className="message-content" data-message-id={msg.messageId}>
+                    <div 
+                      className="message-content" 
+                      data-message-id={msg.messageId}
+                      onClick={(e) => {
+                        // In multi-select mode, allow clicking anywhere on message content to select
+                        if (isMultiSelectMode) {
+                          e.stopPropagation();
+                          setSelectedMessages(prev => {
+                            const updated = new Set(prev);
+                            if (updated.has(msg.messageId)) {
+                              updated.delete(msg.messageId);
+                            } else {
+                              updated.add(msg.messageId);
+                            }
+                            return updated;
+                          });
+                        } else {
+                          e.stopPropagation();
+                        }
+                      }}
+                      onContextMenu={(e) => e.stopPropagation()}
+                    >
                       {msg.hasMedia || msg.mediaUrl ? (
                         <div>
-                          {msg.mediaUrl && (msg.mediaUrl.match(/\.mp4$|video\//) || msg.mimeType?.match(/^video\//)) ? (
-                            <video src={msg.mediaUrl} controls style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6 }} />
+                          {/* Check if it's actually a link/URL (not a file download) */}
+                          {!msg.hasMedia && isUrl(msg.text) ? (
+                            // It's a link in text, render it as a clickable link
+                            <div>
+                              {renderTextWithLinks(msg.text)}
+                            </div>
+                          ) : msg.mediaUrl && isUrl(msg.mediaUrl) ? (
+                            // mediaUrl is an external link, render as clickable link
+                            <a
+                              href={msg.mediaUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              style={{ color: 'inherit', textDecoration: 'underline', wordBreak: 'break-all' }}
+                            >
+                              {msg.mediaUrl}
+                            </a>
+                          ) : msg.mediaUrl && (msg.mediaUrl.match(/\.mp4$|video\//) || msg.mimeType?.match(/^video\//)) ? (
+                            <video src={msg.mediaUrl} controls style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6 }} onClick={(e) => e.stopPropagation()} />
                           ) : msg.mediaUrl && (msg.mediaUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) || msg.mimeType?.match(/^image\//)) ? (
-                            <img src={msg.mediaUrl} alt="sent" style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6, objectFit: 'contain' }} />
+                            <img src={msg.mediaUrl} alt="sent" style={{ maxWidth: '180px', maxHeight: '150px', borderRadius: 6, objectFit: 'contain' }} onClick={(e) => e.stopPropagation()} />
                           ) : (
                             <div style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: 6, fontSize: '0.85rem' }}>
                               📎 {msg.fileName ? (
@@ -989,23 +1208,31 @@ function ConversationView({ userId = 1 }) {
                               )}
                             </div>
                           )}
-                          {msg.text && (
+                          {msg.text && !isUrl(msg.text) && !isUrl(msg.mediaUrl) && (
                             <div style={{ marginTop: '4px', fontSize: '0.9rem' }}>
                               {msg.text}
                             </div>
                           )}
-                          <div style={{ marginTop: 2, fontSize: '0.75rem' }}>
-                            <a 
-                              href={msg.mediaUrl || conversationApi.downloadMediaUrl(targetId, userId, msg.messageId)} 
-                              download={msg.fileName || 'media'}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                            >
-                              Download
-                            </a>
-                          </div>
+                          {/* Only show download button if it's actual media (not a link) */}
+                          {!isUrl(msg.mediaUrl) && !isUrl(msg.text) && msg.hasMedia && msg.mediaUrl && !msg.mediaUrl.match(/^https?:\/\//) && (
+                            <div style={{ marginTop: 2, fontSize: '0.75rem' }}>
+                              <a 
+                                href={msg.mediaUrl || conversationApi.downloadMediaUrl(targetId, userId, msg.messageId)} 
+                                download={msg.fileName || 'media'}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                Download
+                              </a>
+                            </div>
+                          )}
                         </div>
+                      ) : isUrl(msg.text) ? (
+                        // Render text with clickable links if it's a URL
+                        renderTextWithLinks(msg.text)
                       ) : (
+                        // Regular text
                         msg.text
                       )}
                     </div>
@@ -1096,6 +1323,71 @@ function ConversationView({ userId = 1 }) {
                 })
               )}
             </div>
+
+            {/* New Message Notification */}
+            {showNewMessageNotification && (
+              <div 
+                style={{
+                  position: 'absolute',
+                  bottom: '60px',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  background: '#667eea',
+                  color: 'white',
+                  padding: '8px 16px',
+                  borderRadius: '20px',
+                  cursor: 'pointer',
+                  fontSize: '0.85rem',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                  zIndex: 100,
+                  animation: 'pulse 2s infinite'
+                }}
+                onClick={() => {
+                  const container = messagesContainerRef.current;
+                  if (container) {
+                    container.scrollTop = container.scrollHeight;
+                    setShowNewMessageNotification(false);
+                  }
+                }}
+              >
+                New message
+              </div>
+            )}
+
+            {/* Scroll to Bottom Button */}
+            {showScrollToBottom && (
+              <button
+                style={{
+                  position: 'absolute',
+                  bottom: '60px',
+                  right: '20px',
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '50%',
+                  background: '#667eea',
+                  color: 'white',
+                  border: 'none',
+                  cursor: 'pointer',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                  zIndex: 100,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '1.2rem'
+                }}
+                onClick={() => {
+                  const container = messagesContainerRef.current;
+                  if (container) {
+                    container.scrollTop = container.scrollHeight;
+                    setShowScrollToBottom(false);
+                    setShowNewMessageNotification(false);
+                  }
+                }}
+                title="Scroll to bottom"
+              >
+                ↓
+              </button>
+            )}
 
             {/* Edit form - shows when a message is selected for editing */}
             {selectedMessageId && (
@@ -1252,6 +1544,274 @@ function ConversationView({ userId = 1 }) {
           </div>
         )}
         
+        {/* Right-click Context Menu */}
+        {contextMenu && !isMultiSelectMode && (
+          <>
+            <div 
+              style={{
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 999
+              }}
+              onClick={() => setContextMenu(null)}
+            />
+            <div
+              style={{
+                position: 'fixed',
+                left: `${contextMenu.x}px`,
+                top: `${contextMenu.y}px`,
+                background: 'white',
+                border: '1px solid #e0e0e0',
+                borderRadius: '8px',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                zIndex: 1000,
+                minWidth: '150px',
+                padding: '4px 0'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}
+                onClick={() => {
+                  setReplyingTo({
+                    messageId: contextMenu.messageId,
+                    text: contextMenu.text || (contextMenu.hasMedia ? 'Media' : 'Message'),
+                    fromUser: contextMenu.fromUser
+                  });
+                  setContextMenu(null);
+                  setTimeout(() => {
+                    if (messageInputRef.current) {
+                      messageInputRef.current.focus();
+                    }
+                  }, 100);
+                }}
+                onMouseEnter={(e) => e.target.style.background = '#f5f5f5'}
+                onMouseLeave={(e) => e.target.style.background = 'transparent'}
+              >
+                ↶ Reply
+              </div>
+              {contextMenu.fromUser && (
+                <div
+                  style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}
+                  onClick={() => {
+                    setSelectedMessageId(contextMenu.messageId);
+                    setEditText(contextMenu.text || '');
+                    setSelectedMessageHasMedia(contextMenu.hasMedia || false);
+                    setPendingMediaReplacement(null);
+                    setContextMenu(null);
+                  }}
+                  onMouseEnter={(e) => e.target.style.background = '#f5f5f5'}
+                  onMouseLeave={(e) => e.target.style.background = 'transparent'}
+                >
+                  ✏️ Edit
+                </div>
+              )}
+              <div
+                style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}
+                onClick={() => {
+                  // Pin functionality (placeholder)
+                  console.log('Pin message:', contextMenu.messageId);
+                  setContextMenu(null);
+                }}
+                onMouseEnter={(e) => e.target.style.background = '#f5f5f5'}
+                onMouseLeave={(e) => e.target.style.background = 'transparent'}
+              >
+                📌 Pin
+              </div>
+              <div
+                style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}
+                onClick={() => {
+                  // Copy text
+                  const textToCopy = contextMenu.text || (contextMenu.hasMedia ? 'Media' : 'Message');
+                  navigator.clipboard.writeText(textToCopy).then(() => {
+                    // Show brief feedback
+                    setError('Text copied to clipboard');
+                    setTimeout(() => setError(null), 2000);
+                  });
+                  setContextMenu(null);
+                }}
+                onMouseEnter={(e) => e.target.style.background = '#f5f5f5'}
+                onMouseLeave={(e) => e.target.style.background = 'transparent'}
+              >
+                📋 Copy Text
+              </div>
+              <div
+                style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}
+                onClick={() => {
+                  // Forward functionality (placeholder)
+                  console.log('Forward message:', contextMenu.messageId);
+                  setContextMenu(null);
+                }}
+                onMouseEnter={(e) => e.target.style.background = '#f5f5f5'}
+                onMouseLeave={(e) => e.target.style.background = 'transparent'}
+              >
+                ➡️ Forward
+              </div>
+              <div
+                style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}
+                onClick={() => {
+                  handleDelete(contextMenu.messageId);
+                  setContextMenu(null);
+                }}
+                onMouseEnter={(e) => e.target.style.background = '#f5f5f5'}
+                onMouseLeave={(e) => e.target.style.background = 'transparent'}
+              >
+                🗑️ Delete
+              </div>
+              <div style={{ borderTop: '1px solid #e0e0e0', margin: '4px 0' }} />
+              <div
+                style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}
+                onClick={() => {
+                  setIsMultiSelectMode(true);
+                  setSelectedMessages(new Set([contextMenu.messageId]));
+                  setContextMenu(null);
+                }}
+                onMouseEnter={(e) => e.target.style.background = '#f5f5f5'}
+                onMouseLeave={(e) => e.target.style.background = 'transparent'}
+              >
+                ✓ Select
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Multi-select Mode Controls */}
+        {isMultiSelectMode && (
+          <div style={{
+            position: 'fixed',
+            bottom: '80px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: '#667eea',
+            color: 'white',
+            padding: '12px 24px',
+            borderRadius: '25px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '16px'
+          }}>
+            <span>{selectedMessages.size} selected</span>
+            {selectedMessages.size > 0 && (
+              <>
+                <button
+                  style={{
+                    background: 'rgba(255,255,255,0.2)',
+                    border: 'none',
+                    color: 'white',
+                    padding: '6px 12px',
+                    borderRadius: '6px',
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => {
+                    // Copy selected messages
+                    const selectedTexts = Array.from(selectedMessages)
+                      .map(id => {
+                        const msg = messages.find(m => m.messageId === id);
+                        return msg ? (msg.text || (msg.hasMedia ? 'Media' : 'Message')) : '';
+                      })
+                      .filter(t => t)
+                      .join('\n');
+                    navigator.clipboard.writeText(selectedTexts).then(() => {
+                      setError('Selected messages copied to clipboard');
+                      setTimeout(() => setError(null), 2000);
+                    });
+                  }}
+                >
+                  📋 Copy
+                </button>
+                <button
+                  style={{
+                    background: 'rgba(255,255,255,0.2)',
+                    border: 'none',
+                    color: 'white',
+                    padding: '6px 12px',
+                    borderRadius: '6px',
+                    cursor: 'pointer'
+                  }}
+                  onClick={async () => {
+                    // Delete selected messages - track all deleted IDs
+                    const selectedArray = Array.from(selectedMessages);
+                    
+                    // Track all selected messages as deleted
+                    setDeletedMessageIds(prev => new Set([...prev, ...selectedArray]));
+                    
+                    // Remove from UI immediately
+                    setMessages(prev => prev.filter(m => !selectedArray.includes(m.messageId)));
+                    
+                    // Clear selection and exit multi-select mode
+                    setSelectedMessages(new Set());
+                    setIsMultiSelectMode(false);
+                    
+                    // Pause polling while deletions are in progress
+                    setIsOperationInProgress(true);
+                    
+                    // Delete each message from Telegram
+                    try {
+                      await Promise.all(selectedArray.map(async (messageId) => {
+                        try {
+                          await conversationApi.delete(targetId, userId, messageId, true);
+                        } catch (err) {
+                          console.error(`Failed to delete message ${messageId}:`, err);
+                        }
+                      }));
+                      
+                      // Wait for deletions to complete
+                      await new Promise(resolve => setTimeout(resolve, 2000));
+                      
+                      // Keep deleted messages tracked for 30 seconds
+                      setTimeout(() => {
+                        setDeletedMessageIds(prev => {
+                          const updated = new Set(prev);
+                          selectedArray.forEach(id => updated.delete(id));
+                          return updated;
+                        });
+                      }, 30000);
+                    } catch (err) {
+                      console.error('Error deleting selected messages:', err);
+                      // If deletion fails, reload messages to restore
+                      setTimeout(() => loadMessages(), 1000);
+                      // Remove from tracking since deletion failed
+                      setDeletedMessageIds(prev => {
+                        const updated = new Set(prev);
+                        selectedArray.forEach(id => updated.delete(id));
+                        return updated;
+                      });
+                    } finally {
+                      // Resume polling after deletions complete
+                      setTimeout(() => {
+                        setIsOperationInProgress(false);
+                      }, 2500);
+                    }
+                  }}
+                >
+                  🗑️ Delete
+                </button>
+                <button
+                  style={{
+                    background: 'rgba(255,255,255,0.2)',
+                    border: 'none',
+                    color: 'white',
+                    padding: '6px 12px',
+                    borderRadius: '6px',
+                    cursor: 'pointer'
+                  }}
+                    onClick={() => {
+                      setSelectedMessages(new Set());
+                      // Don't exit multi-select mode on clear, just clear selection
+                    }}
+                  >
+                    ✕ Clear
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
         {/* Delete Confirmation Modal */}
         {deleteModal && (
           <div className="modal-overlay" onClick={cancelDelete}>
