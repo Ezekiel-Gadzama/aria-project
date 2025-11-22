@@ -3,6 +3,7 @@ package com.aria.api.controller;
 import com.aria.api.dto.ApiResponse;
 import com.aria.api.dto.TargetUserDTO;
 import com.aria.core.model.TargetUser;
+import com.aria.core.model.ChatCategory;
 import com.aria.platform.Platform;
 import com.aria.service.TargetUserService;
 import com.aria.service.UserService;
@@ -678,6 +679,21 @@ public class TargetController {
     }
     
     /**
+     * Get all available categories
+     * GET /api/targets/categories
+     */
+    @GetMapping("/categories")
+    public ResponseEntity<ApiResponse<List<String>>> getCategories() {
+        try {
+            List<String> categories = ChatCategory.getAllNames();
+            return ResponseEntity.ok(ApiResponse.success(categories));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError()
+                .body(ApiResponse.error("Failed to get categories: " + e.getMessage()));
+        }
+    }
+    
+    /**
      * Get analysis data for targets
      * GET /api/targets/analysis?userId=...&targetId=...&platform=...&category=...
      */
@@ -745,7 +761,7 @@ public class TargetController {
                 JOIN target_user_platforms tup ON d.platform_account_id = tup.platform_id AND d.dialog_id = tup.platform_id
                 JOIN target_users tu ON tup.target_user_id = tu.id
                 WHERE """ + whereClause.toString() + """
-                AND m.timestamp >= NOW() - INTERVAL '3 months'
+                 AND m.timestamp >= NOW() - INTERVAL '3 months'
                 ORDER BY m.timestamp DESC
             """;
             

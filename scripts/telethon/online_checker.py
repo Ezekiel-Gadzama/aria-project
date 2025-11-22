@@ -166,9 +166,9 @@ async def check_user_online(target_username):
                 is_online = True
                 last_active = "online"
             elif isinstance(status, UserStatusRecently):
-                # Recently online (within last few minutes) - consider as online
-                is_online = True
-                last_active = format_last_active(status)
+                # Recently online (within last few minutes) - NOT considered as online, just recently seen
+                is_online = False
+                last_active = "last seen recently"
             else:
                 last_active = format_last_active(status)
         else:
@@ -181,8 +181,8 @@ async def check_user_online(target_username):
                         is_online = True
                         last_active = "online"
                     elif isinstance(status, UserStatusRecently):
-                        is_online = True
-                        last_active = format_last_active(status)
+                        is_online = False
+                        last_active = "last seen recently"
                     else:
                         last_active = format_last_active(status)
             except Exception:

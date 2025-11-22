@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { targetApi, platformApi } from '../services/api';
 import './AnalysisDashboard.css';
@@ -12,28 +12,58 @@ function AnalysisDashboard({ userId = 1 }) {
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [analysisData, setAnalysisData] = useState(null);
   const [targets, setTargets] = useState([]);
-  const [registeredPlatforms, setRegisteredPlatforms] = useState([]);
+  const [registeredPlatformAccounts, setRegisteredPlatformAccounts] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [categorySearch, setCategorySearch] = useState('');
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
+  const categoryDropdownRef = useRef(null);
 
   useEffect(() => {
-    loadRegisteredPlatforms();
+    loadRegisteredPlatformAccounts();
     loadTargets();
+    loadCategories();
   }, []);
 
   useEffect(() => {
     loadAnalysisData();
   }, [selectedPlatform, selectedCategory, targetId]);
 
-  const loadRegisteredPlatforms = async () => {
+  // Close category dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (categoryDropdownRef.current && !categoryDropdownRef.current.contains(event.target)) {
+        setShowCategoryDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const loadRegisteredPlatformAccounts = async () => {
     try {
       const response = await platformApi.getAccounts(userId);
       if (response.data?.success) {
         const accounts = response.data.data || [];
-        // Extract unique platforms from registered accounts
-        const uniquePlatforms = [...new Set(accounts.map(acc => acc.platform))];
-        setRegisteredPlatforms(uniquePlatforms);
+        setRegisteredPlatformAccounts(accounts);
       }
     } catch (err) {
-      console.error('Failed to load registered platforms:', err);
+      console.error('Failed to load registered platform accounts:', err);
+    }
+  };
+
+  const loadCategories = async () => {
+    try {
+      const response = await targetApi.getCategories();
+      if (response.data?.success) {
+        setCategories(response.data.data || []);
+      } else {
+        // Fallback: use common categories if API fails
+        setCategories(['dating', 'work', 'family', 'business', 'friendship']);
+      }
+    } catch (err) {
+      console.error('Failed to load categories:', err);
+      // Fallback: use common categories
+      setCategories(['dating', 'work', 'family', 'business', 'friendship']);
     }
   };
 
@@ -114,24 +144,84 @@ function AnalysisDashboard({ userId = 1 }) {
               onChange={(e) => setSelectedPlatform(e.target.value)}
             >
               <option value="all">All Platforms</option>
-              {registeredPlatforms.map((platform) => (
-                <option key={platform} value={platform}>
-                  {platform}
+              {registeredPlatformAccounts.map((account) => (
+                <option key={account.id} value={account.platform}>
+                  {account.platform} {account.username ? `(@${account.username})` : account.accountName ? `(${account.accountName})` : ''}
                 </option>
               ))}
             </select>
           </div>
-          <div className="filter-group">
+          <div className="filter-group" style={{ position: 'relative' }} ref={categoryDropdownRef}>
             <label>Category:</label>
-            <select 
-              value={selectedCategory} 
-              onChange={(e) => setSelectedCategory(e.target.value)}
-            >
-              <option value="all">All Categories</option>
-              <option value="DATING">Dating</option>
-              <option value="WORK">Work</option>
-              <option value="FAMILY">Family</option>
-            </select>
+            <div style={{ position: 'relative' }}>
+              <input
+                type="text"
+                value={selectedCategory === 'all' ? categorySearch : (categorySearch || selectedCategory)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setCategorySearch(val);
+                  setShowCategoryDropdown(true);
+                  if (val === '') {
+                    setSelectedCategory('all');
+                  }
+                }}
+                onFocus={() => setShowCategoryDropdown(true)}
+                placeholder={selectedCategory === 'all' ? "Search categories..." : selectedCategory.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                style={{ width: '100%', padding: '0.5rem' }}
+              />
+              {showCategoryDropdown && (
+                <div style={{
+                  position: 'absolute',
+                  top: '100%',
+                  left: 0,
+                  right: 0,
+                  maxHeight: '200px',
+                  overflowY: 'auto',
+                  backgroundColor: 'white',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  zIndex: 1000,
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+                }}>
+                  <div
+                    style={{ padding: '0.5rem', cursor: 'pointer', backgroundColor: selectedCategory === 'all' ? '#f0f0f0' : 'white' }}
+                    onClick={() => {
+                      setSelectedCategory('all');
+                      setCategorySearch('');
+                      setShowCategoryDropdown(false);
+                    }}
+                  >
+                    All Categories
+                  </div>
+                  {categories
+                    .filter(cat => {
+                      const searchLower = categorySearch.toLowerCase();
+                      return cat.toLowerCase().includes(searchLower) || 
+                             cat.toLowerCase().replace(/_/g, ' ').includes(searchLower);
+                    })
+                    .slice(0, 50) // Limit to 50 results for performance
+                    .map((category) => (
+                      <div
+                        key={category}
+                        style={{
+                          padding: '0.5rem',
+                          cursor: 'pointer',
+                          backgroundColor: selectedCategory === category ? '#e3f2fd' : 'white'
+                        }}
+                        onClick={() => {
+                          setSelectedCategory(category);
+                          setCategorySearch('');
+                          setShowCategoryDropdown(false);
+                        }}
+                        onMouseEnter={(e) => e.target.style.backgroundColor = '#f5f5f5'}
+                        onMouseLeave={(e) => e.target.style.backgroundColor = selectedCategory === category ? '#e3f2fd' : 'white'}
+                      >
+                        {category.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

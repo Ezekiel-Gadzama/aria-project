@@ -1150,13 +1150,20 @@ function ConversationView({ userId = 1 }) {
                   </>
                 )}
               </h2>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={async () => {
-                  try {
-                    await conversationApi.end(targetId, userId);
-                    setConversationInitialized(false);
-                    navigate('/targets');
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => navigate(`/analysis/${targetId}`)}
+                >
+                  View Analysis
+                </button>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={async () => {
+                    try {
+                      await conversationApi.end(targetId, userId);
+                      setConversationInitialized(false);
+                      navigate('/targets');
                   } catch (err) {
                     setError(err.response?.data?.error || err.message || 'Failed to end conversation');
                   }
@@ -1165,6 +1172,7 @@ function ConversationView({ userId = 1 }) {
                 End Conversation
               </button>
             </div>
+          </div>
             <div className="toolbar" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8, gap: 8 }}>
               <button
                 className="btn btn-secondary"
