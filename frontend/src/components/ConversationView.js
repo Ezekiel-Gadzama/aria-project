@@ -141,7 +141,8 @@ function ConversationView({ userId = 1 }) {
         const response = await targetApi.checkOnlineStatus(targetId, userId);
         if (response.data?.success) {
           const data = response.data.data;
-          setTargetOnline(data.online === true);
+          // Backend returns "isOnline" not "online"
+          setTargetOnline(data.isOnline === true || data.online === true);
           setLastActive(data.lastActive || null);
         }
       } catch (err) {
@@ -1104,14 +1105,19 @@ function ConversationView({ userId = 1 }) {
               <h2>
                 {target?.name || 'Conversation'}
                 {targetOnline ? (
-                  <span className="online-indicator" title="Online"></span>
+                  <>
+                    <span className="online-indicator" title="Online" style={{ backgroundColor: '#4caf50' }}></span>
+                    <span style={{ fontSize: '0.8rem', color: '#4caf50', marginLeft: '0.25rem', fontWeight: 500 }}>Online</span>
+                  </>
                 ) : (
-                  <span className="offline-indicator" title={lastActive || "Offline"}></span>
-                )}
-                {!targetOnline && lastActive && (
-                  <span style={{ fontSize: '0.8rem', color: '#666', marginLeft: '0.5rem' }}>
-                    {lastActive}
-                  </span>
+                  <>
+                    <span className="offline-indicator" title={lastActive || "Offline"}></span>
+                    {lastActive && (
+                      <span style={{ fontSize: '0.8rem', color: '#666', marginLeft: '0.5rem' }}>
+                        {lastActive}
+                      </span>
+                    )}
+                  </>
                 )}
               </h2>
               <button
@@ -1202,90 +1208,82 @@ function ConversationView({ userId = 1 }) {
                   return (
                   <div 
                     key={idx} 
-                    className={`message ${msg.fromUser ? 'from-user' : 'from-target'} ${selectedMessages.has(msg.messageId) ? 'selected' : ''}`}
-                    onTouchStart={(e) => {
-                      // Track touch start for swipe-to-reply
-                      if (!msg.fromUser && !isMultiSelectMode) { // Only allow replying to target's messages
-                        e.touchStartY = e.touches[0].clientY;
-                      }
-                    }}
-                    onTouchEnd={(e) => {
-                      // Swipe up to reply (only if not in multi-select mode)
-                      if (!msg.fromUser && !isMultiSelectMode && e.changedTouches[0]) {
-                        const touchEndY = e.changedTouches[0].clientY;
-                        const touchStartY = e.touchStartY;
-                        if (touchStartY && touchEndY < touchStartY - 50) { // Swipe up more than 50px
-                          setReplyingTo({
-                            messageId: msg.messageId,
-                            text: msg.text || (msg.hasMedia ? 'Media' : 'Message'),
-                            fromUser: msg.fromUser
-                          });
-                          // Focus the message input field after a brief delay to ensure state update
-                          setTimeout(() => {
-                            if (messageInputRef.current) {
-                              messageInputRef.current.focus();
-                            }
-                          }, 100);
-                        }
-                      }
-                    }}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      // Don't show context menu in multi-select mode
-                      if (isMultiSelectMode) return;
-                      setContextMenu({
-                        x: e.pageX,
-                        y: e.pageY,
-                        messageId: msg.messageId,
-                        fromUser: msg.fromUser,
-                        hasMedia: msg.hasMedia || false,
-                        text: msg.text || ''
-                      });
-                    }}
-                    onClick={(e) => {
-                      // Toggle selection in multi-select mode - disable all other interactions
-                      if (isMultiSelectMode) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setSelectedMessages(prev => {
-                          const updated = new Set(prev);
-                          if (updated.has(msg.messageId)) {
-                            updated.delete(msg.messageId);
-                          } else {
-                            updated.add(msg.messageId);
-                          }
-                          return updated;
-                        });
-                      }
-                    }}
-                    style={{ 
-                      cursor: isMultiSelectMode ? 'pointer' : (!msg.fromUser ? 'pointer' : 'default'),
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '8px',
+                      marginBottom: '0.5rem',
+                      justifyContent: isMultiSelectMode ? 'space-between' : (msg.fromUser ? 'flex-end' : 'flex-start'),
                       position: 'relative',
-                      backgroundColor: selectedMessages.has(msg.messageId) ? 'rgba(102, 126, 234, 0.3)' : undefined
+                      width: '100%'
                     }}
                   >
-                    {/* Multi-select checkbox */}
-                    {isMultiSelectMode && (
-                      <div style={{
-                        position: 'absolute',
-                        right: '8px',
-                        top: '8px',
-                        width: '20px',
-                        height: '20px',
-                        borderRadius: '50%',
-                        border: '2px solid white',
-                        backgroundColor: selectedMessages.has(msg.messageId) ? '#667eea' : 'transparent',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        zIndex: 10,
-                        pointerEvents: 'none'
-                      }}>
-                        {selectedMessages.has(msg.messageId) && (
-                          <span style={{ color: 'white', fontSize: '12px', fontWeight: 'bold' }}>✓</span>
-                        )}
-                      </div>
-                    )}
+                    {/* Message container */}
+                    <div 
+                      className={`message ${msg.fromUser ? 'from-user' : 'from-target'} ${selectedMessages.has(msg.messageId) ? 'selected' : ''}`}
+                      onTouchStart={(e) => {
+                        // Track touch start for swipe-to-reply
+                        if (!msg.fromUser && !isMultiSelectMode) { // Only allow replying to target's messages
+                          e.touchStartY = e.touches[0].clientY;
+                        }
+                      }}
+                      onTouchEnd={(e) => {
+                        // Swipe up to reply (only if not in multi-select mode)
+                        if (!msg.fromUser && !isMultiSelectMode && e.changedTouches[0]) {
+                          const touchEndY = e.changedTouches[0].clientY;
+                          const touchStartY = e.touchStartY;
+                          if (touchStartY && touchEndY < touchStartY - 50) { // Swipe up more than 50px
+                            setReplyingTo({
+                              messageId: msg.messageId,
+                              text: msg.text || (msg.hasMedia ? 'Media' : 'Message'),
+                              fromUser: msg.fromUser
+                            });
+                            // Focus the message input field after a brief delay to ensure state update
+                            setTimeout(() => {
+                              if (messageInputRef.current) {
+                                messageInputRef.current.focus();
+                              }
+                            }, 100);
+                          }
+                        }
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        // Don't show context menu in multi-select mode
+                        if (isMultiSelectMode) return;
+                        setContextMenu({
+                          x: e.pageX,
+                          y: e.pageY,
+                          messageId: msg.messageId,
+                          fromUser: msg.fromUser,
+                          hasMedia: msg.hasMedia || false,
+                          text: msg.text || ''
+                        });
+                      }}
+                      onClick={(e) => {
+                        // Toggle selection in multi-select mode - disable all other interactions
+                        if (isMultiSelectMode) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setSelectedMessages(prev => {
+                            const updated = new Set(prev);
+                            if (updated.has(msg.messageId)) {
+                              updated.delete(msg.messageId);
+                            } else {
+                              updated.add(msg.messageId);
+                            }
+                            return updated;
+                          });
+                        }
+                      }}
+                      style={{ 
+                        cursor: isMultiSelectMode ? 'pointer' : (!msg.fromUser ? 'pointer' : 'default'),
+                        position: 'relative',
+                        backgroundColor: selectedMessages.has(msg.messageId) ? 'rgba(102, 126, 234, 0.3)' : undefined,
+                        flex: '0 1 auto',
+                        marginRight: isMultiSelectMode ? '28px' : undefined
+                      }}
+                    >
                     {/* Reply indicator - show message being replied to */}
                     {repliedToMsg && !isMultiSelectMode && (
                       <div 
@@ -1673,6 +1671,45 @@ function ConversationView({ userId = 1 }) {
                         >
                           Delete
                         </button>
+                      </div>
+                    )}
+                    </div>
+                    {/* Multi-select checkbox - positioned to the extreme right */}
+                    {isMultiSelectMode && (
+                      <div 
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setSelectedMessages(prev => {
+                            const updated = new Set(prev);
+                            if (updated.has(msg.messageId)) {
+                              updated.delete(msg.messageId);
+                            } else {
+                              updated.add(msg.messageId);
+                            }
+                            return updated;
+                          });
+                        }}
+                        style={{
+                          position: 'absolute',
+                          right: '0',
+                          top: '0.5rem',
+                          width: '20px',
+                          height: '20px',
+                          borderRadius: '50%',
+                          border: '2px solid #667eea',
+                          backgroundColor: selectedMessages.has(msg.messageId) ? '#667eea' : 'transparent',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                          cursor: 'pointer',
+                          transition: 'background-color 0.2s'
+                        }}
+                      >
+                        {selectedMessages.has(msg.messageId) && (
+                          <span style={{ color: 'white', fontSize: '12px', fontWeight: 'bold' }}>✓</span>
+                        )}
                       </div>
                     )}
                   </div>
