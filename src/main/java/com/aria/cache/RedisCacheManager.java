@@ -62,6 +62,17 @@ public class RedisCacheManager {
     }
     
     /**
+     * Check if an exception is a connection error (should be silently ignored)
+     */
+    private boolean isConnectionError(Exception e) {
+        String msg = e.getMessage();
+        return msg != null && (msg.contains("Failed to connect") || 
+                               msg.contains("DNS") || 
+                               msg.contains("Connection refused") ||
+                               msg.contains("Connection timed out"));
+    }
+    
+    /**
      * Cache messages for a conversation
      */
     public void cacheMessages(int userId, int targetId, List<?> messages, int ttlSeconds) {
@@ -70,8 +81,11 @@ public class RedisCacheManager {
             String json = gson.toJson(messages);
             jedis.setex(key, ttlSeconds, json);
         } catch (Exception e) {
-            System.err.println("Failed to cache messages: " + e.getMessage());
-            // Don't throw - caching is optional
+            // Silently fail - Redis is optional, app should work without it
+            // Only log if it's not a connection issue to avoid spam
+            if (!e.getMessage().contains("Failed to connect") && !e.getMessage().contains("DNS")) {
+                System.err.println("Failed to cache messages: " + e.getMessage());
+            }
         }
     }
     
@@ -110,7 +124,9 @@ public class RedisCacheManager {
                 return gson.fromJson(json, type);
             }
         } catch (Exception e) {
-            System.err.println("Failed to get cached messages: " + e.getMessage());
+            if (!isConnectionError(e)) {
+                System.err.println("Failed to get cached messages: " + e.getMessage());
+            }
         }
         return null;
     }
@@ -136,7 +152,9 @@ public class RedisCacheManager {
             String json = gson.toJson(userData);
             jedis.setex(key, ttlSeconds, json);
         } catch (Exception e) {
-            System.err.println("Failed to cache user: " + e.getMessage());
+            if (!isConnectionError(e)) {
+                System.err.println("Failed to cache user: " + e.getMessage());
+            }
         }
     }
     
@@ -151,7 +169,9 @@ public class RedisCacheManager {
                 return gson.fromJson(json, userClass);
             }
         } catch (Exception e) {
-            System.err.println("Failed to get cached user: " + e.getMessage());
+            if (!isConnectionError(e)) {
+                System.err.println("Failed to get cached user: " + e.getMessage());
+            }
         }
         return null;
     }
@@ -165,7 +185,9 @@ public class RedisCacheManager {
             String json = gson.toJson(targetData);
             jedis.setex(key, ttlSeconds, json);
         } catch (Exception e) {
-            System.err.println("Failed to cache target: " + e.getMessage());
+            if (!isConnectionError(e)) {
+                System.err.println("Failed to cache target: " + e.getMessage());
+            }
         }
     }
     
@@ -180,7 +202,9 @@ public class RedisCacheManager {
                 return gson.fromJson(json, targetClass);
             }
         } catch (Exception e) {
-            System.err.println("Failed to get cached target: " + e.getMessage());
+            if (!isConnectionError(e)) {
+                System.err.println("Failed to get cached target: " + e.getMessage());
+            }
         }
         return null;
     }
@@ -193,7 +217,9 @@ public class RedisCacheManager {
             String key = "target:user:" + userId + ":id:" + targetId;
             jedis.del(key);
         } catch (Exception e) {
-            System.err.println("Failed to invalidate cached target: " + e.getMessage());
+            if (!isConnectionError(e)) {
+                System.err.println("Failed to invalidate cached target: " + e.getMessage());
+            }
         }
     }
     
@@ -208,7 +234,9 @@ public class RedisCacheManager {
             String json = gson.toJson(analysisData);
             jedis.setex(key, ttlSeconds, json);
         } catch (Exception e) {
-            System.err.println("Failed to cache analysis: " + e.getMessage());
+            if (!isConnectionError(e)) {
+                System.err.println("Failed to cache analysis: " + e.getMessage());
+            }
         }
     }
     
@@ -225,7 +253,9 @@ public class RedisCacheManager {
                 return gson.fromJson(json, analysisClass);
             }
         } catch (Exception e) {
-            System.err.println("Failed to get cached analysis: " + e.getMessage());
+            if (!isConnectionError(e)) {
+                System.err.println("Failed to get cached analysis: " + e.getMessage());
+            }
         }
         return null;
     }
@@ -237,7 +267,9 @@ public class RedisCacheManager {
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.setex(key, ttlSeconds, value);
         } catch (Exception e) {
-            System.err.println("Failed to set cache: " + e.getMessage());
+            if (!isConnectionError(e)) {
+                System.err.println("Failed to set cache: " + e.getMessage());
+            }
         }
     }
     
@@ -248,7 +280,9 @@ public class RedisCacheManager {
         try (Jedis jedis = jedisPool.getResource()) {
             return jedis.get(key);
         } catch (Exception e) {
-            System.err.println("Failed to get cache: " + e.getMessage());
+            if (!isConnectionError(e)) {
+                System.err.println("Failed to get cache: " + e.getMessage());
+            }
             return null;
         }
     }
@@ -260,7 +294,9 @@ public class RedisCacheManager {
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.del(key);
         } catch (Exception e) {
-            System.err.println("Failed to delete cache: " + e.getMessage());
+            if (!isConnectionError(e)) {
+                System.err.println("Failed to delete cache: " + e.getMessage());
+            }
         }
     }
     

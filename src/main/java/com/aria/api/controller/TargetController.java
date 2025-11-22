@@ -754,16 +754,14 @@ public class TargetController {
             }
             
             // Get messages for analysis (last 3 months)
-            String messagesSql = """
-                SELECT m.text, m.sender, m.timestamp, m.has_media, d.id as dialog_id, tu.id as target_id, tu.name as target_name
-                FROM messages m
-                JOIN dialogs d ON m.dialog_id = d.id
-                JOIN target_user_platforms tup ON d.platform_account_id = tup.platform_id AND d.dialog_id = tup.platform_id
-                JOIN target_users tu ON tup.target_user_id = tu.id
-                WHERE """ + whereClause.toString() + """
-                 AND m.timestamp >= NOW() - INTERVAL '3 months'
-                ORDER BY m.timestamp DESC
-            """;
+            String messagesSql = "SELECT m.text, m.sender, m.timestamp, m.has_media, d.id as dialog_id, tu.id as target_id, tu.name as target_name " +
+                "FROM messages m " +
+                "JOIN dialogs d ON m.dialog_id = d.id " +
+                "JOIN target_user_platforms tup ON d.platform_account_id = tup.platform_id AND d.dialog_id = tup.platform_id " +
+                "JOIN target_users tu ON tup.target_user_id = tu.id " +
+                "WHERE " + whereClause.toString() + " " +
+                "AND m.timestamp >= NOW() - INTERVAL '3 months' " +
+                "ORDER BY m.timestamp DESC";
             
             List<MessageData> messages = new ArrayList<>();
             try (PreparedStatement ps = conn.prepareStatement(messagesSql)) {

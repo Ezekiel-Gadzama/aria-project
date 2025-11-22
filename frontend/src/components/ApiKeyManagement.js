@@ -140,9 +140,12 @@ function ApiKeyManagement({ userId = 1 }) {
         {/* Credits Display */}
         <div className="credits-section">
           <div className="credits-card">
-            <h2>Credits</h2>
+            <h2>API Credits</h2>
             <div className="credits-amount">${credits.toFixed(5)}</div>
-            <p className="credits-info">Each API request costs $0.00001 (10 requests = $0.0001)</p>
+            <p className="credits-info">
+              Each API request costs $0.00001 (10 requests = $0.0001). 
+              Credits are used for API access only, separate from app subscription.
+            </p>
             <button className="btn btn-primary" onClick={() => setShowCreditsModal(true)}>
               Add $10 Credits
             </button>
@@ -152,6 +155,10 @@ function ApiKeyManagement({ userId = 1 }) {
         {/* Subscription Section */}
         <div className="subscription-section">
           <h2>Monthly Subscription</h2>
+          <p style={{ fontSize: '0.9rem', color: '#666', marginBottom: '1rem' }}>
+            Subscribe to use ARIAssistance features in the ARIA app (chat suggestions, AI-powered replies). 
+            This subscription is for app usage only and does not include API access.
+          </p>
           {subscription ? (
             <div className="subscription-card active">
               <h3>Active Subscription</h3>
@@ -162,8 +169,11 @@ function ApiKeyManagement({ userId = 1 }) {
           ) : (
             <div className="subscription-card">
               <h3>Subscribe to ARIAssistance</h3>
-              <p>Get AI-powered suggested replies for your conversations</p>
+              <p>Get AI-powered suggested replies for your conversations in the ARIA app</p>
               <p className="price">$5/month</p>
+              <p style={{ fontSize: '0.85rem', color: '#666', fontStyle: 'italic' }}>
+                Note: This subscription is for app features only. API access requires separate credits.
+              </p>
               <button className="btn btn-primary" onClick={() => setShowSubscriptionModal(true)}>
                 Subscribe Now
               </button>
@@ -175,14 +185,17 @@ function ApiKeyManagement({ userId = 1 }) {
         <div className="free-tier-section">
           <h2>Free Tier</h2>
           <div className="info-card">
-            <h3>30-Day Free Trial</h3>
+            <h3>30-Day Free Trial (API Access)</h3>
             <ul>
               <li>✓ 30 days of free API access</li>
               <li>✓ Limited to 100 requests per day</li>
               <li>✓ Basic features only</li>
               <li>✗ No ARIAssistance chat suggestions</li>
             </ul>
-            <p className="note">After 30 days, pay $0.00001 per 10 requests or subscribe for unlimited access.</p>
+            <p className="note">
+              After 30 days, pay $0.00001 per 10 API requests. 
+              To use ARIAssistance features in the app, subscribe separately for $5/month.
+            </p>
           </div>
         </div>
 
@@ -344,16 +357,19 @@ function ApiKeyManagement({ userId = 1 }) {
         >
           <p>Subscribe to ARIAssistance for $5/month?</p>
           <p style={{ fontSize: '0.9rem', color: '#666', marginTop: '0.5rem' }}>
-            Payment integration (Stripe) coming soon! This is a mock payment.
+            This subscription gives you access to ARIAssistance features in the ARIA app:
+          </p>
+          <ul style={{ fontSize: '0.9rem', color: '#666', marginLeft: '1.5rem', marginTop: '0.5rem' }}>
+            <li>AI-powered chat suggestions</li>
+            <li>Suggested replies for conversations</li>
+            <li>Enhanced conversation assistance</li>
+          </ul>
+          <p style={{ fontSize: '0.85rem', color: '#999', marginTop: '0.5rem', fontStyle: 'italic' }}>
+            Note: This subscription is for app features only. API access requires separate credits.
           </p>
           <p style={{ fontSize: '0.9rem', color: '#666', marginTop: '0.5rem' }}>
-            This would:
+            Payment integration (Stripe) coming soon! This is a mock payment.
           </p>
-          <ul style={{ fontSize: '0.9rem', color: '#666', marginLeft: '1.5rem' }}>
-            <li>Open Stripe checkout</li>
-            <li>Set up recurring payment</li>
-            <li>Activate subscription</li>
-          </ul>
           <div className="modal-footer">
             <button 
               className="btn btn-secondary" 

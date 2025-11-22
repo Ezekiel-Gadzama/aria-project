@@ -117,13 +117,19 @@ function App() {
               } 
             />
             <Route 
-              path="/api-keys" 
+              path="/payments" 
               element={
                 isAuthenticated ? (
                   <ApiKeyManagement userId={currentUser?.id} />
                 ) : (
                   <Navigate to="/" replace />
                 )
+              } 
+            />
+            <Route 
+              path="/api-keys" 
+              element={
+                <Navigate to="/payments" replace />
               } 
             />
             <Route 

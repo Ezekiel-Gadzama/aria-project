@@ -34,8 +34,8 @@ function Navigation({ isAuthenticated, onLogout }) {
           Platforms
         </Link>
         <Link 
-          to="/api-keys" 
-          className={`nav-link ${location.pathname.startsWith('/api-keys') ? 'active' : ''}`}
+          to="/payments" 
+          className={`nav-link ${location.pathname.startsWith('/payments') || location.pathname.startsWith('/api-keys') ? 'active' : ''}`}
         >
           Payments
         </Link>

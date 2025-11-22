@@ -4,10 +4,15 @@ import jakarta.servlet.MultipartConfigElement;
 import org.springframework.boot.web.servlet.MultipartConfigFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.Resource;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import org.springframework.web.servlet.resource.ResourceResolver;
+import org.springframework.web.servlet.resource.ResourceResolverChain;
+import jakarta.servlet.http.HttpServletRequest;
+import java.util.List;
 
 /**
  * Web configuration to serve React frontend static files
@@ -33,16 +38,37 @@ public class WebConfig implements WebMvcConfigurer {
         // Note: This should NOT match /api/** routes (handled by Spring controllers)
         registry.addResourceHandler("/**")
             .addResourceLocations(externalStaticPath, classpathStaticPath)
-            .resourceChain(true);
+            .resourceChain(true)
+            .addResolver(new ResourceResolver() {
+                @Override
+                public Resource resolveResource(HttpServletRequest request, String requestPath,
+                        List<? extends Resource> locations, ResourceResolverChain chain) {
+                    Resource resource = chain.resolveResource(request, requestPath, locations);
+                    // If resource not found and it's not an API route, serve index.html
+                    if (resource == null && !requestPath.startsWith("api/") && !request.getRequestURI().startsWith("/api/")) {
+                        try {
+                            return chain.resolveResource(request, "index.html", locations);
+                        } catch (Exception e) {
+                            return null;
+                        }
+                    }
+                    return resource;
+                }
+
+                @Override
+                public String resolveUrlPath(String resourcePath, List<? extends Resource> locations,
+                        ResourceResolverChain chain) {
+                    return chain.resolveUrlPath(resourcePath, locations);
+                }
+            });
     }
 
     @Override
     public void addViewControllers(ViewControllerRegistry registry) {
-        // Forward all non-API requests to React index.html
-        registry.addViewController("/").setViewName("forward:/index.html");
-        registry.addViewController("/targets").setViewName("forward:/index.html");
-        registry.addViewController("/platforms").setViewName("forward:/index.html");
-        registry.addViewController("/conversations").setViewName("forward:/index.html");
+        // Forward all non-API requests to React index.html for client-side routing
+        // This ensures that refreshing any page (like /settings, /analysis, etc.) works correctly
+        // The ReactController handles specific routes, and the resource handler with /** catches everything else
+        registry.setOrder(1); // Lower priority so API routes are matched first
     }
 
     /**

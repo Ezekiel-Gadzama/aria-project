@@ -1701,7 +1701,7 @@ function ConversationView({ userId = 1 }) {
                           ) : msg.isPending ? (
                             <span style={{ color: 'rgba(255,255,255,0.7)', opacity: 0.7 }} title="Sending...">⏳</span>
                           ) : (
-                            <span style={{ color: 'white', fontWeight: 'bold' }} title="Sent">✓✓</span>
+                            <span style={{ color: 'white', fontWeight: 'bold' }} title="Sent">✓</span>
                           )}
                         </span>
                       )}

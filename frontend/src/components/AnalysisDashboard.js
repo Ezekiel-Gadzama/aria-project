@@ -175,7 +175,7 @@ function AnalysisDashboard({ userId = 1 }) {
                   top: '100%',
                   left: 0,
                   right: 0,
-                  maxHeight: '200px',
+                  maxHeight: '400px',
                   overflowY: 'auto',
                   backgroundColor: 'white',
                   border: '1px solid #ddd',
@@ -199,7 +199,6 @@ function AnalysisDashboard({ userId = 1 }) {
                       return cat.toLowerCase().includes(searchLower) || 
                              cat.toLowerCase().replace(/_/g, ' ').includes(searchLower);
                     })
-                    .slice(0, 50) // Limit to 50 results for performance
                     .map((category) => (
                       <div
                         key={category}
