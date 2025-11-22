@@ -22,7 +22,11 @@ async def get_entity_id(target_username):
         
         await client.connect()
         if not await client.is_user_authorized():
-            await client.start(phone=phone)
+            # Session exists but not authorized - this shouldn't happen if session is valid
+            # Don't call start() as it will trigger OTP - just return an error
+            await client.disconnect()
+            print(json.dumps({"success": False, "error": "Session file exists but user is not authorized. Please re-register the platform."}))
+            return None
         
         # Normalize username
         uname = target_username.strip() if isinstance(target_username, str) else str(target_username)

@@ -22,17 +22,31 @@ async def send_media(target_username, file_path, caption=None, reply_to_message_
     # Check if session file exists - if it does, connect without starting (won't trigger OTP)
     session_file = pathlib.Path(session_path + '.session')
     if session_file.exists():
-        try:
-            await client.connect()
-            # If already authorized, we're done - don't call start() which would trigger OTP
-            if not await client.is_user_authorized():
-                await client.start(phone=phone)
-        except Exception:
-            # If connect fails, fall back to start
-            await client.start(phone=phone)
+        connect_attempts = 10
+        for i in range(connect_attempts):
+            try:
+                await client.connect()
+                # If already authorized, we're done - don't call start() which would trigger OTP
+                if await client.is_user_authorized():
+                    break
+                # Session exists but not authorized - this shouldn't happen if session is valid
+                # Don't call start() as it will trigger OTP - just raise an error
+                await client.disconnect()
+                print(f"Error: Session file exists but user is not authorized. Please re-register the platform.")
+                return False
+            except Exception as e:
+                if "database is locked" in str(e).lower() and i < connect_attempts - 1:
+                    await asyncio.sleep(0.05)
+                    continue
+                # If connect fails repeatedly and it's the last attempt, don't try start() - just fail
+                if i == connect_attempts - 1:
+                    print(f"Error: Failed to connect to session after {connect_attempts} attempts: {str(e)}")
+                    return False
+                continue
     else:
-        # No session file exists - need to start (will trigger OTP)
-        await client.start(phone=phone)
+        # No session file exists - cannot send without a valid session
+        print(f"Error: No session file found. Please register the platform first.")
+        return False
     try:
         # Normalize username: ensure leading '@' for public usernames
         uname = target_username.strip() if isinstance(target_username, str) else str(target_username)

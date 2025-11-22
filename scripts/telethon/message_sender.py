@@ -44,16 +44,20 @@ async def send_message(target_username, message, reply_to_message_id=None):
                 # If already authorized, we're done - don't call start() which would trigger OTP
                 if await client.is_user_authorized():
                     break
-                # Session exists but not authorized - need to start
-                await client.start(phone=phone)
-                break
+                # Session exists but not authorized - this shouldn't happen if session is valid
+                # Don't call start() as it will trigger OTP - just raise an error
+                await client.disconnect()
+                print(f"Error: Session file exists but user is not authorized. Please re-register the platform.")
+                return False
             except Exception as e:
                 if "database is locked" in str(e).lower() and i < connect_attempts - 1:
                     await _asyncio.sleep(0.05)  # faster backoff for priority send
                     continue
-                # If connect fails, fall back to start
-                await client.start(phone=phone)
-                break
+                # If connect fails repeatedly and it's the last attempt, don't try start() - just fail
+                if i == connect_attempts - 1:
+                    print(f"Error: Failed to connect to session after {connect_attempts} attempts: {str(e)}")
+                    return False
+                continue
     else:
         # No session file exists - need to start (will trigger OTP)
         connect_attempts = 10

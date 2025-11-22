@@ -77,34 +77,58 @@ async def check_user_online(target_username):
             await _retry_on_db_lock(client.connect())
             # If already authorized, we're done - don't call start() which would trigger OTP
             if not await _retry_on_db_lock(client.is_user_authorized()):
-                await _retry_on_db_lock(client.start(phone=phone))
-        except Exception:
-            # If connect fails, fall back to start
-            try:
-                await _retry_on_db_lock(client.start(phone=phone))
-            except Exception as e:
-                # If still fails, return error
-                print(f"Error connecting: {e}")
+                # Session exists but not authorized - this shouldn't happen if session is valid
+                # Don't call start() as it will trigger OTP - just return an error
+                await client.disconnect()
                 result = {
                     "online": False,
-                    "lastActive": "error"
+                    "lastActive": "Session file exists but user is not authorized. Please re-register the platform."
                 }
                 print(json.dumps(result))
-                await client.disconnect()
+                return False
+        except Exception as e:
+            # If connect fails, don't fall back to start() - session might be locked
+            # Just return error instead of triggering OTP
+            error_msg = str(e).lower()
+            if "database is locked" in error_msg:
+                # Database is locked, wait a bit and try once more
+                await asyncio.sleep(0.1)
+                try:
+                    await client.connect()
+                    if await client.is_user_authorized():
+                        pass  # Continue with authorized session
+                    else:
+                        await client.disconnect()
+                        result = {
+                            "online": False,
+                            "lastActive": "Session not authorized. Please re-register the platform."
+                        }
+                        print(json.dumps(result))
+                        return False
+                except Exception:
+                    # Still locked or failed, return error
+                    result = {
+                        "online": False,
+                        "lastActive": f"Session database is locked. Please try again later."
+                    }
+                    print(json.dumps(result))
+                    return False
+            else:
+                # Other error - don't try to start, just return error
+                result = {
+                    "online": False,
+                    "lastActive": f"Failed to connect to session: {str(e)}"
+                }
+                print(json.dumps(result))
                 return False
     else:
-        # No session file exists - need to start (will trigger OTP)
-        try:
-            await _retry_on_db_lock(client.start(phone=phone))
-        except Exception as e:
-            print(f"Error starting: {e}")
-            result = {
-                "online": False,
-                "lastActive": "error"
-            }
-            print(json.dumps(result))
-            await client.disconnect()
-            return False
+        # No session file exists - cannot check online status without a valid session
+        result = {
+            "online": False,
+            "lastActive": "No session file found. Please register the platform first."
+        }
+        print(json.dumps(result))
+        return False
     try:
         # Normalize username: ensure leading '@' for public usernames
         uname = target_username.strip() if isinstance(target_username, str) else str(target_username)

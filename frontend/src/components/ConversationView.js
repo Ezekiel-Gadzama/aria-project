@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { targetApi, conversationApi, platformApi } from '../services/api';
 import './ConversationView.css';
@@ -26,6 +26,7 @@ function ConversationView({ userId = 1 }) {
   const [deleteModal, setDeleteModal] = useState(null); // { messageId, revoke: true/false } for delete confirmation
   const [recentlyEditedMessages, setRecentlyEditedMessages] = useState(new Set()); // Track recently edited message IDs to prevent polling from overwriting
   const [isOperationInProgress, setIsOperationInProgress] = useState(false); // Track if delete/edit is in progress to pause polling
+  const messageInputRef = useRef(null); // Ref for message input field to focus when replying
 
   useEffect(() => {
     loadTarget();
@@ -812,6 +813,12 @@ function ConversationView({ userId = 1 }) {
                             text: msg.text || (msg.hasMedia ? 'Media' : 'Message'),
                             fromUser: msg.fromUser
                           });
+                          // Focus the message input field after a brief delay to ensure state update
+                          setTimeout(() => {
+                            if (messageInputRef.current) {
+                              messageInputRef.current.focus();
+                            }
+                          }, 100);
                         }
                       }
                     }}
@@ -944,6 +951,12 @@ function ConversationView({ userId = 1 }) {
                               text: msg.text || (msg.hasMedia ? 'Media' : 'Message'),
                               fromUser: msg.fromUser
                             });
+                            // Focus the message input field after a brief delay to ensure state update
+                            setTimeout(() => {
+                              if (messageInputRef.current) {
+                                messageInputRef.current.focus();
+                              }
+                            }, 100);
                           }}
                           title="Reply to this message"
                         >
@@ -962,6 +975,12 @@ function ConversationView({ userId = 1 }) {
                               text: msg.text || (msg.hasMedia ? 'Media' : 'Message'),
                               fromUser: msg.fromUser
                             });
+                            // Focus the message input field after a brief delay to ensure state update
+                            setTimeout(() => {
+                              if (messageInputRef.current) {
+                                messageInputRef.current.focus();
+                              }
+                            }, 100);
                           }}
                           title="Reply to this message"
                         >
@@ -1113,6 +1132,7 @@ function ConversationView({ userId = 1 }) {
             )}
             <form onSubmit={handleSendMessage} className="message-form">
               <input
+                ref={messageInputRef}
                 type="text"
                 value={newMessage}
                 onChange={(e) => setNewMessage(e.target.value)}
