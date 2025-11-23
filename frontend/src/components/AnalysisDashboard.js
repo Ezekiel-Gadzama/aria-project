@@ -116,12 +116,21 @@ function AnalysisDashboard({ userId = 1 }) {
           </h1>
           <div className="header-actions">
             {isTargetSpecific ? (
-              <button 
-                className="btn btn-secondary"
-                onClick={() => navigate('/analysis')}
-              >
-                General Analysis
-              </button>
+              <>
+                <button 
+                  className="btn btn-secondary"
+                  onClick={() => navigate(`/conversations/${targetId}`)}
+                  style={{ marginRight: '0.5rem' }}
+                >
+                  ← Back to Conversation
+                </button>
+                <button 
+                  className="btn btn-secondary"
+                  onClick={() => navigate('/analysis')}
+                >
+                  General Analysis
+                </button>
+              </>
             ) : (
               <button 
                 className="btn btn-secondary"

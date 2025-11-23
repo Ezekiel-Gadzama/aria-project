@@ -160,8 +160,23 @@ function TargetManagement({ userId = 1 }) {
           targetId = response.data.data.id || response.data.data;
         }
         
+        // Check if profile picture was removed
+        // If editing a target that had a profile picture, but now both profilePicture and profilePicturePreview are null
+        const hadProfilePicture = editingTarget && editingTarget.profilePictureUrl;
+        const profilePictureRemoved = hadProfilePicture && !profilePicture && !profilePicturePreview;
+        
+        if (profilePictureRemoved && targetId) {
+          // User removed the profile picture, delete it
+          try {
+            await targetApi.deleteProfilePicture(targetId, userId);
+            console.log('Profile picture deleted, will auto-fetch from Telegram');
+          } catch (deleteErr) {
+            console.error('Failed to delete profile picture:', deleteErr);
+            // Don't fail the whole operation if profile picture deletion fails
+          }
+        }
         // Upload profile picture separately if provided
-        if (profilePicture && targetId) {
+        else if (profilePicture && targetId) {
           try {
             const picResponse = await targetApi.uploadProfilePicture(targetId, profilePicture, userId);
             console.log('Profile picture uploaded:', picResponse.data);
@@ -301,7 +316,7 @@ function TargetManagement({ userId = 1 }) {
                       onClick={() => {
                         setProfilePicture(null);
                         // Only revoke if it's a blob URL (new upload), not if it's an existing image URL
-                        if (profilePicturePreview.startsWith('blob:')) {
+                        if (profilePicturePreview && profilePicturePreview.startsWith('blob:')) {
                           URL.revokeObjectURL(profilePicturePreview);
                         }
                         setProfilePicturePreview(null);

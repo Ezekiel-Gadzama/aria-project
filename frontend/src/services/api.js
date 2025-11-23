@@ -50,6 +50,9 @@ export const targetApi = {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
   },
+  deleteProfilePicture: (id, userId) => {
+    return api.delete(`/targets/${id}/profile-picture?userId=${userId}`);
+  },
 };
 
 // Conversation API

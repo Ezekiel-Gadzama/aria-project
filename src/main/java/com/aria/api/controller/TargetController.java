@@ -96,6 +96,19 @@ public class TargetController {
                                 String profilePictureUrl = rs.getString("profile_picture_url");
                                 if (profilePictureUrl != null && !profilePictureUrl.isEmpty()) {
                                     dto.setProfilePictureUrl(profilePictureUrl);
+                                } else {
+                                    // Auto-fetch profile picture from Telegram if not set (runs in background)
+                                    final TargetUser finalTarget = target;
+                                    final int finalUserId = currentUserId;
+                                    final TargetUserDTO finalDto = dto;
+                                    new Thread(() -> {
+                                        try {
+                                            fetchProfilePictureFromTelegram(finalTarget, finalUserId, finalDto);
+                                        } catch (Exception e) {
+                                            // Silently fail - profile picture fetch is optional
+                                            System.err.println("Warning: Failed to auto-fetch profile picture for target " + finalTarget.getTargetId() + ": " + e.getMessage());
+                                        }
+                                    }).start();
                                 }
                                 
                                 String profileJson = rs.getString("profile_json");
@@ -365,6 +378,19 @@ public class TargetController {
                                 String profilePictureUrl = rs.getString("profile_picture_url");
                                 if (profilePictureUrl != null && !profilePictureUrl.isEmpty()) {
                                     dto.setProfilePictureUrl(profilePictureUrl);
+                                } else {
+                                    // Auto-fetch profile picture from Telegram if not set (runs in background)
+                                    final TargetUser finalTarget = target;
+                                    final int finalUserId = currentUserId;
+                                    final TargetUserDTO finalDto = dto;
+                                    new Thread(() -> {
+                                        try {
+                                            fetchProfilePictureFromTelegram(finalTarget, finalUserId, finalDto);
+                                        } catch (Exception e) {
+                                            // Silently fail - profile picture fetch is optional
+                                            System.err.println("Warning: Failed to auto-fetch profile picture for target " + finalTarget.getTargetId() + ": " + e.getMessage());
+                                        }
+                                    }).start();
                                 }
                                 
                                 String profileJson = rs.getString("profile_json");
@@ -736,8 +762,13 @@ public class TargetController {
                 }
             }
             
-            String fileName = "profile_" + targetId + "_" + System.currentTimeMillis() + 
-                getFileExtension(file.getOriginalFilename());
+            // Use fixed filename: profile_picture with appropriate extension
+            String fileExtension = getFileExtension(file.getOriginalFilename());
+            if (fileExtension.isEmpty()) {
+                // Default to .jpg if no extension
+                fileExtension = ".jpg";
+            }
+            String fileName = "profile_picture" + fileExtension;
             
             // Save to the same folder as dialog medias
             // Use absolute path to avoid Tomcat work directory issues
@@ -755,6 +786,16 @@ public class TargetController {
             }
             
             java.nio.file.Path filePath = mediaDir.resolve(fileName);
+            
+            // If profile_picture already exists, delete it first (to replace with new upload)
+            if (java.nio.file.Files.exists(filePath)) {
+                try {
+                    java.nio.file.Files.delete(filePath);
+                    System.out.println("Deleted existing profile picture: " + filePath.toString());
+                } catch (Exception e) {
+                    System.err.println("Warning: Failed to delete existing profile picture: " + e.getMessage());
+                }
+            }
             
             System.out.println("Target user name: " + targetUser.getName());
             System.out.println("Chat name used: " + chatName);
@@ -820,6 +861,231 @@ public class TargetController {
     }
     
     /**
+     * Delete profile picture for a target user
+     * DELETE /api/targets/{id}/profile-picture?userId=...
+     */
+    @DeleteMapping("/{id}/profile-picture")
+    public ResponseEntity<ApiResponse<String>> deleteProfilePicture(
+            @PathVariable("id") Integer targetId,
+            @RequestParam(value = "userId", required = false) Integer userId) {
+        try {
+            int currentUserId = userId != null ? userId : 1;
+            
+            // Get target user to find platform account and chat name
+            DatabaseManager databaseManager = new DatabaseManager();
+            TargetUserService targetUserService = new TargetUserService(databaseManager);
+            TargetUser targetUser = targetUserService.getTargetUserById(targetId);
+            if (targetUser == null) {
+                return ResponseEntity.badRequest()
+                    .body(ApiResponse.error("Target user not found"));
+            }
+            
+            // Get current profile picture URL from database
+            String currentProfilePictureUrl = null;
+            try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                    System.getenv("DATABASE_URL") != null
+                            ? System.getenv("DATABASE_URL")
+                            : "jdbc:postgresql://localhost:5432/aria",
+                    System.getenv("DATABASE_USER") != null
+                            ? System.getenv("DATABASE_USER")
+                            : "postgres",
+                    System.getenv("DATABASE_PASSWORD") != null
+                            ? System.getenv("DATABASE_PASSWORD")
+                            : "Ezekiel(23)")) {
+                try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                        "SELECT profile_picture_url FROM target_users WHERE id = ? AND user_id = ?")) {
+                    ps.setInt(1, targetId);
+                    ps.setInt(2, currentUserId);
+                    try (java.sql.ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            currentProfilePictureUrl = rs.getString("profile_picture_url");
+                        }
+                    }
+                }
+            }
+            
+            // Delete the profile picture file
+            if (currentProfilePictureUrl != null && !currentProfilePictureUrl.isEmpty()) {
+                java.nio.file.Path filePath = null;
+                
+                // Try to extract path from URL
+                if (currentProfilePictureUrl.contains("path=")) {
+                    try {
+                        String pathParam = currentProfilePictureUrl.substring(currentProfilePictureUrl.indexOf("path=") + 5);
+                        String decodedPath = java.net.URLDecoder.decode(pathParam, "UTF-8");
+                        // If path is relative, make it absolute
+                        if (!java.nio.file.Paths.get(decodedPath).isAbsolute()) {
+                            java.nio.file.Path baseDir = java.nio.file.Paths.get(System.getProperty("user.dir"));
+                            filePath = baseDir.resolve(decodedPath);
+                        } else {
+                            filePath = java.nio.file.Paths.get(decodedPath);
+                        }
+                    } catch (Exception e) {
+                        System.err.println("Warning: Failed to decode profile picture path: " + e.getMessage());
+                    }
+                }
+                
+                // If path extraction failed, try to construct default path
+                if (filePath == null || !java.nio.file.Files.exists(filePath)) {
+                    // Get platform account to determine user folder
+                    com.aria.platform.UserPlatform selected = targetUser.getSelectedPlatform();
+                    if (selected != null) {
+                        DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(selected.getPlatformId());
+                        if (acc != null) {
+                            String userLabel = (acc.username != null && !acc.username.isBlank()) ? acc.username : "unknown";
+                            
+                            // Try to get dialog name
+                            String chatName = targetUser.getName();
+                            try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                                    System.getenv("DATABASE_URL") != null
+                                            ? System.getenv("DATABASE_URL")
+                                            : "jdbc:postgresql://localhost:5432/aria",
+                                    System.getenv("DATABASE_USER") != null
+                                            ? System.getenv("DATABASE_USER")
+                                            : "postgres",
+                                    System.getenv("DATABASE_PASSWORD") != null
+                                            ? System.getenv("DATABASE_PASSWORD")
+                                            : "Ezekiel(23)")) {
+                                try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                        "SELECT name FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' ORDER BY id DESC LIMIT 1")) {
+                                    ps.setInt(1, currentUserId);
+                                    ps.setInt(2, selected.getPlatformId());
+                                    try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                        if (rs.next()) {
+                                            String dialogName = rs.getString("name");
+                                            if (dialogName != null && !dialogName.isEmpty()) {
+                                                chatName = dialogName;
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (Exception e) {
+                                System.err.println("Warning: Failed to get dialog name: " + e.getMessage());
+                            }
+                            
+                            // Sanitize chat name
+                            chatName = chatName.replaceAll("[<>:\"/\\\\|?*]", "").trim();
+                            if (chatName.isEmpty()) {
+                                chatName = targetUser.getName().replaceAll("[<>:\"/\\\\|?*]", "").trim();
+                                if (chatName.isEmpty()) {
+                                    chatName = "unknown";
+                                }
+                            }
+                            
+                            // Construct default path: media/telegramConnector/user_<username>/<chat_name>_chat/profile_picture.jpg
+                            java.nio.file.Path baseDir = java.nio.file.Paths.get(System.getProperty("user.dir"));
+                            filePath = baseDir.resolve("media").resolve("telegramConnector")
+                                .resolve("user_" + userLabel).resolve(chatName + "_chat").resolve("profile_picture.jpg");
+                            
+                            // Also try other common extensions
+                            if (!java.nio.file.Files.exists(filePath)) {
+                                filePath = baseDir.resolve("media").resolve("telegramConnector")
+                                    .resolve("user_" + userLabel).resolve(chatName + "_chat").resolve("profile_picture.png");
+                            }
+                            if (!java.nio.file.Files.exists(filePath)) {
+                                filePath = baseDir.resolve("media").resolve("telegramConnector")
+                                    .resolve("user_" + userLabel).resolve(chatName + "_chat").resolve("profile_picture.gif");
+                            }
+                        }
+                    }
+                }
+                
+                // Delete the file if it exists
+                if (filePath != null && java.nio.file.Files.exists(filePath)) {
+                    try {
+                        java.nio.file.Files.delete(filePath);
+                        System.out.println("Deleted profile picture file: " + filePath.toString());
+                    } catch (Exception e) {
+                        System.err.println("Warning: Failed to delete profile picture file: " + e.getMessage());
+                    }
+                }
+            }
+            
+            // Clear profile_picture_url in database
+            try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                    System.getenv("DATABASE_URL") != null
+                            ? System.getenv("DATABASE_URL")
+                            : "jdbc:postgresql://localhost:5432/aria",
+                    System.getenv("DATABASE_USER") != null
+                            ? System.getenv("DATABASE_USER")
+                            : "postgres",
+                    System.getenv("DATABASE_PASSWORD") != null
+                            ? System.getenv("DATABASE_PASSWORD")
+                            : "Ezekiel(23)")) {
+                try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                        "UPDATE target_users SET profile_picture_url = NULL WHERE id = ? AND user_id = ?")) {
+                    ps.setInt(1, targetId);
+                    ps.setInt(2, currentUserId);
+                    ps.executeUpdate();
+                }
+            }
+            
+            // Invalidate cache
+            com.aria.cache.RedisCacheManager cache = com.aria.cache.RedisCacheManager.getInstance();
+            cache.invalidateTarget(currentUserId, targetId);
+            
+            // Trigger auto-fetch from Telegram in background
+            // Get platform account info for the fetch
+            com.aria.platform.UserPlatform selected = targetUser.getSelectedPlatform();
+            if (selected != null) {
+                DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(selected.getPlatformId());
+                if (acc != null && "TELEGRAM".equalsIgnoreCase(acc.platform)) {
+                    String targetUsername = selected.getUsername();
+                    if (targetUsername != null && !targetUsername.isEmpty()) {
+                        // Run Python script to fetch profile picture in background
+                        String scriptPath = System.getProperty("user.dir") + "/scripts/telethon/fetch_profile_picture.py";
+                        java.nio.file.Path scriptFile = java.nio.file.Paths.get(scriptPath);
+                        
+                        if (java.nio.file.Files.exists(scriptFile)) {
+                            // Try python3 first, fallback to python
+                            String pythonCmd = "python3";
+                            try {
+                                Process testProcess = new ProcessBuilder(pythonCmd, "--version").start();
+                                int exitCode = testProcess.waitFor();
+                                if (exitCode != 0) {
+                                    pythonCmd = "python";
+                                }
+                            } catch (Exception e) {
+                                pythonCmd = "python";
+                            }
+                            
+                            final String finalPythonCmd = pythonCmd;
+                            final int finalTargetId = targetId;
+                            final int finalUserId = currentUserId;
+                            final int finalPlatformAccountId = selected.getPlatformId();
+                            final String finalTargetUsername = targetUsername;
+                            
+                            // Run in background thread
+                            new Thread(() -> {
+                                try {
+                                    ProcessBuilder pb = new ProcessBuilder(
+                                        finalPythonCmd,
+                                        scriptPath,
+                                        String.valueOf(finalPlatformAccountId),
+                                        finalTargetUsername,
+                                        String.valueOf(finalTargetId),
+                                        String.valueOf(finalUserId)
+                                    );
+                                    pb.directory(new java.io.File(System.getProperty("user.dir")));
+                                    Process process = pb.start();
+                                    // Don't wait for completion, let it run in background
+                                } catch (Exception e) {
+                                    System.err.println("Failed to fetch profile picture from Telegram: " + e.getMessage());
+                                }
+                            }).start();
+                        }
+                    }
+                }
+            }
+            
+            return ResponseEntity.ok(ApiResponse.success("Profile picture deleted"));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError()
+                .body(ApiResponse.error("Failed to delete profile picture: " + e.getMessage()));
+        }
+    }
+    
+    /**
      * Serve profile picture file
      * GET /api/targets/{id}/profile-picture?path=<encoded_path>
      * Also supports legacy format: GET /api/targets/{id}/profile-picture/{fileName}
@@ -836,10 +1102,17 @@ public class TargetController {
             if (path != null && !path.isEmpty()) {
                 try {
                     String decodedPath = java.net.URLDecoder.decode(path, "UTF-8");
-                    filePath = java.nio.file.Paths.get(decodedPath);
+                    // If path is relative, make it absolute
+                    if (!java.nio.file.Paths.get(decodedPath).isAbsolute()) {
+                        java.nio.file.Path baseDir = java.nio.file.Paths.get(System.getProperty("user.dir"));
+                        filePath = baseDir.resolve(decodedPath);
+                    } else {
+                        filePath = java.nio.file.Paths.get(decodedPath);
+                    }
                 } catch (Exception e) {
                     // Fallback: try using path as-is
-                    filePath = java.nio.file.Paths.get(path);
+                    java.nio.file.Path baseDir = java.nio.file.Paths.get(System.getProperty("user.dir"));
+                    filePath = baseDir.resolve(path);
                 }
             } 
             // Legacy format: try old location first, then check database
@@ -869,7 +1142,13 @@ public class TargetController {
                                     if (url != null && url.contains("path=")) {
                                         String pathParam = url.substring(url.indexOf("path=") + 5);
                                         String decodedPath = java.net.URLDecoder.decode(pathParam, "UTF-8");
-                                        filePath = java.nio.file.Paths.get(decodedPath);
+                                        // If path is relative, make it absolute
+                                        if (!java.nio.file.Paths.get(decodedPath).isAbsolute()) {
+                                            java.nio.file.Path baseDir = java.nio.file.Paths.get(System.getProperty("user.dir"));
+                                            filePath = baseDir.resolve(decodedPath);
+                                        } else {
+                                            filePath = java.nio.file.Paths.get(decodedPath);
+                                        }
                                     } else {
                                         filePath = oldPath; // Fallback to old path
                                     }
@@ -903,7 +1182,13 @@ public class TargetController {
                                 if (url != null && url.contains("path=")) {
                                     String pathParam = url.substring(url.indexOf("path=") + 5);
                                     String decodedPath = java.net.URLDecoder.decode(pathParam, "UTF-8");
-                                    filePath = java.nio.file.Paths.get(decodedPath);
+                                    // If path is relative, make it absolute
+                                    if (!java.nio.file.Paths.get(decodedPath).isAbsolute()) {
+                                        java.nio.file.Path baseDir = java.nio.file.Paths.get(System.getProperty("user.dir"));
+                                        filePath = baseDir.resolve(decodedPath);
+                                    } else {
+                                        filePath = java.nio.file.Paths.get(decodedPath);
+                                    }
                                 } else {
                                     return org.springframework.http.ResponseEntity.notFound().build();
                                 }
@@ -915,6 +1200,12 @@ public class TargetController {
                 } catch (Exception e) {
                     return org.springframework.http.ResponseEntity.notFound().build();
                 }
+            }
+            
+            // Ensure path is absolute (relative paths are resolved from project root)
+            if (!filePath.isAbsolute()) {
+                java.nio.file.Path baseDir = java.nio.file.Paths.get(System.getProperty("user.dir"));
+                filePath = baseDir.resolve(filePath);
             }
             
             org.springframework.core.io.Resource resource = new org.springframework.core.io.FileSystemResource(filePath);
@@ -1497,6 +1788,101 @@ public class TargetController {
         }
         int lastDot = filename.lastIndexOf('.');
         return lastDot >= 0 ? filename.substring(lastDot) : "";
+    }
+    
+    /**
+     * Auto-fetch profile picture from Telegram for a target user
+     * Runs in background thread to avoid blocking API response
+     */
+    private void fetchProfilePictureFromTelegram(TargetUser targetUser, int userId, TargetUserDTO dto) {
+        try {
+            com.aria.platform.UserPlatform selected = targetUser.getSelectedPlatform();
+            if (selected == null) {
+                return; // No platform selected
+            }
+            
+            DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(selected.getPlatformId());
+            if (acc == null) {
+                return; // Platform account not found
+            }
+            
+            // Only fetch for Telegram
+            if (!"TELEGRAM".equalsIgnoreCase(acc.platform)) {
+                return;
+            }
+            
+            String targetUsername = selected.getUsername();
+            if (targetUsername == null || targetUsername.isEmpty()) {
+                return; // No username
+            }
+            
+            // Run Python script to fetch profile picture
+            String scriptPath = System.getProperty("user.dir") + "/scripts/telethon/fetch_profile_picture.py";
+            java.nio.file.Path scriptFile = java.nio.file.Paths.get(scriptPath);
+            
+            if (!java.nio.file.Files.exists(scriptFile)) {
+                System.err.println("Profile picture fetch script not found: " + scriptPath);
+                return;
+            }
+            
+            // Try python3 first, fallback to python
+            String pythonCmd = "python3";
+            try {
+                Process testProcess = new ProcessBuilder(pythonCmd, "--version").start();
+                int exitCode = testProcess.waitFor();
+                if (exitCode != 0) {
+                    pythonCmd = "python";
+                }
+            } catch (Exception e) {
+                pythonCmd = "python"; // Fallback to python
+            }
+            
+            ProcessBuilder pb = new ProcessBuilder(
+                pythonCmd, scriptPath,
+                String.valueOf(selected.getPlatformId()),
+                targetUsername,
+                String.valueOf(targetUser.getTargetId()),
+                String.valueOf(userId)
+            );
+            
+            pb.directory(new java.io.File(System.getProperty("user.dir")));
+            pb.redirectErrorStream(true);
+            
+            Process process = pb.start();
+            
+            // Read output in background
+            new Thread(() -> {
+                try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(process.getInputStream()))) {
+                    String line;
+                    StringBuilder output = new StringBuilder();
+                    while ((line = reader.readLine()) != null) {
+                        output.append(line).append("\n");
+                    }
+                    
+                    int exitCode = process.waitFor();
+                    if (exitCode == 0) {
+                        // Parse JSON response
+                        String jsonOutput = output.toString().trim();
+                        if (jsonOutput.contains("\"success\":true")) {
+                            System.out.println("Successfully auto-fetched profile picture for target " + targetUser.getTargetId());
+                            // Invalidate cache so next request gets the updated profile picture
+                            com.aria.cache.RedisCacheManager cache = com.aria.cache.RedisCacheManager.getInstance();
+                            cache.invalidateTarget(userId, targetUser.getTargetId());
+                        } else {
+                            System.err.println("Failed to fetch profile picture: " + jsonOutput);
+                        }
+                    } else {
+                        System.err.println("Profile picture fetch script exited with code " + exitCode);
+                    }
+                } catch (Exception e) {
+                    System.err.println("Error reading profile picture fetch output: " + e.getMessage());
+                }
+            }).start();
+            
+        } catch (Exception e) {
+            System.err.println("Error fetching profile picture from Telegram: " + e.getMessage());
+        }
     }
 }
 
