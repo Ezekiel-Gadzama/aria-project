@@ -14,8 +14,11 @@ public class TargetUserDTO {
     private String bio;
     private String desiredOutcome;
     private String meetingContext;
+    private String importantDetails; // Optional important details
+    private Boolean crossPlatformContextEnabled; // Toggle for cross-platform context
     private String contextDetails;
     private Integer platformAccountId;
+    private String number; // Phone number if applicable
     private String platformAccountUsername; // Username of the platform account (e.g., @Gadzama23)
     private String platformAccountName; // Display name of the platform account (e.g., Ezekiel)
     private String profilePictureUrl; // Profile picture URL/path
@@ -29,20 +32,36 @@ public class TargetUserDTO {
     private Double questionRate;
     private Double engagementLevel;
     private String preferredOpening;
+    
+    // SubTarget Users (child entities)
+    private java.util.List<SubTargetUserDTO> subTargetUsers;
 
     // Constructors
-    public TargetUserDTO() {}
+    public TargetUserDTO() {
+        this.subTargetUsers = new java.util.ArrayList<>();
+    }
 
     public TargetUserDTO(TargetUser targetUser) {
         this.id = targetUser.getTargetId();
         this.name = targetUser.getName();
         this.username = targetUser.getSelectedUsername();
         this.platform = targetUser.getSelectedPlatformType();
-        // TargetUser doesn't have bio field yet - will be null for now
-        this.bio = null;
+        this.bio = targetUser.getBio();
+        this.desiredOutcome = targetUser.getDesiredOutcome();
+        this.meetingContext = targetUser.getMeetingContext();
+        this.importantDetails = targetUser.getImportantDetails();
+        this.crossPlatformContextEnabled = targetUser.isCrossPlatformContextEnabled();
         this.platformAccountId = targetUser.getSelectedPlatform() != null
                 ? targetUser.getSelectedPlatform().getPlatformId()
                 : null;
+        
+        // Convert SubTarget Users to DTOs
+        this.subTargetUsers = new java.util.ArrayList<>();
+        if (targetUser.getSubTargetUsers() != null) {
+            for (com.aria.core.model.SubTargetUser subTarget : targetUser.getSubTargetUsers()) {
+                this.subTargetUsers.add(new SubTargetUserDTO(subTarget));
+            }
+        }
     }
 
     // Getters and setters
@@ -205,6 +224,38 @@ public class TargetUserDTO {
 
     public void setProfilePictureUrl(String profilePictureUrl) {
         this.profilePictureUrl = profilePictureUrl;
+    }
+
+    public String getImportantDetails() {
+        return importantDetails;
+    }
+
+    public void setImportantDetails(String importantDetails) {
+        this.importantDetails = importantDetails;
+    }
+
+    public Boolean getCrossPlatformContextEnabled() {
+        return crossPlatformContextEnabled;
+    }
+
+    public void setCrossPlatformContextEnabled(Boolean crossPlatformContextEnabled) {
+        this.crossPlatformContextEnabled = crossPlatformContextEnabled;
+    }
+
+    public String getNumber() {
+        return number;
+    }
+
+    public void setNumber(String number) {
+        this.number = number;
+    }
+
+    public java.util.List<SubTargetUserDTO> getSubTargetUsers() {
+        return subTargetUsers;
+    }
+
+    public void setSubTargetUsers(java.util.List<SubTargetUserDTO> subTargetUsers) {
+        this.subTargetUsers = subTargetUsers != null ? subTargetUsers : new java.util.ArrayList<>();
     }
 }
 

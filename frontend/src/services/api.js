@@ -35,6 +35,7 @@ export const targetApi = {
     const params = new URLSearchParams({ userId });
     if (targetId) params.append('targetId', targetId);
     if (filters?.platform) params.append('platform', filters.platform);
+    if (filters?.platformAccountId) params.append('platformAccountId', filters.platformAccountId);
     if (filters?.category) params.append('category', filters.category);
     return api.get(`/targets/analysis?${params.toString()}`);
   },
@@ -42,7 +43,11 @@ export const targetApi = {
   create: (targetData, userId) => api.post(`/targets?userId=${userId}`, targetData),
   update: (id, targetData, userId) => api.put(`/targets/${id}?userId=${userId}`, targetData),
   delete: (id, userId) => api.delete(`/targets/${id}?userId=${userId}`),
-  checkOnlineStatus: (id, userId) => api.get(`/targets/${id}/online?userId=${userId}`),
+  checkOnlineStatus: (id, userId, subtargetUserId = null) => {
+    const params = new URLSearchParams({ userId: userId || 1 });
+    if (subtargetUserId) params.append('subtargetUserId', subtargetUserId);
+    return api.get(`/targets/${id}/online?${params.toString()}`);
+  },
   uploadProfilePicture: (id, file, userId) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -57,9 +62,17 @@ export const targetApi = {
 
 // Conversation API
 export const conversationApi = {
-  initialize: (targetUserId, goal, userId) => 
-    api.post(`/conversations/initialize?targetUserId=${targetUserId}&userId=${userId}`, goal),
-  respond: (targetUserId, message, userId, referenceId) => {
+  initialize: (targetUserId, goal, userId, subtargetUserId = null) => {
+    const params = new URLSearchParams({
+      targetUserId,
+      userId: userId || 1,
+    });
+    if (subtargetUserId) {
+      params.append('subtargetUserId', subtargetUserId);
+    }
+    return api.post(`/conversations/initialize?${params.toString()}`, goal);
+  },
+  respond: (targetUserId, message, userId, referenceId, subtargetUserId = null) => {
     const params = new URLSearchParams({
       targetUserId,
       userId: userId || 1,
@@ -67,38 +80,74 @@ export const conversationApi = {
     if (referenceId) {
       params.append('referenceId', referenceId);
     }
+    if (subtargetUserId) {
+      params.append('subtargetUserId', subtargetUserId);
+    }
     return api.post(
       `/conversations/respond?${params.toString()}`,
       message,
       { headers: { 'Content-Type': 'text/plain' } }
     );
   },
-  getMessages: (targetUserId, userId, limit = 100) =>
-    api.get(`/conversations/messages?targetUserId=${targetUserId}&userId=${userId}&limit=${limit}`),
+  getMessages: (targetUserId, userId, limit = 100, subtargetUserId = null) => {
+    const params = new URLSearchParams({
+      targetUserId,
+      userId: userId || 1,
+      limit: limit.toString(),
+    });
+    if (subtargetUserId) {
+      params.append('subtargetUserId', subtargetUserId);
+    }
+    return api.get(`/conversations/messages?${params.toString()}`);
+  },
   downloadMediaUrl: (targetUserId, userId, messageId) =>
     `${API_BASE_URL}/conversations/media/download?targetUserId=${targetUserId}&userId=${userId}&messageId=${messageId}`,
   ingest: (platform, userId) => 
     api.post(`/conversations/ingest?platform=${platform}&userId=${userId}`),
-  ingestTarget: (targetUserId, userId) =>
-    api.post(`/conversations/ingestTarget?targetUserId=${targetUserId}&userId=${userId}`),
+  ingestTarget: (targetUserId, userId, subtargetUserId = null) => {
+    const params = new URLSearchParams({ targetUserId, userId: userId || 1 });
+    if (subtargetUserId) params.append('subtargetUserId', subtargetUserId);
+    return api.post(`/conversations/ingestTarget?${params.toString()}`);
+  },
   end: (targetUserId, userId) =>
     api.post(`/conversations/end?targetUserId=${targetUserId}&userId=${userId}`),
   isActive: (targetUserId, userId) =>
     api.get(`/conversations/active?targetUserId=${targetUserId}&userId=${userId}`),
-  editLast: (targetUserId, userId, newText) =>
-    api.post(
-      `/conversations/editLast?targetUserId=${targetUserId}&userId=${userId}`,
+  editLast: (targetUserId, userId, newText, subtargetUserId = null) => {
+    const params = new URLSearchParams({
+      targetUserId,
+      userId: userId || 1,
+    });
+    if (subtargetUserId) params.append('subtargetUserId', subtargetUserId);
+    return api.post(
+      `/conversations/editLast?${params.toString()}`,
       newText,
       { headers: { 'Content-Type': 'text/plain' } }
-    ),
-  edit: (targetUserId, userId, messageId, newText) =>
-    api.post(
-      `/conversations/edit?targetUserId=${targetUserId}&userId=${userId}&messageId=${messageId}`,
+    );
+  },
+  edit: (targetUserId, userId, messageId, newText, subtargetUserId = null) => {
+    const params = new URLSearchParams({
+      targetUserId,
+      userId: userId || 1,
+      messageId,
+    });
+    if (subtargetUserId) params.append('subtargetUserId', subtargetUserId);
+    return api.post(
+      `/conversations/edit?${params.toString()}`,
       newText,
       { headers: { 'Content-Type': 'text/plain' } }
-    ),
-  delete: (targetUserId, userId, messageId, revoke) =>
-    api.delete(`/conversations/message?targetUserId=${targetUserId}&userId=${userId}&messageId=${messageId}&revoke=${revoke !== false}`),
+    );
+  },
+  delete: (targetUserId, userId, messageId, revoke, subtargetUserId = null) => {
+    const params = new URLSearchParams({
+      targetUserId,
+      userId: userId || 1,
+      messageId,
+      revoke: revoke !== false,
+    });
+    if (subtargetUserId) params.append('subtargetUserId', subtargetUserId);
+    return api.delete(`/conversations/message?${params.toString()}`);
+  },
   sendMedia: (targetUserId, userId, file) => {
     const form = new FormData();
     form.append('file', file);

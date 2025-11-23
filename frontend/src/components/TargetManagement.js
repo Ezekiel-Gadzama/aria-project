@@ -11,26 +11,18 @@ function TargetManagement({ userId = 1 }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [onlineStatus, setOnlineStatus] = useState({}); // { targetId: { online: boolean, lastActive: string } }
-  const [showForm, setShowForm] = useState(false);
+  const [showTargetForm, setShowTargetForm] = useState(false); // Show Target User form
   const [editingTarget, setEditingTarget] = useState(null); // Target being edited
-  const [showAdvanced, setShowAdvanced] = useState(false); // Show/hide advanced settings
   const [confirmDeleteId, setConfirmDeleteId] = useState(null); // Target ID to confirm delete
-  const [formData, setFormData] = useState({
+  const [confirmDeleteSubTarget, setConfirmDeleteSubTarget] = useState(null); // { target, subTarget } for delete confirmation
+  
+  // Target User form data (simple)
+  const [targetFormData, setTargetFormData] = useState({
     name: '',
-    username: '',
-    platform: '',
     bio: '',
     desiredOutcome: '',
     meetingContext: '',
-    contextDetails: '',
-    humorLevel: 0.4,
-    formalityLevel: 0.5,
-    empathyLevel: 0.7,
-    responseTimeAverage: 120.0,
-    messageLengthAverage: 25.0,
-    questionRate: 0.3,
-    engagementLevel: 0.6,
-    preferredOpening: 'Hey! How are you doing?',
+    importantDetails: '',
   });
   const [profilePicture, setProfilePicture] = useState(null); // File object
   const [profilePicturePreview, setProfilePicturePreview] = useState(null); // Preview URL
@@ -122,83 +114,65 @@ function TargetManagement({ userId = 1 }) {
     }
   };
 
-  const handleChange = (e) => {
-    const { name, value, type, selectedOptions } = e.target;
-    if (name === 'platform' && selectedOptions && selectedOptions[0]) {
-      const accountId = selectedOptions[0].getAttribute('data-account-id');
-      setFormData({
-        ...formData,
-        platform: value,
-        platformAccountId: accountId ? parseInt(accountId, 10) : undefined,
-      });
-    } else {
-      // Handle range inputs (sliders) - convert to numbers
-      const newValue = type === 'range' ? parseFloat(value) : value;
-      setFormData({
-        ...formData,
-        [name]: newValue,
-      });
-    }
+  // Target User form handlers
+  const handleTargetFormChange = (e) => {
+    const { name, value } = e.target;
+    setTargetFormData({
+      ...targetFormData,
+      [name]: value,
+    });
   };
 
-  const handleSubmit = async (e) => {
+  const handleTargetSubmit = async (e) => {
     e.preventDefault();
     try {
       let response;
       if (editingTarget) {
-        // Update existing target
-        response = await targetApi.update(editingTarget.id, formData, userId);
+        // Update existing target - only send Target User fields
+        const updateData = {
+          name: targetFormData.name,
+          bio: targetFormData.bio,
+          desiredOutcome: targetFormData.desiredOutcome,
+          meetingContext: targetFormData.meetingContext,
+          importantDetails: targetFormData.importantDetails,
+        };
+        response = await targetApi.update(editingTarget.id, updateData, userId);
       } else {
-        // Create new target
-        response = await targetApi.create(formData, userId);
+        // Create new target - only Target User fields
+        response = await targetApi.create(targetFormData, userId);
       }
       if (response.data.success) {
         // Get target ID from response or editing target
         let targetId = editingTarget ? editingTarget.id : null;
         if (!targetId && response.data.data) {
-          // Try to get ID from response data
           targetId = response.data.data.id || response.data.data;
         }
         
-        // Check if profile picture was removed
-        // If editing a target that had a profile picture, but now both profilePicture and profilePicturePreview are null
+        // Handle profile picture
         const hadProfilePicture = editingTarget && editingTarget.profilePictureUrl;
         const profilePictureRemoved = hadProfilePicture && !profilePicture && !profilePicturePreview;
         
         if (profilePictureRemoved && targetId) {
-          // User removed the profile picture, delete it
           try {
             await targetApi.deleteProfilePicture(targetId, userId);
-            console.log('Profile picture deleted, will auto-fetch from Telegram');
           } catch (deleteErr) {
             console.error('Failed to delete profile picture:', deleteErr);
-            // Don't fail the whole operation if profile picture deletion fails
           }
-        }
-        // Upload profile picture separately if provided
-        else if (profilePicture && targetId) {
+        } else if (profilePicture && targetId) {
           try {
-            const picResponse = await targetApi.uploadProfilePicture(targetId, profilePicture, userId);
-            console.log('Profile picture uploaded:', picResponse.data);
-            if (picResponse.data.success && picResponse.data.data?.profilePictureUrl) {
-              console.log('Profile picture URL saved:', picResponse.data.data.profilePictureUrl);
-            }
+            await targetApi.uploadProfilePicture(targetId, profilePicture, userId);
           } catch (picErr) {
             console.error('Failed to upload profile picture:', picErr);
-            console.error('Error details:', picErr.response?.data);
-            // Don't fail the whole operation if profile picture upload fails
           }
         }
         
-        setShowForm(false);
+        // Reset form
+        setShowTargetForm(false);
         setEditingTarget(null);
-        setShowAdvanced(false);
         setProfilePicture(null);
         setProfilePicturePreview(null);
-        setFormData({ 
-          name: '', username: '', platform: '', bio: '', desiredOutcome: '', meetingContext: '', contextDetails: '',
-          humorLevel: 0.4, formalityLevel: 0.5, empathyLevel: 0.7, responseTimeAverage: 120.0,
-          messageLengthAverage: 25.0, questionRate: 0.3, engagementLevel: 0.6, preferredOpening: 'Hey! How are you doing?'
+        setTargetFormData({ 
+          name: '', bio: '', desiredOutcome: '', meetingContext: '', importantDetails: ''
         });
         loadTargets();
       } else {
@@ -208,6 +182,8 @@ function TargetManagement({ userId = 1 }) {
       setError(err.response?.data?.error || err.message || `Failed to ${editingTarget ? 'update' : 'create'} target`);
     }
   };
+
+  // SubTarget User management is now on a separate page (SubTargetUsersView)
 
   const handleDelete = async (id) => {
     setConfirmDeleteId(id);
@@ -235,8 +211,13 @@ function TargetManagement({ userId = 1 }) {
     setConfirmDeleteId(null);
   };
 
-  const handleStartConversation = (targetId) => {
-    navigate(`/conversations/${targetId}`);
+  const handleStartConversation = (targetId, subtargetUserId = null) => {
+    // Navigate to conversation with optional subtargetUserId
+    if (subtargetUserId) {
+      navigate(`/conversations/${targetId}?subtargetUserId=${subtargetUserId}`);
+    } else {
+      navigate(`/conversations/${targetId}`);
+    }
   };
 
   if (loading && targets.length === 0) {
@@ -251,31 +232,34 @@ function TargetManagement({ userId = 1 }) {
           <button 
             className="btn btn-primary" 
             onClick={() => {
-              if (showForm && !editingTarget) {
-                setShowForm(false);
+              if (showTargetForm && !editingTarget) {
+                setShowTargetForm(false);
                 setEditingTarget(null);
-                setShowAdvanced(false);
               } else {
-                setShowForm(true);
+                setShowTargetForm(true);
                 setEditingTarget(null);
-                setFormData({
-                  name: '', username: '', platform: '', bio: '', desiredOutcome: '', meetingContext: '', contextDetails: '',
-                  humorLevel: 0.4, formalityLevel: 0.5, empathyLevel: 0.7, responseTimeAverage: 120.0,
-                  messageLengthAverage: 25.0, questionRate: 0.3, engagementLevel: 0.6, preferredOpening: 'Hey! How are you doing?'
+                setTargetFormData({
+                  name: '', bio: '', desiredOutcome: '', meetingContext: '', importantDetails: ''
                 });
+                setProfilePicture(null);
+                setProfilePicturePreview(null);
               }
             }}
           >
-            {showForm && !editingTarget ? 'Cancel' : '+ Add Target'}
+            {showTargetForm && !editingTarget ? 'Cancel' : '+ Add Target User'}
           </button>
         </div>
 
         {error && <div className="alert alert-error">{error}</div>}
 
-        {showForm && (
-          <div className="target-form-container">
+        {/* Target User Form (Simple) */}
+        {showTargetForm && (
+          <div className="target-form-container" style={{ marginBottom: '2rem', padding: '1.5rem', backgroundColor: '#f9f9f9', borderRadius: '8px' }}>
             <h2>{editingTarget ? 'Edit Target User' : 'Add New Target User'}</h2>
-            <form onSubmit={handleSubmit} className="target-form" encType="multipart/form-data">
+            <p style={{ fontSize: '0.9rem', color: '#666', marginBottom: '1rem' }}>
+              Create a Target User with basic information. You can add platform-specific instances (SubTarget Users) after creation.
+            </p>
+            <form onSubmit={handleTargetSubmit} className="target-form" encType="multipart/form-data">
               <div className="form-group">
                 <label htmlFor="profilePicture">Profile Picture (Optional)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
@@ -327,7 +311,7 @@ function TargetManagement({ userId = 1 }) {
                   )}
                 </div>
                 <p style={{ fontSize: '0.85rem', color: '#666' }}>
-                  If no picture is uploaded, we'll automatically fetch it from {formData.platform || 'the platform'}
+                  If no picture is uploaded, we'll automatically fetch it when you add a SubTarget User.
                 </p>
               </div>
               <div className="form-group">
@@ -336,77 +320,11 @@ function TargetManagement({ userId = 1 }) {
                   type="text"
                   id="name"
                   name="name"
-                  value={formData.name}
-                  onChange={handleChange}
+                  value={targetFormData.name}
+                  onChange={handleTargetFormChange}
                   required
                   placeholder="Enter target name"
                 />
-              </div>
-
-              <div className="form-group">
-                <label htmlFor="username">Username *</label>
-                <input
-                  type="text"
-                  id="username"
-                  name="username"
-                  value={formData.username}
-                  onChange={handleChange}
-                  required
-                  placeholder="Enter username"
-                />
-              </div>
-
-              <div className="form-group">
-                <label htmlFor="platform">Platform *</label>
-                <select
-                  id="platform"
-                  name="platform"
-                  value={formData.platform}
-                  onChange={(e) => {
-                    // Reset selected account if platform changes
-                    setFormData({
-                      ...formData,
-                      platform: e.target.value,
-                      platformAccountId: undefined,
-                    });
-                  }}
-                  required
-                >
-                  <option value="">Select platform</option>
-                  {platforms.map((platform) => (
-                    <option key={platform} value={platform}>
-                      {platform}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label htmlFor="platformAccountId">Account (Username) *</label>
-                <select
-                  id="platformAccountId"
-                  name="platformAccountId"
-                  value={formData.platformAccountId || ''}
-                  onChange={(e) =>
-                    setFormData({ ...formData, platformAccountId: parseInt(e.target.value, 10) })
-                  }
-                  required
-                  disabled={!formData.platform}
-                >
-                  <option value="">Select account</option>
-                  {platformAccounts
-                    .filter((acc) => acc.platform === formData.platform)
-                    .map((acc) => {
-                      const displayName = acc.accountName || (acc.username ? `@${String(acc.username).replace(/^@/, '')}` : acc.number || '(no username)');
-                      const usernamePart = acc.username ? `@${String(acc.username).replace(/^@/, '')}` : '';
-                      const displayText = acc.accountName && usernamePart ? `${acc.accountName} (${usernamePart})` : displayName;
-                      return (
-                        <option key={acc.id} value={acc.id}>
-                          {displayText}
-                        </option>
-                      );
-                    })}
-                </select>
               </div>
 
               <div className="form-group">
@@ -414,8 +332,8 @@ function TargetManagement({ userId = 1 }) {
                 <textarea
                   id="bio"
                   name="bio"
-                  value={formData.bio}
-                  onChange={handleChange}
+                  value={targetFormData.bio}
+                  onChange={handleTargetFormChange}
                   placeholder="Enter bio"
                   rows="3"
                 />
@@ -426,8 +344,8 @@ function TargetManagement({ userId = 1 }) {
                 <textarea
                   id="desiredOutcome"
                   name="desiredOutcome"
-                  value={formData.desiredOutcome}
-                  onChange={handleChange}
+                  value={targetFormData.desiredOutcome}
+                  onChange={handleTargetFormChange}
                   placeholder="e.g., Arrange a date, Secure investment"
                   rows="2"
                   required
@@ -439,8 +357,8 @@ function TargetManagement({ userId = 1 }) {
                 <textarea
                   id="meetingContext"
                   name="meetingContext"
-                  value={formData.meetingContext}
-                  onChange={handleChange}
+                  value={targetFormData.meetingContext}
+                  onChange={handleTargetFormChange}
                   placeholder="e.g., Met at a tech conference keynote Q&A"
                   rows="2"
                   required
@@ -448,147 +366,19 @@ function TargetManagement({ userId = 1 }) {
               </div>
 
               <div className="form-group">
-                <label htmlFor="contextDetails">Important Details (Optional)</label>
+                <label htmlFor="importantDetails">Important Details (Optional)</label>
                 <textarea
-                  id="contextDetails"
-                  name="contextDetails"
-                  value={formData.contextDetails}
-                  onChange={handleChange}
+                  id="importantDetails"
+                  name="importantDetails"
+                  value={targetFormData.importantDetails}
+                  onChange={handleTargetFormChange}
                   placeholder="Any details that help AI personalize (interests, prior topics...)"
                   rows="3"
                 />
               </div>
 
-              {/* Advanced Communication Settings */}
-              <div style={{ marginTop: '1.5rem', padding: '1rem', border: '1px solid #ddd', borderRadius: '8px', backgroundColor: '#f9f9f9' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                  <h4 style={{ margin: 0 }}>Advanced Communication Settings (Optional)</h4>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-secondary"
-                    onClick={() => setShowAdvanced(!showAdvanced)}
-                  >
-                    {showAdvanced ? 'Hide' : 'Show'} Advanced
-                  </button>
-                </div>
-                
-                {showAdvanced && (
-                  <div>
-                    <div className="form-group">
-                      <label htmlFor="humorLevel">Humor Level: {(formData.humorLevel || 0).toFixed(1)}</label>
-                      <input
-                        type="range"
-                        id="humorLevel"
-                        name="humorLevel"
-                        min="0"
-                        max="1"
-                        step="0.1"
-                        value={formData.humorLevel || 0.4}
-                        onChange={handleChange}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label htmlFor="formalityLevel">Formality Level: {(formData.formalityLevel || 0).toFixed(1)}</label>
-                      <input
-                        type="range"
-                        id="formalityLevel"
-                        name="formalityLevel"
-                        min="0"
-                        max="1"
-                        step="0.1"
-                        value={formData.formalityLevel || 0.5}
-                        onChange={handleChange}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label htmlFor="empathyLevel">Empathy Level: {(formData.empathyLevel || 0).toFixed(1)}</label>
-                      <input
-                        type="range"
-                        id="empathyLevel"
-                        name="empathyLevel"
-                        min="0"
-                        max="1"
-                        step="0.1"
-                        value={formData.empathyLevel || 0.7}
-                        onChange={handleChange}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label htmlFor="responseTimeAverage">Response Time Average (seconds): {formData.responseTimeAverage || 120}</label>
-                      <input
-                        type="range"
-                        id="responseTimeAverage"
-                        name="responseTimeAverage"
-                        min="0"
-                        max="600"
-                        step="10"
-                        value={formData.responseTimeAverage || 120.0}
-                        onChange={handleChange}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label htmlFor="messageLengthAverage">Message Length Average (words): {formData.messageLengthAverage || 25}</label>
-                      <input
-                        type="range"
-                        id="messageLengthAverage"
-                        name="messageLengthAverage"
-                        min="0"
-                        max="100"
-                        step="1"
-                        value={formData.messageLengthAverage || 25.0}
-                        onChange={handleChange}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label htmlFor="questionRate">Question Rate: {(formData.questionRate || 0).toFixed(1)}</label>
-                      <input
-                        type="range"
-                        id="questionRate"
-                        name="questionRate"
-                        min="0"
-                        max="1"
-                        step="0.1"
-                        value={formData.questionRate || 0.3}
-                        onChange={handleChange}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label htmlFor="engagementLevel">Engagement Level: {(formData.engagementLevel || 0).toFixed(1)}</label>
-                      <input
-                        type="range"
-                        id="engagementLevel"
-                        name="engagementLevel"
-                        min="0"
-                        max="1"
-                        step="0.1"
-                        value={formData.engagementLevel}
-                        onChange={handleChange}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label htmlFor="preferredOpening">Preferred Opening</label>
-                      <input
-                        type="text"
-                        id="preferredOpening"
-                        name="preferredOpening"
-                        value={formData.preferredOpening}
-                        onChange={handleChange}
-                        placeholder="e.g., Hey! How are you doing?"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-
               <button type="submit" className="btn btn-primary">
-                {editingTarget ? 'Update Target' : 'Create Target'}
+                {editingTarget ? 'Update Target User' : 'Create Target User'}
               </button>
             </form>
           </div>
@@ -600,10 +390,30 @@ function TargetManagement({ userId = 1 }) {
               <p>No target users yet. Add one to get started!</p>
             </div>
           ) : (
-            targets.map((target) => (
-              <div key={target.id} className="card">
-                <div className="card-header">
-                  <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            targets.map((target) => {
+              const subTargets = target.subTargetUsers || [];
+              
+              return (
+              <div key={target.id} className="card" style={{ marginBottom: '1rem' }}>
+                <div className="card-header" style={{ 
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '0.5rem',
+                  padding: '1rem'
+                }}>
+                  <div 
+                    style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '0.5rem', 
+                      flex: '1', 
+                      minWidth: '200px',
+                      cursor: 'pointer'
+                    }}
+                    onClick={() => navigate(`/targets/${target.id}/subtargets`)}
+                  >
                     {target.profilePictureUrl ? (
                       <img 
                         src={target.profilePictureUrl} 
@@ -629,53 +439,88 @@ function TargetManagement({ userId = 1 }) {
                           color: 'white',
                           fontWeight: 'bold',
                           fontSize: '1.2rem',
-                          marginRight: '0.5rem'
+                          marginRight: '0.5rem',
+                          flexShrink: 0
                         }}
                       >
                         {target.name.charAt(0).toUpperCase()}
                       </div>
                     )}
-                    {target.name}
-                    {onlineStatus[target.id]?.online ? (
-                      <>
-                        <span className="online-indicator" title="Online" style={{ 
-                          display: 'inline-block',
-                          width: '8px',
-                          height: '8px',
-                          borderRadius: '50%',
-                          backgroundColor: '#4caf50',
-                          boxShadow: '0 0 0 2px rgba(76, 175, 80, 0.3)',
-                          animation: 'pulse 2s infinite',
-                          marginLeft: '0.5rem'
-                        }}></span>
-                        <span style={{ fontSize: '0.8rem', color: '#4caf50', marginLeft: '0.5rem' }}>
-                          online
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="offline-indicator" title={onlineStatus[target.id]?.lastActive || "Offline"} style={{ 
-                          display: 'inline-block',
-                          width: '8px',
-                          height: '8px',
-                          borderRadius: '50%',
-                          backgroundColor: '#999',
-                          marginLeft: '0.5rem'
-                        }}></span>
-                        {onlineStatus[target.id]?.lastActive && (
-                          <span style={{ fontSize: '0.75rem', color: '#666', marginLeft: '0.5rem' }}>
-                            {onlineStatus[target.id].lastActive}
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </h3>
-                  <button
-                    className="btn btn-danger btn-sm"
-                    onClick={() => handleDelete(target.id)}
-                  >
-                    Delete
-                  </button>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', minWidth: 0 }}>
+                      <h3 className="card-title" style={{ margin: 0, fontSize: '1.1rem', fontWeight: 'bold' }}>
+                        {target.name}
+                      </h3>
+                      <span style={{ fontSize: '0.75rem', color: '#666' }}>
+                        ({subTargets.length} platform{subTargets.length !== 1 ? 's' : ''})
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/analysis/${target.id}`);
+                      }}
+                      style={{ flexShrink: 0 }}
+                    >
+                      View Analysis
+                    </button>
+                    {/* Cross-Platform Context Toggle */}
+                    <label style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '0.25rem', 
+                      fontSize: '0.85rem', 
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap'
+                    }} title={subTargets.length === 0 ? 'Add at least one SubTarget User to use cross-platform context' : 'Enable to aggregate chat history across all platforms'}>
+                      <input
+                        type="checkbox"
+                        checked={target.crossPlatformContextEnabled || false}
+                        disabled={subTargets.length === 0}
+                        onChange={async (e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          if (subTargets.length === 0) {
+                            alert('Please add at least one SubTarget User before enabling cross-platform context');
+                            return;
+                          }
+                          const newValue = !target.crossPlatformContextEnabled;
+                          try {
+                            // Only send the fields that changed
+                            const updateData = {
+                              name: target.name,
+                              bio: target.bio || null,
+                              desiredOutcome: target.desiredOutcome || null,
+                              meetingContext: target.meetingContext || null,
+                              importantDetails: target.importantDetails || null,
+                              crossPlatformContextEnabled: newValue
+                            };
+                            await targetApi.update(target.id, updateData, userId);
+                            const updatedTargets = targets.map(t => 
+                              t.id === target.id ? { ...t, crossPlatformContextEnabled: newValue } : t
+                            );
+                            setTargets(updatedTargets);
+                          } catch (err) {
+                            console.error('Failed to update cross-platform context:', err);
+                            alert('Failed to update cross-platform context setting');
+                          }
+                        }}
+                      />
+                      <span style={{ opacity: subTargets.length === 0 ? 0.5 : 1 }}>Cross-Platform Context</span>
+                    </label>
+                    <button
+                      className="btn btn-danger btn-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(target.id);
+                      }}
+                      style={{ flexShrink: 0 }}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
                 {/* Delete Confirmation Modal */}
                 {confirmDeleteId === target.id && (
@@ -719,65 +564,124 @@ function TargetManagement({ userId = 1 }) {
                     </div>
                   </div>
                 )}
+                {/* Target User Info (always visible) */}
                 <div className="card-content">
-                  <p><strong>Username:</strong> {target.username}</p>
-                  <p><strong>Platform:</strong> {target.platform}</p>
-                  {(target.platformAccountName || target.platformAccountUsername) && (
-                    <p>
-                      <strong>Acct:</strong>{' '}
-                      {target.platformAccountName || (target.platformAccountUsername.startsWith('@') ? target.platformAccountUsername : '@' + target.platformAccountUsername)}
-                    </p>
-                  )}
                   {target.bio && <p><strong>Bio:</strong> {target.bio}</p>}
+                  {target.importantDetails && <p><strong>Important Details:</strong> {target.importantDetails}</p>}
                 </div>
-                <div className="card-actions">
-                  <button
-                    className="btn btn-primary"
-                    onClick={() => handleStartConversation(target.id)}
-                  >
-                    Start Conversation
-                  </button>
+                
+                {/* Delete SubTarget Confirmation Modal */}
+                {confirmDeleteSubTarget && (
+                  <div className="modal-overlay" style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 1000
+                  }}>
+                    <div className="modal" style={{
+                      backgroundColor: 'white',
+                      padding: '2rem',
+                      borderRadius: '8px',
+                      maxWidth: '500px',
+                      width: '90%',
+                      boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+                    }}>
+                      <h3>Delete SubTarget User</h3>
+                      <p>Delete {confirmDeleteSubTarget.subTarget.name || confirmDeleteSubTarget.subTarget.username}? This will not affect the parent Target User.</p>
+                      <p style={{ color: '#d32f2f', fontWeight: 'bold' }}>This action cannot be undone.</p>
+                      <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem', justifyContent: 'flex-end' }}>
+                        <button
+                          className="btn btn-secondary"
+                          onClick={() => setConfirmDeleteSubTarget(null)}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          className="btn btn-danger"
+                          onClick={async () => {
+                            try {
+                              const currentTarget = targets.find(t => t.id === confirmDeleteSubTarget.target.id);
+                              const updatedSubTargets = currentTarget.subTargetUsers.filter(st => st.id !== confirmDeleteSubTarget.subTarget.id);
+                              
+                              const updateData = {
+                                name: confirmDeleteSubTarget.target.name,
+                                bio: confirmDeleteSubTarget.target.bio || null,
+                                desiredOutcome: confirmDeleteSubTarget.target.desiredOutcome || null,
+                                meetingContext: confirmDeleteSubTarget.target.meetingContext || null,
+                                importantDetails: confirmDeleteSubTarget.target.importantDetails || null,
+                                crossPlatformContextEnabled: confirmDeleteSubTarget.target.crossPlatformContextEnabled || false,
+                                subTargetUsers: updatedSubTargets,
+                              };
+                              
+                              const response = await targetApi.update(confirmDeleteSubTarget.target.id, updateData, userId);
+                              if (response.data.success) {
+                                setConfirmDeleteSubTarget(null);
+                                loadTargets();
+                              } else {
+                                setError(response.data.error || 'Failed to delete SubTarget User');
+                                setConfirmDeleteSubTarget(null);
+                              }
+                            } catch (err) {
+                              setError(err.response?.data?.error || err.message || 'Failed to delete SubTarget User');
+                              setConfirmDeleteSubTarget(null);
+                            }
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {/* SubTarget Users are now managed on a separate page - navigate using "View Platform Instances" button */}
+                
+                {/* Target User Actions */}
+                <div className="card-actions" style={{ marginTop: '1rem', padding: '0 1rem 1rem 1rem', display: 'flex', gap: '0.5rem' }}>
                   <button
                     className="btn btn-secondary"
-                    style={{ marginLeft: '0.5rem' }}
-                    onClick={() => {
-                      setEditingTarget(target);
-                      setShowAdvanced(true); // Show advanced settings when editing
-                      
-                      // Load existing profile picture if available
-                      if (target.profilePictureUrl) {
-                        setProfilePicturePreview(target.profilePictureUrl);
-                      } else {
-                        setProfilePicturePreview(null);
-                      }
-                      setProfilePicture(null); // Reset file input
-                      
-                      setFormData({
-                        name: target.name,
-                        username: target.username || '',
-                        platform: target.platform || '',
-                        platformAccountId: target.platformAccountId || undefined,
-                        bio: target.bio || '',
-                        desiredOutcome: target.desiredOutcome || '',
-                        meetingContext: target.meetingContext || '',
-                        contextDetails: target.contextDetails || '',
-                        humorLevel: target.humorLevel !== undefined ? target.humorLevel : 0.4,
-                        formalityLevel: target.formalityLevel !== undefined ? target.formalityLevel : 0.5,
-                        empathyLevel: target.empathyLevel !== undefined ? target.empathyLevel : 0.7,
-                        responseTimeAverage: target.responseTimeAverage !== undefined ? target.responseTimeAverage : 120.0,
-                        messageLengthAverage: target.messageLengthAverage !== undefined ? target.messageLengthAverage : 25.0,
-                        questionRate: target.questionRate !== undefined ? target.questionRate : 0.3,
-                        engagementLevel: target.engagementLevel !== undefined ? target.engagementLevel : 0.6,
-                        preferredOpening: target.preferredOpening || 'Hey! How are you doing?',
-                      });
-                      setShowForm(true);
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(`/targets/${target.id}/edit`);
+                    }}
+                    style={{ 
+                      padding: '0.5rem 1rem',
+                      borderRadius: '4px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: '0.9rem',
+                      fontWeight: '500'
                     }}
                   >
-                    Edit
+                    Edit Target User
+                  </button>
+                  <button
+                    className="btn btn-primary"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(`/targets/${target.id}/subtargets`);
+                    }}
+                    style={{ 
+                      padding: '0.5rem 1rem',
+                      borderRadius: '4px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: '0.9rem',
+                      fontWeight: '500'
+                    }}
+                  >
+                    View Instances
                   </button>
                 </div>
               </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

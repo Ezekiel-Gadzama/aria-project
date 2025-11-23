@@ -180,12 +180,17 @@ public class DatabaseManager {
             """;
 
 
-            // Target Users table
+            // Target Users table (Parent Entity - platform-agnostic person information)
             String createTargetUsersTable = """
                 CREATE TABLE IF NOT EXISTS target_users (
                     id SERIAL PRIMARY KEY,
                     user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     name TEXT NOT NULL,
+                    bio TEXT,
+                    desired_outcome TEXT,
+                    meeting_context TEXT,
+                    important_details TEXT,
+                    cross_platform_context_enabled BOOLEAN DEFAULT FALSE,
                     profile_json JSONB,
                     profile_picture_url TEXT,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -193,7 +198,78 @@ public class DatabaseManager {
                 )
             """;
 
-            // Target User Platforms table
+            // SubTarget Users table (Child Entity - platform-specific instance)
+            String createSubTargetUsersTable = """
+                CREATE TABLE IF NOT EXISTS subtarget_users (
+                    id SERIAL PRIMARY KEY,
+                    target_user_id INT NOT NULL REFERENCES target_users(id) ON DELETE CASCADE,
+                    name TEXT,
+                    username TEXT,
+                    platform TEXT NOT NULL,
+                    platform_account_id INT REFERENCES platform_accounts(id) ON DELETE SET NULL,
+                    platform_id BIGINT DEFAULT 0,
+                    number TEXT,
+                    advanced_communication_settings JSONB,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(target_user_id, platform, platform_account_id, platform_id)
+                )
+            """;
+
+            // Target Groups table (Parent Entity for groups)
+            String createTargetGroupsTable = """
+                CREATE TABLE IF NOT EXISTS target_groups (
+                    id SERIAL PRIMARY KEY,
+                    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(user_id, name)
+                )
+            """;
+
+            // SubTarget Groups table (Child Entity - platform-specific group instance)
+            String createSubTargetGroupsTable = """
+                CREATE TABLE IF NOT EXISTS subtarget_groups (
+                    id SERIAL PRIMARY KEY,
+                    target_group_id INT NOT NULL REFERENCES target_groups(id) ON DELETE CASCADE,
+                    name TEXT,
+                    platform TEXT NOT NULL,
+                    platform_account_id INT REFERENCES platform_accounts(id) ON DELETE SET NULL,
+                    platform_group_id BIGINT NOT NULL,
+                    username TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(target_group_id, platform, platform_account_id, platform_group_id)
+                )
+            """;
+
+            // Target Channels table (Parent Entity for channels)
+            String createTargetChannelsTable = """
+                CREATE TABLE IF NOT EXISTS target_channels (
+                    id SERIAL PRIMARY KEY,
+                    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(user_id, name)
+                )
+            """;
+
+            // SubTarget Channels table (Child Entity - platform-specific channel instance)
+            String createSubTargetChannelsTable = """
+                CREATE TABLE IF NOT EXISTS subtarget_channels (
+                    id SERIAL PRIMARY KEY,
+                    target_channel_id INT NOT NULL REFERENCES target_channels(id) ON DELETE CASCADE,
+                    name TEXT,
+                    platform TEXT NOT NULL,
+                    platform_account_id INT REFERENCES platform_accounts(id) ON DELETE SET NULL,
+                    platform_channel_id BIGINT NOT NULL,
+                    username TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(target_channel_id, platform, platform_account_id, platform_channel_id)
+                )
+            """;
+
+            // Legacy Target User Platforms table (kept for migration compatibility)
             String createTargetUserPlatformsTable = """
                 CREATE TABLE IF NOT EXISTS target_user_platforms (
                     id SERIAL PRIMARY KEY,
@@ -207,12 +283,13 @@ public class DatabaseManager {
                 )
             """;
 
-            // Conversations (active per target user)
+            // Conversations (active per subtarget user - moved from target_user level)
             String createConversationsTable = """
                 CREATE TABLE IF NOT EXISTS conversations (
                     id SERIAL PRIMARY KEY,
                     user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     target_user_id INT NOT NULL REFERENCES target_users(id) ON DELETE CASCADE,
+                    subtarget_user_id INT REFERENCES subtarget_users(id) ON DELETE CASCADE,
                     desired_goal TEXT NOT NULL,
                     context TEXT,
                     included_account_ids INT[],
@@ -261,6 +338,8 @@ public class DatabaseManager {
             stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS reference_id BIGINT");
             // Ensure last_updated column exists for detecting edited messages
             stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS last_updated TIMESTAMPTZ");
+            // Ensure message_link column exists for groups/channels (URL to message)
+            stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS message_link TEXT");
             // Ensure account_name column exists in platform_accounts
             stmt.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS account_name TEXT");
             
@@ -289,10 +368,25 @@ public class DatabaseManager {
             
             stmt.execute(createMediaTable);
             stmt.execute(createTargetUsersTable);
-            stmt.execute(createTargetUserPlatformsTable);
+            stmt.execute(createSubTargetUsersTable);
+            stmt.execute(createTargetGroupsTable);
+            stmt.execute(createSubTargetGroupsTable);
+            stmt.execute(createTargetChannelsTable);
+            stmt.execute(createSubTargetChannelsTable);
+            stmt.execute(createTargetUserPlatformsTable); // Legacy table for migration
             stmt.execute(createConversationsTable);
             stmt.execute(createIngestionStatusTable);
             stmt.execute(createAnalysisStatusUserTable);
+            
+            // Add new columns to target_users for migration
+            stmt.execute("ALTER TABLE target_users ADD COLUMN IF NOT EXISTS bio TEXT");
+            stmt.execute("ALTER TABLE target_users ADD COLUMN IF NOT EXISTS desired_outcome TEXT");
+            stmt.execute("ALTER TABLE target_users ADD COLUMN IF NOT EXISTS meeting_context TEXT");
+            stmt.execute("ALTER TABLE target_users ADD COLUMN IF NOT EXISTS important_details TEXT");
+            stmt.execute("ALTER TABLE target_users ADD COLUMN IF NOT EXISTS cross_platform_context_enabled BOOLEAN DEFAULT FALSE");
+            
+            // Add subtarget_user_id to conversations for migration
+            stmt.execute("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS subtarget_user_id INT REFERENCES subtarget_users(id) ON DELETE CASCADE");
 
             // Add new columns to existing tables
             stmt.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT");
@@ -891,53 +985,134 @@ public class DatabaseManager {
     // Target User Operations
     // =====================
 
+    public TargetUser getTargetUserById(int targetUserId) throws SQLException {
+        String sql = """
+            SELECT id, user_id, name, bio, desired_outcome, meeting_context, important_details, 
+                   cross_platform_context_enabled, profile_json, profile_picture_url
+            FROM target_users
+            WHERE id = ?
+        """;
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setInt(1, targetUserId);
+            ResultSet rs = pstmt.executeQuery();
+            if (rs.next()) {
+                TargetUser targetUser = new TargetUser();
+                targetUser.setTargetId(rs.getInt("id"));
+                targetUser.setUserId(rs.getInt("user_id"));
+                targetUser.setName(rs.getString("name"));
+                targetUser.setBio(rs.getString("bio"));
+                targetUser.setDesiredOutcome(rs.getString("desired_outcome"));
+                targetUser.setMeetingContext(rs.getString("meeting_context"));
+                targetUser.setImportantDetails(rs.getString("important_details"));
+                targetUser.setCrossPlatformContextEnabled(rs.getBoolean("cross_platform_context_enabled"));
+                targetUser.setProfileJson(rs.getString("profile_json"));
+                targetUser.setProfilePictureUrl(rs.getString("profile_picture_url"));
+                
+                // Load SubTarget Users
+                List<com.aria.core.model.SubTargetUser> subTargets = getSubTargetUsersByTargetUserId(targetUserId);
+                targetUser.setSubTargetUsers(subTargets);
+                
+                // Legacy: Load from target_user_platforms
+                targetUser.setPlatforms(new ArrayList<>());
+                String legacySql = """
+                    SELECT platform, username, number, platform_id
+                    FROM target_user_platforms
+                    WHERE target_user_id = ?
+                """;
+                try (PreparedStatement legacyPstmt = conn.prepareStatement(legacySql)) {
+                    legacyPstmt.setInt(1, targetUserId);
+                    ResultSet legacyRs = legacyPstmt.executeQuery();
+                    while (legacyRs.next()) {
+                        String platformName = legacyRs.getString("platform");
+                        if (platformName != null) {
+                            try {
+                                Platform platform = Platform.valueOf(platformName.toUpperCase());
+                                UserPlatform userPlatform = new UserPlatform(
+                                        legacyRs.getString("username"),
+                                        legacyRs.getString("number"),
+                                        legacyRs.getInt("platform_id"),
+                                        platform
+                                );
+                                targetUser.getPlatforms().add(userPlatform);
+                            } catch (IllegalArgumentException e) {
+                                System.err.println("Invalid platform name: " + platformName);
+                            }
+                        }
+                    }
+                }
+                
+                return targetUser;
+            }
+        }
+        return null;
+    }
+
     public List<TargetUser> getTargetUsersByUserId(int userId) throws SQLException {
         List<TargetUser> targetUsers = new ArrayList<>();
 
-        String sql = """
-        SELECT tu.id, tu.name, tup.platform, tup.username, tup.number, tup.platform_id
-        FROM target_users tu
-        LEFT JOIN target_user_platforms tup ON tu.id = tup.target_user_id
-        WHERE tu.user_id = ?
-        ORDER BY tu.name, tup.platform
-    """;
+        // First, get all target users with their new fields
+        String targetSql = """
+            SELECT id, name, bio, desired_outcome, meeting_context, important_details, 
+                   cross_platform_context_enabled, profile_json, profile_picture_url
+            FROM target_users
+            WHERE user_id = ?
+            ORDER BY name
+        """;
 
         try (Connection conn = getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+             PreparedStatement pstmt = conn.prepareStatement(targetSql)) {
             pstmt.setInt(1, userId);
             ResultSet rs = pstmt.executeQuery();
 
-            TargetUser currentTarget = null;
             while (rs.next()) {
+                TargetUser targetUser = new TargetUser();
                 int targetId = rs.getInt("id");
-                String targetName = rs.getString("name");
-
-                // If this is a new target user, create it
-                if (currentTarget == null || currentTarget.getTargetId() != targetId) {
-                    currentTarget = new TargetUser();
-                    currentTarget.setTargetId(targetId);
-                    currentTarget.setName(targetName);
-                    currentTarget.setPlatforms(new ArrayList<>());
-                    targetUsers.add(currentTarget);
-                }
-
-                // Add platform if it exists
-                String platformName = rs.getString("platform");
-                if (platformName != null && !rs.wasNull()) {
-                    try {
-                        Platform platform = Platform.valueOf(platformName.toUpperCase());
-                        UserPlatform userPlatform = new UserPlatform(
-                                rs.getString("username"),
-                                rs.getString("number"),
-                                rs.getInt("platform_id"),
-                                platform
-                        );
-                        currentTarget.getPlatforms().add(userPlatform);
-                    } catch (IllegalArgumentException e) {
-                        // Skip invalid platform names
-                        System.err.println("Invalid platform name: " + platformName);
+                targetUser.setTargetId(targetId);
+                targetUser.setUserId(userId);
+                targetUser.setName(rs.getString("name"));
+                targetUser.setBio(rs.getString("bio"));
+                targetUser.setDesiredOutcome(rs.getString("desired_outcome"));
+                targetUser.setMeetingContext(rs.getString("meeting_context"));
+                targetUser.setImportantDetails(rs.getString("important_details"));
+                targetUser.setCrossPlatformContextEnabled(rs.getBoolean("cross_platform_context_enabled"));
+                targetUser.setProfileJson(rs.getString("profile_json"));
+                targetUser.setProfilePictureUrl(rs.getString("profile_picture_url"));
+                
+                // Load SubTarget Users
+                List<com.aria.core.model.SubTargetUser> subTargets = getSubTargetUsersByTargetUserId(targetId);
+                targetUser.setSubTargetUsers(subTargets);
+                
+                // Legacy: Also load from target_user_platforms for backward compatibility
+                targetUser.setPlatforms(new ArrayList<>());
+                String legacySql = """
+                    SELECT platform, username, number, platform_id
+                    FROM target_user_platforms
+                    WHERE target_user_id = ?
+                """;
+                try (PreparedStatement legacyPstmt = conn.prepareStatement(legacySql)) {
+                    legacyPstmt.setInt(1, targetId);
+                    ResultSet legacyRs = legacyPstmt.executeQuery();
+                    while (legacyRs.next()) {
+                        String platformName = legacyRs.getString("platform");
+                        if (platformName != null) {
+                            try {
+                                Platform platform = Platform.valueOf(platformName.toUpperCase());
+                                UserPlatform userPlatform = new UserPlatform(
+                                        legacyRs.getString("username"),
+                                        legacyRs.getString("number"),
+                                        legacyRs.getInt("platform_id"),
+                                        platform
+                                );
+                                targetUser.getPlatforms().add(userPlatform);
+                            } catch (IllegalArgumentException e) {
+                                System.err.println("Invalid platform name: " + platformName);
+                            }
+                        }
                     }
                 }
+                
+                targetUsers.add(targetUser);
             }
         }
         return targetUsers;
@@ -951,17 +1126,32 @@ public class DatabaseManager {
             int targetUserId;
             if (targetUser.getTargetId() == 0) {
                 // Insert new target user
-            String insertTargetSql = """
-                INSERT INTO target_users (user_id, name)
-                VALUES (?, ?)
-                RETURNING id
-            """;
+                String insertTargetSql = """
+                    INSERT INTO target_users (user_id, name, bio, desired_outcome, meeting_context, 
+                                            important_details, cross_platform_context_enabled, 
+                                            profile_json, profile_picture_url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                """;
                 try (PreparedStatement pstmt = conn.prepareStatement(insertTargetSql)) {
                     pstmt.setInt(1, userId);
                     pstmt.setString(2, targetUser.getName());
+                    pstmt.setString(3, targetUser.getBio());
+                    pstmt.setString(4, targetUser.getDesiredOutcome());
+                    pstmt.setString(5, targetUser.getMeetingContext());
+                    pstmt.setString(6, targetUser.getImportantDetails());
+                    pstmt.setBoolean(7, targetUser.isCrossPlatformContextEnabled());
+                    // Cast profile_json to jsonb
+                    if (targetUser.getProfileJson() != null && !targetUser.getProfileJson().isEmpty()) {
+                        pstmt.setObject(8, targetUser.getProfileJson(), java.sql.Types.OTHER);
+                    } else {
+                        pstmt.setNull(8, java.sql.Types.OTHER);
+                    }
+                    pstmt.setString(9, targetUser.getProfilePictureUrl());
                     ResultSet rs = pstmt.executeQuery();
                     if (rs.next()) {
                         targetUserId = rs.getInt(1);
+                        targetUser.setTargetId(targetUserId);
                     } else {
                         throw new SQLException("Failed to insert target user");
                     }
@@ -969,36 +1159,100 @@ public class DatabaseManager {
             } else {
                 // Update existing target user
                 targetUserId = targetUser.getTargetId();
-                String updateTargetSql = "UPDATE target_users SET name = ? WHERE id = ?";
+                String updateTargetSql = """
+                    UPDATE target_users 
+                    SET name = ?, bio = ?, desired_outcome = ?, meeting_context = ?, 
+                        important_details = ?, cross_platform_context_enabled = ?,
+                        profile_json = ?, profile_picture_url = ?
+                    WHERE id = ?
+                """;
                 try (PreparedStatement pstmt = conn.prepareStatement(updateTargetSql)) {
                     pstmt.setString(1, targetUser.getName());
-                    pstmt.setInt(2, targetUserId);
+                    pstmt.setString(2, targetUser.getBio());
+                    pstmt.setString(3, targetUser.getDesiredOutcome());
+                    pstmt.setString(4, targetUser.getMeetingContext());
+                    pstmt.setString(5, targetUser.getImportantDetails());
+                    pstmt.setBoolean(6, targetUser.isCrossPlatformContextEnabled());
+                    // Cast profile_json to jsonb
+                    if (targetUser.getProfileJson() != null && !targetUser.getProfileJson().isEmpty()) {
+                        pstmt.setObject(7, targetUser.getProfileJson(), java.sql.Types.OTHER);
+                    } else {
+                        pstmt.setNull(7, java.sql.Types.OTHER);
+                    }
+                    pstmt.setString(8, targetUser.getProfilePictureUrl());
+                    pstmt.setInt(9, targetUserId);
                     pstmt.executeUpdate();
                 }
+            }
 
-                // Delete existing platforms
+            // Save SubTarget Users if explicitly provided (not null and not empty)
+            // CRITICAL: Only process SubTarget Users if the list is non-null AND non-empty
+            // - null list = don't touch SubTarget Users (preserve existing)
+            // - empty list = don't touch SubTarget Users (preserve existing)
+            // - non-empty list = update/insert/delete as needed
+            if (targetUser.getSubTargetUsers() != null && !targetUser.getSubTargetUsers().isEmpty()) {
+                // Get existing SubTarget User IDs
+                java.util.Set<Integer> existingIds = new java.util.HashSet<>();
+                try (PreparedStatement pstmt = conn.prepareStatement(
+                        "SELECT id FROM subtarget_users WHERE target_user_id = ?")) {
+                    pstmt.setInt(1, targetUserId);
+                    try (ResultSet rs = pstmt.executeQuery()) {
+                        while (rs.next()) {
+                            existingIds.add(rs.getInt(1));
+                        }
+                    }
+                }
+                
+                // Get incoming SubTarget User IDs
+                java.util.Set<Integer> incomingIds = new java.util.HashSet<>();
+                for (com.aria.core.model.SubTargetUser subTarget : targetUser.getSubTargetUsers()) {
+                    subTarget.setTargetUserId(targetUserId);
+                    saveSubTargetUser(subTarget);
+                    if (subTarget.getId() > 0) {
+                        incomingIds.add(subTarget.getId());
+                    }
+                }
+                
+                // Delete SubTarget Users that are not in the incoming list
+                existingIds.removeAll(incomingIds);
+                if (!existingIds.isEmpty()) {
+                    String deleteSql = "DELETE FROM subtarget_users WHERE id = ?";
+                    try (PreparedStatement pstmt = conn.prepareStatement(deleteSql)) {
+                        for (Integer idToDelete : existingIds) {
+                            pstmt.setInt(1, idToDelete);
+                            pstmt.addBatch();
+                        }
+                        pstmt.executeBatch();
+                    }
+                }
+            }
+            // If subTargetUsers is null or empty, we don't touch existing SubTarget Users (preserve them)
+
+            // Legacy: Insert platforms (for backward compatibility)
+            if (targetUser.getPlatforms() != null && !targetUser.getPlatforms().isEmpty()) {
+                // Delete existing legacy platforms
                 String deletePlatformsSql = "DELETE FROM target_user_platforms WHERE target_user_id = ?";
                 try (PreparedStatement pstmt = conn.prepareStatement(deletePlatformsSql)) {
                     pstmt.setInt(1, targetUserId);
                     pstmt.executeUpdate();
                 }
-            }
-
-            // Insert platforms
-            String insertPlatformSql = """
-            INSERT INTO target_user_platforms (target_user_id, platform, username, number, platform_id)
-            VALUES (?, ?, ?, ?, ?)
-        """;
-            try (PreparedStatement pstmt = conn.prepareStatement(insertPlatformSql)) {
-                for (UserPlatform platform : targetUser.getPlatforms()) {
-                    pstmt.setInt(1, targetUserId);
-                    pstmt.setString(2, platform.getPlatform().name());
-                    pstmt.setString(3, platform.getUsername());
-                    pstmt.setString(4, platform.getNumber());
-                    pstmt.setInt(5, platform.getPlatformId());
-                    pstmt.addBatch();
+                
+                // Insert platforms
+                String insertPlatformSql = """
+                    INSERT INTO target_user_platforms (target_user_id, platform, username, number, platform_id)
+                    VALUES (?, ?, ?, ?, ?)
+                """;
+                try (PreparedStatement pstmt = conn.prepareStatement(insertPlatformSql)) {
+                    for (UserPlatform platform : targetUser.getPlatforms()) {
+                        pstmt.setInt(1, targetUserId);
+                        pstmt.setString(2, platform.getPlatform().name());
+                        pstmt.setString(3, platform.getUsername());
+                        pstmt.setString(4, platform.getNumber());
+                        pstmt.setInt(5, platform.getPlatformId());
+                        pstmt.addBatch();
+                    }
+                    pstmt.executeBatch();
                 }
-                pstmt.executeBatch();
             }
 
             conn.commit();
@@ -1014,6 +1268,7 @@ public class DatabaseManager {
     }
 
     public boolean deleteTargetUser(int userId, String targetName) throws SQLException {
+        // Cascading delete will remove all SubTarget Users automatically
         String sql = "DELETE FROM target_users WHERE user_id = ? AND name = ?";
         try (Connection conn = getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -1025,31 +1280,280 @@ public class DatabaseManager {
     }
 
     // =====================
+    // SubTarget User Operations
+    // =====================
+
+    public com.aria.core.model.SubTargetUser getSubTargetUserById(int subtargetUserId) throws SQLException {
+        String sql = """
+            SELECT id, target_user_id, name, username, platform, platform_account_id, 
+                   platform_id, number, advanced_communication_settings, created_at
+            FROM subtarget_users
+            WHERE id = ?
+        """;
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setInt(1, subtargetUserId);
+            ResultSet rs = pstmt.executeQuery();
+            if (rs.next()) {
+                return mapSubTargetUserFromResultSet(rs);
+            }
+        }
+        return null;
+    }
+
+    public List<com.aria.core.model.SubTargetUser> getSubTargetUsersByTargetUserId(int targetUserId) throws SQLException {
+        List<com.aria.core.model.SubTargetUser> subTargets = new ArrayList<>();
+        String sql = """
+            SELECT id, target_user_id, name, username, platform, platform_account_id, 
+                   platform_id, number, advanced_communication_settings, created_at
+            FROM subtarget_users
+            WHERE target_user_id = ?
+            ORDER BY platform, created_at
+        """;
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setInt(1, targetUserId);
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                subTargets.add(mapSubTargetUserFromResultSet(rs));
+            }
+        }
+        return subTargets;
+    }
+
+    private com.aria.core.model.SubTargetUser mapSubTargetUserFromResultSet(ResultSet rs) throws SQLException {
+        com.aria.core.model.SubTargetUser subTarget = new com.aria.core.model.SubTargetUser();
+        subTarget.setId(rs.getInt("id"));
+        subTarget.setTargetUserId(rs.getInt("target_user_id"));
+        subTarget.setName(rs.getString("name"));
+        subTarget.setUsername(rs.getString("username"));
+        String platformStr = rs.getString("platform");
+        if (platformStr != null) {
+            try {
+                subTarget.setPlatform(Platform.valueOf(platformStr.toUpperCase()));
+            } catch (IllegalArgumentException e) {
+                System.err.println("Invalid platform: " + platformStr);
+            }
+        }
+        Integer accId = rs.getObject("platform_account_id", Integer.class);
+        subTarget.setPlatformAccountId(accId);
+        Long platformId = rs.getObject("platform_id", Long.class);
+        subTarget.setPlatformId(platformId);
+        subTarget.setNumber(rs.getString("number"));
+        subTarget.setAdvancedCommunicationSettings(rs.getString("advanced_communication_settings"));
+        Timestamp createdAt = rs.getTimestamp("created_at");
+        if (createdAt != null) {
+            subTarget.setCreatedAt(createdAt.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDateTime());
+        }
+        return subTarget;
+    }
+
+    public int saveSubTargetUser(com.aria.core.model.SubTargetUser subTargetUser) throws SQLException {
+        // If ID is set (greater than 0), use UPDATE; otherwise use INSERT...ON CONFLICT
+        if (subTargetUser.getId() > 0) {
+            // Update existing SubTarget User
+            String updateSql = """
+                UPDATE subtarget_users 
+                SET name = ?, username = ?, platform = ?, platform_account_id = ?, 
+                    platform_id = ?, number = ?, advanced_communication_settings = ?
+                WHERE id = ?
+            """;
+            try (Connection conn = getConnection();
+                 PreparedStatement pstmt = conn.prepareStatement(updateSql)) {
+                pstmt.setString(1, subTargetUser.getName());
+                pstmt.setString(2, subTargetUser.getUsername());
+                pstmt.setString(3, subTargetUser.getPlatform() != null ? subTargetUser.getPlatform().name() : null);
+                pstmt.setObject(4, subTargetUser.getPlatformAccountId());
+                pstmt.setObject(5, subTargetUser.getPlatformId());
+                pstmt.setString(6, subTargetUser.getNumber());
+                // Cast advanced_communication_settings to jsonb
+                if (subTargetUser.getAdvancedCommunicationSettings() != null && !subTargetUser.getAdvancedCommunicationSettings().isEmpty()) {
+                    pstmt.setObject(7, subTargetUser.getAdvancedCommunicationSettings(), java.sql.Types.OTHER);
+                } else {
+                    pstmt.setNull(7, java.sql.Types.OTHER);
+                }
+                pstmt.setInt(8, subTargetUser.getId());
+                int rowsAffected = pstmt.executeUpdate();
+                if (rowsAffected > 0) {
+                    return subTargetUser.getId();
+                } else {
+                    throw new SQLException("Failed to update SubTarget User with ID: " + subTargetUser.getId());
+                }
+            }
+        } else {
+            // Insert new SubTarget User with ON CONFLICT handling
+            String insertSql = """
+                INSERT INTO subtarget_users (target_user_id, name, username, platform, platform_account_id, 
+                                            platform_id, number, advanced_communication_settings)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (target_user_id, platform, platform_account_id, platform_id) 
+                DO UPDATE SET
+                    name = EXCLUDED.name,
+                    username = EXCLUDED.username,
+                    number = EXCLUDED.number,
+                    advanced_communication_settings = EXCLUDED.advanced_communication_settings
+                RETURNING id
+            """;
+            try (Connection conn = getConnection();
+                 PreparedStatement pstmt = conn.prepareStatement(insertSql)) {
+                pstmt.setInt(1, subTargetUser.getTargetUserId());
+                pstmt.setString(2, subTargetUser.getName());
+                pstmt.setString(3, subTargetUser.getUsername());
+                pstmt.setString(4, subTargetUser.getPlatform() != null ? subTargetUser.getPlatform().name() : null);
+                pstmt.setObject(5, subTargetUser.getPlatformAccountId());
+                pstmt.setObject(6, subTargetUser.getPlatformId());
+                pstmt.setString(7, subTargetUser.getNumber());
+                // Cast advanced_communication_settings to jsonb
+                if (subTargetUser.getAdvancedCommunicationSettings() != null && !subTargetUser.getAdvancedCommunicationSettings().isEmpty()) {
+                    pstmt.setObject(8, subTargetUser.getAdvancedCommunicationSettings(), java.sql.Types.OTHER);
+                } else {
+                    pstmt.setNull(8, java.sql.Types.OTHER);
+                }
+                ResultSet rs = pstmt.executeQuery();
+                if (rs.next()) {
+                    int id = rs.getInt(1);
+                    subTargetUser.setId(id);
+                    return id;
+                } else {
+                    throw new SQLException("Failed to save SubTarget User");
+                }
+            }
+        }
+    }
+
+    public boolean deleteSubTargetUser(int subtargetUserId) throws SQLException {
+        String sql = "DELETE FROM subtarget_users WHERE id = ?";
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setInt(1, subtargetUserId);
+            int rowsAffected = pstmt.executeUpdate();
+            return rowsAffected > 0;
+        }
+    }
+
+    public boolean updateTargetUserFields(int targetUserId, String bio, String desiredOutcome, 
+                                          String meetingContext, String importantDetails, 
+                                          boolean crossPlatformContextEnabled) throws SQLException {
+        String sql = """
+            UPDATE target_users 
+            SET bio = ?, desired_outcome = ?, meeting_context = ?, 
+                important_details = ?, cross_platform_context_enabled = ?
+            WHERE id = ?
+        """;
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, bio);
+            pstmt.setString(2, desiredOutcome);
+            pstmt.setString(3, meetingContext);
+            pstmt.setString(4, importantDetails);
+            pstmt.setBoolean(5, crossPlatformContextEnabled);
+            pstmt.setInt(6, targetUserId);
+            int rowsAffected = pstmt.executeUpdate();
+            return rowsAffected > 0;
+        }
+    }
+
+    public boolean getCrossPlatformContextEnabled(int targetUserId) throws SQLException {
+        String sql = "SELECT cross_platform_context_enabled FROM target_users WHERE id = ?";
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setInt(1, targetUserId);
+            ResultSet rs = pstmt.executeQuery();
+            if (rs.next()) {
+                return rs.getBoolean("cross_platform_context_enabled");
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Get all dialog IDs for a Target User's SubTarget Users.
+     * Used for cross-platform context aggregation.
+     */
+    public List<Integer> getDialogIdsForTargetUser(int targetUserId, int userId) throws SQLException {
+        List<Integer> dialogIds = new ArrayList<>();
+        
+        // Get all SubTarget Users for this Target User
+        List<com.aria.core.model.SubTargetUser> subTargets = getSubTargetUsersByTargetUserId(targetUserId);
+        
+        if (subTargets.isEmpty()) {
+            return dialogIds;
+        }
+        
+        String sql = """
+            SELECT DISTINCT d.id
+            FROM dialogs d
+            JOIN subtarget_users stu ON d.platform_account_id = stu.platform_account_id
+            WHERE stu.target_user_id = ?
+            AND d.user_id = ?
+            AND d.type = 'private'
+            AND (
+                -- Match by platform_id (Telegram user ID)
+                (stu.platform_id > 0 AND d.dialog_id = stu.platform_id)
+                OR
+                -- Match by username (case-insensitive)
+                (stu.username IS NOT NULL AND (
+                    LOWER(d.name) = LOWER(stu.username)
+                    OR LOWER(d.name) = LOWER('@' || stu.username)
+                    OR LOWER(d.name) LIKE LOWER('%' || stu.username || '%')
+                ))
+            )
+        """;
+        
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setInt(1, targetUserId);
+            pstmt.setInt(2, userId);
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                dialogIds.add(rs.getInt("id"));
+            }
+        }
+        
+        return dialogIds;
+    }
+
+    // =====================
     // Conversation Operations
     // =====================
     public static void upsertActiveConversation(int userId, int targetUserId, String desiredGoal, String context, java.util.List<Integer> includedAccountIds) throws SQLException {
+        upsertActiveConversation(userId, targetUserId, null, desiredGoal, context, includedAccountIds);
+    }
+
+    public static void upsertActiveConversation(int userId, int targetUserId, Integer subtargetUserId, String desiredGoal, String context, java.util.List<Integer> includedAccountIds) throws SQLException {
         try (Connection conn = getConnection()) {
-            // End any existing active conversation for this target
-            try (PreparedStatement end = conn.prepareStatement(
-                    "UPDATE conversations SET active = FALSE, ended_at = NOW() WHERE user_id = ? AND target_user_id = ? AND active = TRUE")) {
+            // End any existing active conversation for this subtarget (or target if subtarget is null)
+            String endSql = subtargetUserId != null
+                ? "UPDATE conversations SET active = FALSE, ended_at = NOW() WHERE user_id = ? AND subtarget_user_id = ? AND active = TRUE"
+                : "UPDATE conversations SET active = FALSE, ended_at = NOW() WHERE user_id = ? AND target_user_id = ? AND subtarget_user_id IS NULL AND active = TRUE";
+            try (PreparedStatement end = conn.prepareStatement(endSql)) {
                 end.setInt(1, userId);
-                end.setInt(2, targetUserId);
+                if (subtargetUserId != null) {
+                    end.setInt(2, subtargetUserId);
+                } else {
+                    end.setInt(2, targetUserId);
+                }
                 end.executeUpdate();
             }
             // Insert new active
-            try (PreparedStatement ins = conn.prepareStatement(
-                    "INSERT INTO conversations (user_id, target_user_id, desired_goal, context, included_account_ids, active) VALUES (?, ?, ?, ?, ?, TRUE)")) {
+            String insSql = "INSERT INTO conversations (user_id, target_user_id, subtarget_user_id, desired_goal, context, included_account_ids, active) VALUES (?, ?, ?, ?, ?, ?, TRUE)";
+            try (PreparedStatement ins = conn.prepareStatement(insSql)) {
                 ins.setInt(1, userId);
                 ins.setInt(2, targetUserId);
-                ins.setString(3, desiredGoal);
-                ins.setString(4, context);
+                if (subtargetUserId != null) {
+                    ins.setInt(3, subtargetUserId);
+                } else {
+                    ins.setNull(3, java.sql.Types.INTEGER);
+                }
+                ins.setString(4, desiredGoal);
+                ins.setString(5, context);
                 if (includedAccountIds != null && !includedAccountIds.isEmpty()) {
                     // Convert to PG int[] via JDBC
                     Integer[] arr = includedAccountIds.toArray(new Integer[0]);
                     java.sql.Array sqlArray = conn.createArrayOf("int4", arr);
-                    ins.setArray(5, sqlArray);
+                    ins.setArray(6, sqlArray);
                 } else {
-                    ins.setNull(5, java.sql.Types.ARRAY);
+                    ins.setNull(6, java.sql.Types.ARRAY);
                 }
                 ins.executeUpdate();
             }

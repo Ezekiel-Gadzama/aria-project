@@ -27,6 +27,9 @@ public abstract class BaseResponseStrategy implements ResponseStrategy {
                     targetUser.getSelectedUsername(),
                     targetUser.getSelectedPlatformType().name()
             );
+            // Note: Cross-platform context aggregation is handled at the getMessages endpoint level.
+            // When crossPlatformContextEnabled is true, messages from all SubTarget Users are aggregated.
+            // The conversation history will automatically include messages from all platforms.
         } else {
             this.responseGenerator.setCurrentGoal(goal);
         }

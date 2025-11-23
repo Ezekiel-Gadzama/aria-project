@@ -3,6 +3,8 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import './App.css';
 import UserRegistration from './components/UserRegistration';
 import TargetManagement from './components/TargetManagement';
+import EditTargetUser from './components/EditTargetUser';
+import SubTargetUsersView from './components/SubTargetUsersView';
 import ConversationView from './components/ConversationView';
 import PlatformRegistration from './components/PlatformRegistration';
 import Navigation from './components/Navigation';
@@ -71,6 +73,26 @@ function App() {
               element={
                 isAuthenticated ? (
                   <TargetManagement userId={currentUser?.id} />
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              } 
+            />
+            <Route 
+              path="/targets/:targetId/edit" 
+              element={
+                isAuthenticated ? (
+                  <EditTargetUser userId={currentUser?.id} />
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              } 
+            />
+            <Route 
+              path="/targets/:targetId/subtargets" 
+              element={
+                isAuthenticated ? (
+                  <SubTargetUsersView userId={currentUser?.id} />
                 ) : (
                   <Navigate to="/" replace />
                 )

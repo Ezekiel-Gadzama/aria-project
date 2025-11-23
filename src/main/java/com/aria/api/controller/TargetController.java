@@ -68,7 +68,24 @@ public class TargetController {
                 for (TargetUser target : targets) {
                     TargetUserDTO dto = new TargetUserDTO(target);
                     
-                    // Load platform account username and name if platformAccountId is available
+                    // SubTarget Users are already loaded in the DTO constructor from target.getSubTargetUsers()
+                    // But we need to load platform account info for each SubTarget User
+                    if (dto.getSubTargetUsers() != null && !dto.getSubTargetUsers().isEmpty()) {
+                        for (com.aria.api.dto.SubTargetUserDTO subTargetDto : dto.getSubTargetUsers()) {
+                            if (subTargetDto.getPlatformAccountId() != null) {
+                                try {
+                                    DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(subTargetDto.getPlatformAccountId());
+                                    if (acc != null) {
+                                        // Platform account info can be accessed if needed
+                                    }
+                                } catch (Exception e) {
+                                    // Log but continue
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Load platform account username and name if platformAccountId is available (legacy)
                     if (dto.getPlatformAccountId() != null) {
                         try {
                             DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(dto.getPlatformAccountId());
@@ -86,12 +103,19 @@ public class TargetController {
                         }
                     }
                     
-                    // Load profile_json and profile_picture_url
+                    // Load new fields and profile_json, profile_picture_url
                     try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                            "SELECT profile_json, profile_picture_url FROM target_users WHERE id = ?")) {
+                            "SELECT bio, desired_outcome, meeting_context, important_details, cross_platform_context_enabled, profile_json, profile_picture_url FROM target_users WHERE id = ?")) {
                         ps.setInt(1, target.getTargetId());
                         try (ResultSet rs = ps.executeQuery()) {
                             if (rs.next()) {
+                                // Load new fields directly from database
+                                dto.setBio(rs.getString("bio"));
+                                dto.setDesiredOutcome(rs.getString("desired_outcome"));
+                                dto.setMeetingContext(rs.getString("meeting_context"));
+                                dto.setImportantDetails(rs.getString("important_details"));
+                                dto.setCrossPlatformContextEnabled(rs.getBoolean("cross_platform_context_enabled"));
+                                
                                 // Load profile picture URL
                                 String profilePictureUrl = rs.getString("profile_picture_url");
                                 if (profilePictureUrl != null && !profilePictureUrl.isEmpty()) {
@@ -111,16 +135,12 @@ public class TargetController {
                                     }).start();
                                 }
                                 
+                                // Load ChatProfile fields from profile_json (legacy support)
                                 String profileJson = rs.getString("profile_json");
                                 if (profileJson != null && !profileJson.isEmpty()) {
                                     org.json.JSONObject profile = new org.json.JSONObject(profileJson);
                                     
-                                    // Load basic fields
-                                    if (profile.has("desiredOutcome")) dto.setDesiredOutcome(profile.getString("desiredOutcome"));
-                                    if (profile.has("meetingContext")) dto.setMeetingContext(profile.getString("meetingContext"));
-                                    if (profile.has("contextDetails")) dto.setContextDetails(profile.getString("contextDetails"));
-                                    
-                                    // Load ChatProfile fields
+                                    // Only load ChatProfile fields from profile_json (basic fields now come from DB columns)
                                     if (profile.has("humorLevel")) dto.setHumorLevel(profile.getDouble("humorLevel"));
                                     if (profile.has("formalityLevel")) dto.setFormalityLevel(profile.getDouble("formalityLevel"));
                                     if (profile.has("empathyLevel")) dto.setEmpathyLevel(profile.getDouble("empathyLevel"));
@@ -129,6 +149,7 @@ public class TargetController {
                                     if (profile.has("questionRate")) dto.setQuestionRate(profile.getDouble("questionRate"));
                                     if (profile.has("engagementLevel")) dto.setEngagementLevel(profile.getDouble("engagementLevel"));
                                     if (profile.has("preferredOpening")) dto.setPreferredOpening(profile.getString("preferredOpening"));
+                                    if (profile.has("contextDetails")) dto.setContextDetails(profile.getString("contextDetails"));
                                 }
                             }
                         }
@@ -203,17 +224,36 @@ public class TargetController {
             
             TargetUser targetUser = new TargetUser();
             targetUser.setName(targetDTO.getName());
-            targetUser.setUserId(String.valueOf(currentUserId));
+            targetUser.setUserId(currentUserId);
+            targetUser.setBio(targetDTO.getBio());
+            targetUser.setDesiredOutcome(targetDTO.getDesiredOutcome());
+            targetUser.setMeetingContext(targetDTO.getMeetingContext());
+            targetUser.setImportantDetails(targetDTO.getImportantDetails());
+            targetUser.setCrossPlatformContextEnabled(targetDTO.getCrossPlatformContextEnabled() != null && targetDTO.getCrossPlatformContextEnabled());
             
-            // Create a UserPlatform for the selected platform
-            com.aria.platform.UserPlatform userPlatform = new com.aria.platform.UserPlatform(
-                targetDTO.getUsername(),
-                "", // number - optional here
-                targetDTO.getPlatformAccountId() != null ? targetDTO.getPlatformAccountId() : 0,
-                targetDTO.getPlatform()
-            );
-            targetUser.setPlatforms(java.util.Arrays.asList(userPlatform));
-            targetUser.setSelectedPlatformIndex(0);
+            // Create SubTarget User if platform/username provided
+            if (targetDTO.getPlatform() != null && targetDTO.getUsername() != null) {
+                com.aria.core.model.SubTargetUser subTargetUser = new com.aria.core.model.SubTargetUser();
+                subTargetUser.setName(targetDTO.getName()); // Platform-specific name (can be nickname)
+                subTargetUser.setUsername(targetDTO.getUsername());
+                subTargetUser.setPlatform(targetDTO.getPlatform());
+                subTargetUser.setPlatformAccountId(targetDTO.getPlatformAccountId());
+                subTargetUser.setNumber(targetDTO.getNumber());
+                // platformId will be set during ingestion or can be provided
+                targetUser.addSubTargetUser(subTargetUser);
+            }
+            
+            // Legacy: Also create UserPlatform for backward compatibility
+            if (targetDTO.getPlatform() != null && targetDTO.getUsername() != null) {
+                com.aria.platform.UserPlatform userPlatform = new com.aria.platform.UserPlatform(
+                    targetDTO.getUsername(),
+                    targetDTO.getNumber() != null ? targetDTO.getNumber() : "",
+                    targetDTO.getPlatformAccountId() != null ? targetDTO.getPlatformAccountId() : 0,
+                    targetDTO.getPlatform()
+                );
+                targetUser.setPlatforms(java.util.Arrays.asList(userPlatform));
+                targetUser.setSelectedPlatformIndex(0);
+            }
 
             DatabaseManager databaseManager = new DatabaseManager();
             TargetUserService targetUserService = new TargetUserService(databaseManager);
@@ -459,12 +499,56 @@ public class TargetController {
             if (targetDTO.getName() != null) {
                 target.setName(targetDTO.getName());
             }
+            if (targetDTO.getBio() != null) {
+                target.setBio(targetDTO.getBio());
+            }
+            if (targetDTO.getDesiredOutcome() != null) {
+                target.setDesiredOutcome(targetDTO.getDesiredOutcome());
+            }
+            if (targetDTO.getMeetingContext() != null) {
+                target.setMeetingContext(targetDTO.getMeetingContext());
+            }
+            if (targetDTO.getImportantDetails() != null) {
+                target.setImportantDetails(targetDTO.getImportantDetails());
+            }
+            if (targetDTO.getCrossPlatformContextEnabled() != null) {
+                target.setCrossPlatformContextEnabled(targetDTO.getCrossPlatformContextEnabled());
+            }
             
-            // Update platforms if provided
+            // Update SubTarget Users if provided
+            // CRITICAL: Only update if explicitly provided, otherwise preserve existing SubTarget Users
+            // This prevents deletion when updating other fields (like crossPlatformContextEnabled)
+            if (targetDTO.getSubTargetUsers() != null) {
+                java.util.List<com.aria.core.model.SubTargetUser> subTargets = new java.util.ArrayList<>();
+                for (com.aria.api.dto.SubTargetUserDTO subTargetDto : targetDTO.getSubTargetUsers()) {
+                    com.aria.core.model.SubTargetUser subTarget = new com.aria.core.model.SubTargetUser();
+                    if (subTargetDto.getId() != null) {
+                        subTarget.setId(subTargetDto.getId());
+                    }
+                    subTarget.setTargetUserId(id);
+                    subTarget.setName(subTargetDto.getName());
+                    subTarget.setUsername(subTargetDto.getUsername());
+                    subTarget.setPlatform(subTargetDto.getPlatform());
+                    subTarget.setPlatformAccountId(subTargetDto.getPlatformAccountId());
+                    subTarget.setPlatformId(subTargetDto.getPlatformId());
+                    subTarget.setNumber(subTargetDto.getNumber());
+                    subTarget.setAdvancedCommunicationSettings(subTargetDto.getAdvancedCommunicationSettings());
+                    subTargets.add(subTarget);
+                }
+                target.setSubTargetUsers(subTargets);
+            } else {
+                // CRITICAL: Set to null (not empty list) to preserve existing SubTarget Users
+                // saveTargetUser will only process SubTarget Users if the list is non-null AND non-empty
+                // Setting to null means "don't touch SubTarget Users" - they will be preserved
+                target.setSubTargetUsers(null);
+                System.out.println("Preserving existing SubTarget Users for target " + id + " (set to null to avoid deletion)");
+            }
+            
+            // Update platforms if provided (legacy support)
             if (targetDTO.getPlatform() != null && targetDTO.getUsername() != null) {
                 com.aria.platform.UserPlatform platform = new com.aria.platform.UserPlatform(
                     targetDTO.getUsername(),
-                    "",
+                    targetDTO.getNumber() != null ? targetDTO.getNumber() : "",
                     targetDTO.getPlatformAccountId() != null ? targetDTO.getPlatformAccountId() : 0,
                     targetDTO.getPlatform()
                 );
@@ -476,7 +560,7 @@ public class TargetController {
             boolean success = targetUserService.saveTargetUser(currentUserId, target);
             
             if (success) {
-                // Update profile_json with all fields
+                // Update profile_json with ChatProfile fields (basic fields are now in DB columns)
                 try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
                         System.getenv("DATABASE_URL") != null
                                 ? System.getenv("DATABASE_URL")
@@ -487,7 +571,7 @@ public class TargetController {
                         System.getenv("DATABASE_PASSWORD") != null
                                 ? System.getenv("DATABASE_PASSWORD")
                                 : "Ezekiel(23)")) {
-                    // Get existing profile_json first to merge
+                    // Get existing profile_json first to merge ChatProfile fields
                     org.json.JSONObject profile = new org.json.JSONObject();
                     try (java.sql.PreparedStatement ps = conn.prepareStatement(
                             "SELECT profile_json FROM target_users WHERE id = ?")) {
@@ -502,9 +586,7 @@ public class TargetController {
                         }
                     }
                     
-                    // Update with new values (only if provided)
-                    if (targetDTO.getDesiredOutcome() != null) profile.put("desiredOutcome", targetDTO.getDesiredOutcome());
-                    if (targetDTO.getMeetingContext() != null) profile.put("meetingContext", targetDTO.getMeetingContext());
+                    // Update ChatProfile fields in profile_json (basic fields are in DB columns now)
                     if (targetDTO.getContextDetails() != null) profile.put("contextDetails", targetDTO.getContextDetails());
                     
                     // Update ChatProfile fields
@@ -519,7 +601,7 @@ public class TargetController {
                     
                     try (java.sql.PreparedStatement up = conn.prepareStatement(
                             "UPDATE target_users SET profile_json = ?::jsonb WHERE id = ?")) {
-                        up.setString(1, profile.toString());
+                        up.setObject(1, profile.toString(), java.sql.Types.OTHER);
                         up.setInt(2, id);
                         up.executeUpdate();
                     }
@@ -584,41 +666,58 @@ public class TargetController {
     @GetMapping("/{id}/online")
     public ResponseEntity<ApiResponse<Map<String, Object>>> checkOnlineStatus(
             @PathVariable("id") Integer id,
-            @RequestParam(value = "userId", required = false) Integer userId) {
+            @RequestParam(value = "userId", required = false) Integer userId,
+            @RequestParam(value = "subtargetUserId", required = false) Integer subtargetUserId) {
         try {
             int currentUserId = userId != null ? userId : 1;
             DatabaseManager databaseManager = new DatabaseManager();
             TargetUserService targetUserService = new TargetUserService(databaseManager);
             
             // Get target user
-            List<TargetUser> targets = targetUserService.getTargetUsersByUserId(currentUserId);
-            TargetUser target = targets.stream()
-                .filter(t -> t.getTargetId() == id)
-                .findFirst()
-                .orElse(null);
-            
+            TargetUser target = targetUserService.getTargetUserById(id);
             if (target == null) {
                 return ResponseEntity.notFound().build();
             }
 
-            com.aria.platform.UserPlatform selected = target.getSelectedPlatform();
-            if (selected == null) {
-                Map<String, Object> errorResult = new HashMap<>();
-                errorResult.put("isOnline", false);
-                errorResult.put("lastActive", "unknown");
-                return ResponseEntity.ok(ApiResponse.success(errorResult));
+            // Try to get platform info from SubTarget User first
+            DatabaseManager.PlatformAccount acc = null;
+            String username = null;
+            com.aria.platform.Platform platform = null;
+            
+            if (subtargetUserId != null) {
+                com.aria.service.SubTargetUserService subTargetUserService = new com.aria.service.SubTargetUserService(databaseManager);
+                com.aria.core.model.SubTargetUser subTarget = subTargetUserService.getSubTargetUserById(subtargetUserId);
+                if (subTarget != null && subTarget.getTargetUserId() == id) {
+                    platform = subTarget.getPlatform();
+                    if (platform == Platform.TELEGRAM && subTarget.getPlatformAccountId() != null) {
+                        acc = DatabaseManager.getPlatformAccountById(subTarget.getPlatformAccountId());
+                        username = subTarget.getUsername();
+                    }
+                }
+            }
+            
+            // Fallback to legacy platform selection
+            if (acc == null) {
+                com.aria.platform.UserPlatform selected = target.getSelectedPlatform();
+                if (selected == null) {
+                    Map<String, Object> errorResult = new HashMap<>();
+                    errorResult.put("isOnline", false);
+                    errorResult.put("lastActive", "unknown");
+                    return ResponseEntity.ok(ApiResponse.success(errorResult));
+                }
+                platform = selected.getPlatform();
+                acc = DatabaseManager.getPlatformAccountById(selected.getPlatformId());
+                username = selected.getUsername();
             }
 
             // Only Telegram supports online status checking
-            if (selected.getPlatform() != Platform.TELEGRAM) {
+            if (platform != Platform.TELEGRAM) {
                 Map<String, Object> errorResult = new HashMap<>();
                 errorResult.put("isOnline", false);
                 errorResult.put("lastActive", "not supported");
                 return ResponseEntity.ok(ApiResponse.success(errorResult));
             }
 
-            // Get platform account
-            DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(selected.getPlatformId());
             if (acc == null) {
                 Map<String, Object> errorResult = new HashMap<>();
                 errorResult.put("isOnline", false);
@@ -632,7 +731,7 @@ public class TargetController {
                     com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
             
             com.aria.platform.telegram.TelegramConnector.OnlineStatus status = 
-                connector.checkUserOnline(selected.getUsername());
+                connector.checkUserOnline(username);
             
             Map<String, Object> result = new HashMap<>();
             result.put("isOnline", status.online);
@@ -682,74 +781,91 @@ public class TargetController {
             }
             
             // Get platform account to determine user folder
-            com.aria.platform.UserPlatform selected = targetUser.getSelectedPlatform();
-            if (selected == null) {
-                return ResponseEntity.badRequest()
-                    .body(ApiResponse.error("Target user has no selected platform"));
+            // Try to get from SubTarget Users first, then fallback to legacy platform
+            DatabaseManager.PlatformAccount acc = null;
+            Integer platformAccountId = null;
+            
+            // Check if target user has SubTarget Users
+            if (targetUser.getSubTargetUsers() != null && !targetUser.getSubTargetUsers().isEmpty()) {
+                // Use the first SubTarget User's platform account
+                com.aria.core.model.SubTargetUser firstSubTarget = targetUser.getSubTargetUsers().get(0);
+                if (firstSubTarget.getPlatformAccountId() != null) {
+                    platformAccountId = firstSubTarget.getPlatformAccountId();
+                    acc = DatabaseManager.getPlatformAccountById(platformAccountId);
+                }
             }
             
-            DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(selected.getPlatformId());
+            // Fallback to legacy platform selection
             if (acc == null) {
-                return ResponseEntity.badRequest()
-                    .body(ApiResponse.error("Platform account not found"));
+                com.aria.platform.UserPlatform selected = targetUser.getSelectedPlatform();
+                if (selected != null) {
+                    platformAccountId = selected.getPlatformId();
+                    acc = DatabaseManager.getPlatformAccountById(platformAccountId);
+                }
             }
             
             // Use same folder structure as dialog medias: media/telegramConnector/user_<username>/<chat_name>_chat/
-            String userLabel = (acc.username != null && !acc.username.isBlank()) ? acc.username : 
-                              (acc.number != null ? acc.number : "unknown");
+            // If no platform account found, use default "unknown" user label
+            String userLabel = "unknown";
+            if (acc != null) {
+                userLabel = (acc.username != null && !acc.username.isBlank()) ? acc.username : 
+                          (acc.number != null ? acc.number : "unknown");
+            }
             
             // Get the actual dialog name from database (matches what Python script uses)
             // This ensures we use the same folder name as the Python ingestion script
             // The dialog name is the Telegram display name (e.g., "Philip inno 2023"), not the target user name
             String chatName = targetUser.getName(); // Default to target name
-            try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
-                    System.getenv("DATABASE_URL") != null
-                            ? System.getenv("DATABASE_URL")
-                            : "jdbc:postgresql://localhost:5432/aria",
-                    System.getenv("DATABASE_USER") != null
-                            ? System.getenv("DATABASE_USER")
-                            : "postgres",
-                    System.getenv("DATABASE_PASSWORD") != null
-                            ? System.getenv("DATABASE_PASSWORD")
-                            : "Ezekiel(23)")) {
-                // Try to find dialog by matching target user name first
-                try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                        "SELECT name FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' AND (name = ? OR name LIKE ?) ORDER BY id DESC LIMIT 1")) {
-                    ps.setInt(1, currentUserId);
-                    ps.setInt(2, selected.getPlatformId());
-                    ps.setString(3, targetUser.getName());
-                    ps.setString(4, targetUser.getName() + "%"); // Also try partial match
-                    try (java.sql.ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) {
-                            String dialogName = rs.getString("name");
-                            if (dialogName != null && !dialogName.isEmpty()) {
-                                chatName = dialogName;
-                            }
-                        }
-                    }
-                }
-                
-                // If not found, try to get any dialog for this platform account (fallback)
-                if (chatName.equals(targetUser.getName())) {
+            if (platformAccountId != null) {
+                try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                        System.getenv("DATABASE_URL") != null
+                                ? System.getenv("DATABASE_URL")
+                                : "jdbc:postgresql://localhost:5432/aria",
+                        System.getenv("DATABASE_USER") != null
+                                ? System.getenv("DATABASE_USER")
+                                : "postgres",
+                        System.getenv("DATABASE_PASSWORD") != null
+                                ? System.getenv("DATABASE_PASSWORD")
+                                : "Ezekiel(23)")) {
+                    // Try to find dialog by matching target user name first
                     try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                            "SELECT name FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' ORDER BY last_synced DESC NULLS LAST, id DESC LIMIT 1")) {
+                            "SELECT name FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' AND (name = ? OR name LIKE ?) ORDER BY id DESC LIMIT 1")) {
                         ps.setInt(1, currentUserId);
-                        ps.setInt(2, selected.getPlatformId());
+                        ps.setInt(2, platformAccountId);
+                        ps.setString(3, targetUser.getName());
+                        ps.setString(4, targetUser.getName() + "%"); // Also try partial match
                         try (java.sql.ResultSet rs = ps.executeQuery()) {
                             if (rs.next()) {
                                 String dialogName = rs.getString("name");
                                 if (dialogName != null && !dialogName.isEmpty()) {
-                                    // Only use if it seems related (contains target name or starts with it)
-                                    if (dialogName.contains(targetUser.getName()) || targetUser.getName().contains(dialogName.split(" ")[0])) {
-                                        chatName = dialogName;
+                                    chatName = dialogName;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // If not found, try to get any dialog for this platform account (fallback)
+                    if (chatName.equals(targetUser.getName())) {
+                        try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                "SELECT name FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' ORDER BY last_synced DESC NULLS LAST, id DESC LIMIT 1")) {
+                            ps.setInt(1, currentUserId);
+                            ps.setInt(2, platformAccountId);
+                            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                if (rs.next()) {
+                                    String dialogName = rs.getString("name");
+                                    if (dialogName != null && !dialogName.isEmpty()) {
+                                        // Only use if it seems related (contains target name or starts with it)
+                                        if (dialogName.contains(targetUser.getName()) || targetUser.getName().contains(dialogName.split(" ")[0])) {
+                                            chatName = dialogName;
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                } catch (Exception e) {
+                    System.err.println("Warning: Failed to get dialog name from database, using target name: " + e.getMessage());
                 }
-            } catch (Exception e) {
-                System.err.println("Warning: Failed to get dialog name from database, using target name: " + e.getMessage());
             }
             
             // Apply same sanitization as Python script: remove only [<>:"/\\|?*] characters, preserve spaces
@@ -1256,6 +1372,7 @@ public class TargetController {
             @RequestParam("userId") Integer userId,
             @RequestParam(value = "targetId", required = false) Integer targetId,
             @RequestParam(value = "platform", required = false) String platform,
+            @RequestParam(value = "platformAccountId", required = false) Integer platformAccountId,
             @RequestParam(value = "category", required = false) String category) {
         try {
             // Check cache first
@@ -1266,7 +1383,7 @@ public class TargetController {
             }
             
             // Calculate analysis (placeholder - implement actual logic)
-            Map<String, Object> analysis = calculateAnalysis(userId, targetId, platform, category);
+            Map<String, Object> analysis = calculateAnalysis(userId, targetId, platform, platformAccountId, category);
             
             // Cache for 5 minutes
             cache.cacheAnalysis(userId, targetId, analysis, 300);
@@ -1278,7 +1395,7 @@ public class TargetController {
         }
     }
     
-    private Map<String, Object> calculateAnalysis(Integer userId, Integer targetId, String platform, String category) {
+    private Map<String, Object> calculateAnalysis(Integer userId, Integer targetId, String platform, Integer platformAccountId, String category) {
         Map<String, Object> analysis = new HashMap<>();
         
         try (Connection conn = java.sql.DriverManager.getConnection(
@@ -1307,14 +1424,28 @@ public class TargetController {
                 params.add(platform);
             }
             
+            // Filter by platform account ID if provided (for SubTarget User filtering)
+            if (platformAccountId != null) {
+                whereClause.append(" AND d.platform_account_id = ?");
+                params.add(platformAccountId);
+            }
+            
             // Get messages for analysis (last 3 months)
-            String messagesSql = "SELECT m.text, m.sender, m.timestamp, m.has_media, d.id as dialog_id, tu.id as target_id, tu.name as target_name " +
+            // Updated query to support both legacy target_user_platforms and new subtarget_users
+            // Match dialogs to target users by:
+            // 1. Same user_id
+            // 2. Dialog's platform_account_id matches target's platform account
+            // 3. Dialog's dialog_id matches target's platform_id (Telegram user ID) or username
+            String messagesSql = "SELECT DISTINCT m.text, m.sender, m.timestamp, m.has_media, d.id as dialog_id, tu.id as target_id, tu.name as target_name " +
                 "FROM messages m " +
                 "JOIN dialogs d ON m.dialog_id = d.id " +
-                "JOIN target_user_platforms tup ON d.platform_account_id = tup.platform_id AND d.dialog_id = tup.platform_id " +
-                "JOIN target_users tu ON tup.target_user_id = tu.id " +
+                "JOIN target_users tu ON d.user_id = tu.user_id " +
                 "WHERE " + whereClause.toString() + " " +
                 "AND m.timestamp >= NOW() - INTERVAL '3 months' " +
+                "AND (EXISTS (SELECT 1 FROM target_user_platforms tup WHERE tup.target_user_id = tu.id AND d.platform_account_id = tup.platform_id " +
+                "             AND (d.dialog_id = tup.platform_id OR LOWER(d.name) = LOWER(tup.username) OR LOWER(d.name) = LOWER('@' || tup.username))) " +
+                "     OR EXISTS (SELECT 1 FROM subtarget_users stu WHERE stu.target_user_id = tu.id AND d.platform_account_id = stu.platform_account_id " +
+                "                AND (stu.platform_id > 0 AND d.dialog_id = stu.platform_id OR LOWER(d.name) = LOWER(stu.username) OR LOWER(d.name) = LOWER('@' || stu.username)))) " +
                 "ORDER BY m.timestamp DESC";
             
             List<MessageData> messages = new ArrayList<>();
@@ -1400,7 +1531,7 @@ public class TargetController {
             
             // Top 5 Targets (only for general analysis)
             if (targetId == null) {
-                List<Map<String, Object>> topTargets = calculateTopTargets(conn, userId, platform);
+                List<Map<String, Object>> topTargets = calculateTopTargets(conn, userId, platform, platformAccountId);
                 analysis.put("topTargets", topTargets);
             }
             
@@ -1673,7 +1804,7 @@ public class TargetController {
         return goal;
     }
     
-    private List<Map<String, Object>> calculateTopTargets(Connection conn, Integer userId, String platform) 
+    private List<Map<String, Object>> calculateTopTargets(Connection conn, Integer userId, String platform, Integer platformAccountId) 
             throws SQLException {
         List<Map<String, Object>> topTargets = new ArrayList<>();
         
@@ -1682,8 +1813,7 @@ public class TargetController {
                    AVG(LENGTH(COALESCE(m.text, ''))) as avg_length,
                    COUNT(CASE WHEN m.sender != 'me' THEN 1 END) as target_responses
             FROM target_users tu
-            JOIN target_user_platforms tup ON tu.id = tup.target_user_id
-            JOIN dialogs d ON d.platform_account_id = tup.platform_id
+            JOIN dialogs d ON d.user_id = tu.user_id
             JOIN messages m ON m.dialog_id = d.id
             WHERE tu.user_id = ? AND m.timestamp >= NOW() - INTERVAL '3 months'
         """);
@@ -1692,8 +1822,16 @@ public class TargetController {
         params.add(userId);
         
         if (platform != null && !platform.equals("all")) {
-            sql.append(" AND tup.platform = ?");
+            // Filter by platform using either legacy target_user_platforms or new subtarget_users
+            sql.append(" AND (EXISTS (SELECT 1 FROM target_user_platforms tup WHERE tup.target_user_id = tu.id AND d.platform_account_id = tup.platform_id AND tup.platform = ?) " +
+                      "     OR EXISTS (SELECT 1 FROM subtarget_users stu WHERE stu.target_user_id = tu.id AND d.platform_account_id = stu.platform_account_id AND stu.platform = ?))");
             params.add(platform);
+            params.add(platform);
+        }
+        
+        if (platformAccountId != null) {
+            sql.append(" AND d.platform_account_id = ?");
+            params.add(platformAccountId);
         }
         
         sql.append(" GROUP BY tu.id, tu.name ORDER BY message_count DESC, avg_length DESC LIMIT 5");

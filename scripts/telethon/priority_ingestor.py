@@ -169,7 +169,7 @@ async def download_media(client, message, chat_name, message_id):
             media_type = "photo"
         elif hasattr(message.media, 'document'):
             doc = message.media.document
-            if doc.mime_type:
+            if doc is not None and doc.mime_type:
                 if 'image' in doc.mime_type:
                     file_ext = ".jpg"
                     media_type = "image"
@@ -180,11 +180,12 @@ async def download_media(client, message, chat_name, message_id):
                     file_ext = ".mp3"
                     media_type = "audio"
                 else:
-                    for attr in doc.attributes:
-                        if hasattr(attr, 'file_name'):
-                            original_name = attr.file_name or ''
-                            file_ext = os.path.splitext(original_name)[1] or ".bin"
-                            break
+                    if hasattr(doc, 'attributes') and doc.attributes:
+                        for attr in doc.attributes:
+                            if hasattr(attr, 'file_name'):
+                                original_name = attr.file_name or ''
+                                file_ext = os.path.splitext(original_name)[1] or ".bin"
+                                break
                     media_type = "document"
             else:
                 media_type = "document"

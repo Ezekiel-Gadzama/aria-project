@@ -116,7 +116,60 @@ def save_dialog(user_id, dialog_id, name, type_, message_count, media_count):
         return result[0] if result else None
 
 
-def save_message(dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id=None, is_edited_on_telegram=False):
+def is_subtarget_group_or_channel(user_id, platform_account_id, platform_group_id, dialog_type):
+    """Check if a group/channel is explicitly defined in subtarget_groups or subtarget_channels"""
+    if dialog_type not in ["group", "channel", "supergroup"]:
+        return False
+    
+    try:
+        with get_connection() as conn, conn.cursor() as cur:
+            if dialog_type in ["group", "supergroup"]:
+                sql = """
+                    SELECT 1 FROM subtarget_groups st
+                    JOIN target_groups tg ON st.target_group_id = tg.id
+                    WHERE tg.user_id = %s 
+                    AND st.platform_account_id = %s 
+                    AND st.platform_group_id = %s
+                    LIMIT 1
+                """
+            else:  # channel
+                sql = """
+                    SELECT 1 FROM subtarget_channels st
+                    JOIN target_channels tc ON st.target_channel_id = tc.id
+                    WHERE tc.user_id = %s 
+                    AND st.platform_account_id = %s 
+                    AND st.platform_channel_id = %s
+                    LIMIT 1
+                """
+            cur.execute(sql, (user_id, platform_account_id, platform_group_id))
+            return cur.fetchone() is not None
+    except Exception as e:
+        safe_print(f"  Warning: Failed to check subtarget {dialog_type}: {e}")
+        return False
+
+
+def get_telegram_message_link(entity, message_id):
+    """Generate Telegram message link for groups/channels"""
+    try:
+        if hasattr(entity, 'username') and entity.username:
+            # Public group/channel with username
+            return f"https://t.me/{entity.username}/{message_id}"
+        elif hasattr(entity, 'id'):
+            # Private group/channel - use chat ID format
+            # Telegram uses negative IDs for groups/channels, need to convert
+            chat_id = entity.id
+            if chat_id < 0:
+                # Remove the -100 prefix if present
+                chat_id_str = str(abs(chat_id))
+                if chat_id_str.startswith('100'):
+                    chat_id_str = chat_id_str[3:]
+                return f"https://t.me/c/{chat_id_str}/{message_id}"
+    except Exception:
+        pass
+    return None
+
+
+def save_message(dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id=None, is_edited_on_telegram=False, message_link=None):
     """
     Save message to database. If message already exists:
     - If edited on Telegram (is_edited_on_telegram=True): Update text, timestamp, and set last_updated
@@ -125,32 +178,34 @@ def save_message(dialog_id, message_id, sender, text, timestamp, has_media, raw_
     if is_edited_on_telegram:
         # Message was edited on Telegram - update text, timestamp, and set last_updated
         sql = """
-            INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id, message_link)
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
             ON CONFLICT (dialog_id, message_id) DO UPDATE SET
                 text = EXCLUDED.text,
                 timestamp = EXCLUDED.timestamp,
                 has_media = EXCLUDED.has_media,
                 raw_json = EXCLUDED.raw_json,
                 reference_id = EXCLUDED.reference_id,
+                message_link = COALESCE(EXCLUDED.message_link, messages.message_link),
                 last_updated = NOW()
             RETURNING id
         """
     else:
         # Message not edited on Telegram - preserve text to keep app edits
         sql = """
-            INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            INSERT INTO messages (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id, message_link)
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
             ON CONFLICT (dialog_id, message_id) DO UPDATE SET
                 timestamp = EXCLUDED.timestamp,
                 has_media = EXCLUDED.has_media,
                 raw_json = EXCLUDED.raw_json,
-                reference_id = EXCLUDED.reference_id
+                reference_id = EXCLUDED.reference_id,
+                message_link = COALESCE(EXCLUDED.message_link, messages.message_link)
                 -- Note: We DON'T update text or sender here to preserve edits made through the app
             RETURNING id
         """
     with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id))
+        cur.execute(sql, (dialog_id, message_id, sender, text, timestamp, has_media, raw_json, reference_id, message_link))
         result = cur.fetchone()
         return result[0] if result else None
 
@@ -232,7 +287,7 @@ async def download_media(client, message, chat_name, message_id):
             media_type = "photo"
         elif hasattr(message.media, 'document'):
             doc = message.media.document
-            if doc.mime_type:
+            if doc is not None and doc.mime_type:
                 if 'image' in doc.mime_type:
                     file_ext = ".jpg"
                     media_type = "image"
@@ -243,11 +298,12 @@ async def download_media(client, message, chat_name, message_id):
                     file_ext = ".mp3"
                     media_type = "audio"
                 else:
-                    for attr in doc.attributes:
-                        if hasattr(attr, 'file_name'):
-                            original_name = attr.file_name or ''
-                            file_ext = os.path.splitext(original_name)[1] or ".bin"
-                            break
+                    if hasattr(doc, 'attributes') and doc.attributes:
+                        for attr in doc.attributes:
+                            if hasattr(attr, 'file_name'):
+                                original_name = attr.file_name or ''
+                                file_ext = os.path.splitext(original_name)[1] or ".bin"
+                                break
                     media_type = "document"
             else:
                 media_type = "document"
@@ -257,7 +313,7 @@ async def download_media(client, message, chat_name, message_id):
         original_filename = None
         if hasattr(message.media, 'document'):
             doc = message.media.document
-            if hasattr(doc, 'attributes'):
+            if doc is not None and hasattr(doc, 'attributes') and doc.attributes:
                 for attr in doc.attributes:
                     if hasattr(attr, 'file_name') and attr.file_name:
                         original_filename = attr.file_name
@@ -563,9 +619,17 @@ async def ingest_chat_history():
             else:
                 dialog_type = "private"  # One-on-one chat
             
-            # Skip groups, channels, and bots
-            if dialog_type in ["group", "channel", "bot", "supergroup"]:
-                safe_print(f"Skipping {dialog_type}: {dialog.name}")
+            # For groups, channels, and supergroups: only process if explicitly defined in subtarget tables
+            if dialog_type in ["group", "channel", "supergroup"]:
+                # Check if this group/channel is in subtarget_groups or subtarget_channels
+                if not is_subtarget_group_or_channel(user_id, platform_account_id, dialog.entity.id, dialog_type):
+                    safe_print(f"Skipping {dialog_type}: {dialog.name} (not in subtarget tables)")
+                    continue
+                # Process this group/channel - it's explicitly defined
+                safe_print(f"Processing {dialog_type}: {dialog.name} (explicitly defined)")
+            elif dialog_type == "bot":
+                # Always skip bots
+                safe_print(f"Skipping bot: {dialog.name}")
                 continue
             
             safe_chat_name = remove_emojis(dialog.name)
@@ -657,10 +721,16 @@ async def ingest_chat_history():
                                 if hasattr(message.reply_to, 'reply_to_msg_id') and message.reply_to.reply_to_msg_id:
                                     reference_id = message.reply_to.reply_to_msg_id
 
+                            # Generate message link for groups/channels
+                            message_link = None
+                            if dialog_type in ["group", "channel", "supergroup"]:
+                                message_link = get_telegram_message_link(dialog.entity, message.id)
+                            
                             msg_id = save_message(
                                 dialog_id, message.id, sender, message.text,
                                 message.date, has_media, raw_json, reference_id,
-                                is_edited_on_telegram=is_edited_on_telegram
+                                is_edited_on_telegram=is_edited_on_telegram,
+                                message_link=message_link
                             )
                             if msg_id:  # Only count if message was actually saved (not duplicate)
                                 message_count += 1
@@ -737,9 +807,15 @@ async def ingest_chat_history():
                                     if hasattr(message.reply_to, 'reply_to_msg_id') and message.reply_to.reply_to_msg_id:
                                         reference_id = message.reply_to.reply_to_msg_id
 
+                                # Generate message link for groups/channels
+                                message_link = None
+                                if dialog_type in ["group", "channel", "supergroup"]:
+                                    message_link = get_telegram_message_link(dialog.entity, message.id)
+                                
                                 msg_id = save_message(
                                     dialog_id, message.id, sender, message.text,
-                                    message.date, has_media, raw_json, reference_id
+                                    message.date, has_media, raw_json, reference_id,
+                                    message_link=message_link
                                 )
                                 if msg_id:
                                     message_count += 1

@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { targetApi, platformApi } from '../services/api';
 import './AnalysisDashboard.css';
 
 function AnalysisDashboard({ userId = 1 }) {
   const { targetId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedPlatform, setSelectedPlatform] = useState('all');
@@ -23,6 +24,21 @@ function AnalysisDashboard({ userId = 1 }) {
     loadTargets();
     loadCategories();
   }, []);
+
+  // Check for platform account ID in URL params or location state (for auto-filtering)
+  useEffect(() => {
+    const urlParams = new URLSearchParams(location.search);
+    const platformAccountId = urlParams.get('platformAccountId') || location.state?.platformAccountId;
+    
+    if (platformAccountId && registeredPlatformAccounts.length > 0) {
+      // Find the account and set the platform filter
+      const account = registeredPlatformAccounts.find(acc => acc.id === parseInt(platformAccountId));
+      if (account) {
+        // Use format: "account_<id>" to distinguish from platform name
+        setSelectedPlatform(`account_${account.id}`);
+      }
+    }
+  }, [location.search, location.state, registeredPlatformAccounts]);
 
   useEffect(() => {
     loadAnalysisData();
@@ -82,8 +98,24 @@ function AnalysisDashboard({ userId = 1 }) {
     try {
       setLoading(true);
       setError(null);
+      
+      // Extract platform account ID if format is "account_<id>", otherwise use platform name
+      let platformFilter = null;
+      let platformAccountIdFilter = null;
+      
+      if (selectedPlatform !== 'all') {
+        if (selectedPlatform.startsWith('account_')) {
+          // Extract account ID from "account_<id>" format
+          platformAccountIdFilter = parseInt(selectedPlatform.replace('account_', ''));
+        } else {
+          // Use platform name (legacy format)
+          platformFilter = selectedPlatform;
+        }
+      }
+      
       const response = await targetApi.getAnalysis(userId, targetId ? parseInt(targetId) : null, {
-        platform: selectedPlatform !== 'all' ? selectedPlatform : null,
+        platform: platformFilter,
+        platformAccountId: platformAccountIdFilter,
         category: selectedCategory !== 'all' ? selectedCategory : null
       });
       
@@ -154,7 +186,7 @@ function AnalysisDashboard({ userId = 1 }) {
             >
               <option value="all">All Platforms</option>
               {registeredPlatformAccounts.map((account) => (
-                <option key={account.id} value={account.platform}>
+                <option key={account.id} value={`account_${account.id}`}>
                   {account.platform} {account.username ? `(@${account.username})` : account.accountName ? `(${account.accountName})` : ''}
                 </option>
               ))}

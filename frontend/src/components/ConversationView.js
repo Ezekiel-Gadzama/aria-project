@@ -63,6 +63,16 @@ const isUrl = (text) => {
 function ConversationView({ userId = 1 }) {
   const { targetId } = useParams();
   const navigate = useNavigate();
+  const [subtargetUserId, setSubtargetUserId] = useState(null);
+  
+  // Get subtargetUserId from query params
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const subtargetId = params.get('subtargetUserId');
+    if (subtargetId) {
+      setSubtargetUserId(parseInt(subtargetId));
+    }
+  }, []);
   const [target, setTarget] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -107,11 +117,16 @@ function ConversationView({ userId = 1 }) {
           setConversationInitialized(true);
         }
         // Always try to load messages (even if conversation not initialized, messages might exist)
-        await loadMessages();
+        // Wait a bit for subtargetUserId to be set from query params
+        setTimeout(() => {
+          loadMessages().catch(err => console.error('Failed to load messages:', err));
+        }, 100);
       } catch (e) {
         // Try to load messages anyway
         console.error('Failed to check active conversation:', e);
-        loadMessages().catch(err => console.error('Failed to load messages:', err));
+        setTimeout(() => {
+          loadMessages().catch(err => console.error('Failed to load messages:', err));
+        }, 100);
       }
     })();
   }, [targetId]);
@@ -139,7 +154,7 @@ function ConversationView({ userId = 1 }) {
     
     const checkOnlineStatus = async () => {
       try {
-        const response = await targetApi.checkOnlineStatus(targetId, userId);
+        const response = await targetApi.checkOnlineStatus(targetId, userId, subtargetUserId);
         if (response.data?.success) {
           const data = response.data.data;
           // Backend returns "isOnline" not "online"
@@ -159,7 +174,7 @@ function ConversationView({ userId = 1 }) {
     const interval = setInterval(checkOnlineStatus, 5000);
     
     return () => clearInterval(interval);
-  }, [conversationInitialized, target, targetId, userId]);
+  }, [conversationInitialized, target, targetId, userId, subtargetUserId]);
 
   // Poll for new messages and trigger priority ingestion every 5 seconds
   useEffect(() => {
@@ -180,7 +195,7 @@ function ConversationView({ userId = 1 }) {
         if (!operationInProgressRef.current && !isOperationInProgress) {
           // Trigger ingestion in background (non-blocking) - don't wait for it
           // Backend will invalidate cache after ingestion completes
-          conversationApi.ingestTarget(targetId, userId).catch(err => {
+          conversationApi.ingestTarget(targetId, userId, subtargetUserId).catch(err => {
             // Ignore ingestion errors - it's a background process
             // The backend will skip if ingestion is already running
             if (err.response?.status !== 200) {
@@ -197,7 +212,7 @@ function ConversationView({ userId = 1 }) {
         }
         
         // Then fetch messages from database (cache will be invalidated by priority ingestion)
-        const resp = await conversationApi.getMessages(targetId, userId, 50);
+        const resp = await conversationApi.getMessages(targetId, userId, 50, subtargetUserId);
         
         // Check again after API call (use ref for synchronous check)
         if (operationInProgressRef.current) {
@@ -285,9 +300,13 @@ function ConversationView({ userId = 1 }) {
                   };
                 }
                 
-                // If message is pending (being sent/edited), preserve the optimistic version
+                // If message is pending (being sent/edited), but now found in database, remove pending flag
                 if (prevMsg && prevMsg.isPending) {
-                  return prevMsg; // Keep the pending version until backend confirms
+                  // Message was pending but now found in database - use database version and remove pending flag
+                  return {
+                    ...newMsg,
+                    isPending: false, // No longer pending since it's in the database
+                  };
                 }
                 
                 // ALWAYS show Telegram edits immediately - don't preserve them
@@ -499,7 +518,7 @@ function ConversationView({ userId = 1 }) {
         ...goalData,
         includedPlatformAccountIds: selectedAccountIds,
       };
-      const response = await conversationApi.initialize(targetId, payload, userId);
+      const response = await conversationApi.initialize(targetId, payload, userId, subtargetUserId);
       if (response.data.success) {
         setConversationInitialized(true);
         setError(null);
@@ -632,11 +651,13 @@ function ConversationView({ userId = 1 }) {
         targetId, 
         messageText, 
         userId,
-        replyToId
+        replyToId,
+        subtargetUserId
       ).then(response => {
         if (response.data?.success && response.data?.data) {
           const messageData = response.data.data;
-          // Replace optimistic message with real one
+          const realMessageId = messageData.messageId;
+          // Replace optimistic message with real one, but keep it as pending until it appears in database
           setMessages(prev => prev.map(msg => 
             msg.messageId === tempMessageId 
               ? {
@@ -644,11 +665,14 @@ function ConversationView({ userId = 1 }) {
                   fromUser: true,
                   timestamp: messageData.timestamp ? new Date(messageData.timestamp) : new Date(),
                   mediaUrl: messageData.mediaDownloadUrl || null,
-                  messageId: messageData.messageId,
+                  messageId: realMessageId,
                   referenceId: replyToId || null,
+                  isPending: true, // Keep as pending until it appears in database from polling
                 }
               : msg
           ));
+          // Mark this message ID so polling knows to preserve it even if not in database yet
+          // The message will be marked as not pending once polling finds it in the database
         } else {
           // Remove optimistic message if send failed
           setMessages(prev => prev.filter(msg => msg.messageId !== tempMessageId));
@@ -766,8 +790,8 @@ function ConversationView({ userId = 1 }) {
     
     // Edit in background (don't block UI)
     const editPromise = msgId 
-      ? conversationApi.edit(targetId, userId, msgId, messageText)
-      : conversationApi.editLast(targetId, userId, messageText);
+      ? conversationApi.edit(targetId, userId, msgId, messageText, subtargetUserId)
+      : conversationApi.editLast(targetId, userId, messageText, subtargetUserId);
     
     editPromise.then(response => {
       // Clear operation in progress flag
@@ -848,7 +872,7 @@ function ConversationView({ userId = 1 }) {
   const loadMessages = async () => {
     try {
       // Auto-load last 50 messages
-      const resp = await conversationApi.getMessages(targetId, userId, 50);
+      const resp = await conversationApi.getMessages(targetId, userId, 50, subtargetUserId);
       if (resp.data?.success) {
         const rows = resp.data.data || [];
         const loadedMessages = rows.map((r) => {
@@ -949,7 +973,7 @@ function ConversationView({ userId = 1 }) {
     });
     
     // Delete in background (don't block UI)
-    conversationApi.delete(targetId, userId, messageIdToDelete, revoke)
+    conversationApi.delete(targetId, userId, messageIdToDelete, revoke, subtargetUserId)
       .then(response => {
         // Clear operation in progress flag
         operationInProgressRef.current = false;
@@ -1165,7 +1189,43 @@ function ConversationView({ userId = 1 }) {
                     {target?.name?.charAt(0).toUpperCase() || '?'}
                   </div>
                 )}
-                <span>{target?.name || 'Conversation'}</span>
+                <span>
+                  {(() => {
+                    // If we have a subtargetUserId, find the SubTarget User and use its name or username
+                    if (subtargetUserId && target?.subTargetUsers) {
+                      const subTarget = target.subTargetUsers.find(st => st.id === subtargetUserId);
+                      if (subTarget) {
+                        // Use name if available, otherwise use username with @ prefix (only if not already present)
+                        if (subTarget.name) {
+                          return `Conversation with ${subTarget.name}`;
+                        } else {
+                          const username = subTarget.username || '';
+                          const displayUsername = username.startsWith('@') ? username : `@${username}`;
+                          return `Conversation with ${displayUsername}`;
+                        }
+                      }
+                    }
+                    // Fallback to target name
+                    return `Conversation with ${target?.name || 'Unknown'}`;
+                  })()}
+                </span>
+                {(() => {
+                  // Show platform and account info if we have a SubTarget User
+                  if (subtargetUserId && target?.subTargetUsers) {
+                    const subTarget = target.subTargetUsers.find(st => st.id === subtargetUserId);
+                    if (subTarget && subTarget.platform) {
+                      // Get platform account info
+                      const platformAccount = platformAccounts.find(acc => acc.id === subTarget.platformAccountId);
+                      const accountLabel = platformAccount?.username || platformAccount?.number || 'Unknown';
+                      return (
+                        <span style={{ fontSize: '0.75rem', color: '#666', marginLeft: '0.5rem' }}>
+                          Platform: {subTarget.platform} (@{accountLabel})
+                        </span>
+                      );
+                    }
+                  }
+                  return null;
+                })()}
                 {targetOnline ? (
                   <>
                     <span className="online-indicator" title="Online" style={{ backgroundColor: '#4caf50' }}></span>
@@ -1185,7 +1245,23 @@ function ConversationView({ userId = 1 }) {
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                 <button
                   className="btn btn-primary btn-sm"
-                  onClick={() => navigate(`/analysis/${targetId}`)}
+                  onClick={() => {
+                    // Get platform account ID from current SubTarget User if available
+                    let platformAccountId = null;
+                    if (subtargetUserId && target?.subTargetUsers) {
+                      const subTarget = target.subTargetUsers.find(st => st.id === subtargetUserId);
+                      if (subTarget?.platformAccountId) {
+                        platformAccountId = subTarget.platformAccountId;
+                      }
+                    }
+                    
+                    // Navigate with platform account ID in URL params for auto-filtering
+                    if (platformAccountId) {
+                      navigate(`/analysis/${targetId}?platformAccountId=${platformAccountId}`);
+                    } else {
+                      navigate(`/analysis/${targetId}`);
+                    }
+                  }}
                 >
                   View Analysis
                 </button>
@@ -2287,7 +2363,7 @@ function ConversationView({ userId = 1 }) {
                     try {
                       await Promise.all(selectedArray.map(async (messageId) => {
                         try {
-                          await conversationApi.delete(targetId, userId, messageId, true);
+                          await conversationApi.delete(targetId, userId, messageId, true, subtargetUserId);
                         } catch (err) {
                           console.error(`Failed to delete message ${messageId}:`, err);
                         }

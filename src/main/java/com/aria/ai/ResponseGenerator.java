@@ -70,6 +70,10 @@ public class ResponseGenerator {
                     styleProfile.getFormalityLevel(),
                     styleProfile.getEmpathyLevel());
         }
+        
+        // Note: If cross-platform context is enabled, conversationHistory may contain messages
+        // from multiple platforms (same person, different platforms). The AI should understand
+        // this is the same person communicating across different platforms.
 
         return String.format("""
             Conversation Context:

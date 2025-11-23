@@ -52,23 +52,8 @@ public class TargetUserService {
      */
     public TargetUser getTargetUserById(int targetId) {
         try {
-            // Get all target users and find by ID
-            // Note: This is inefficient for large datasets, but works for now
-            // TODO: Add getTargetUserById method to DatabaseManager for better performance
-            // We need userId to call getTargetUsersByUserId, so we'll search across all users
-            // For now, try to find in common userIds (1, 2, 3, etc.)
-            for (int userId = 1; userId <= 10; userId++) {
-                List<TargetUser> targets = getTargetUsersByUserId(userId);
-                TargetUser found = targets.stream()
-                    .filter(t -> t.getTargetId() == targetId)
-                    .findFirst()
-                    .orElse(null);
-                if (found != null) {
-                    return found;
-                }
-            }
-            return null;
-        } catch (Exception e) {
+            return dbManager.getTargetUserById(targetId);
+        } catch (SQLException e) {
             System.err.println("Error getting target user by ID: " + e.getMessage());
             return null;
         }
@@ -79,28 +64,12 @@ public class TargetUserService {
      */
     public int saveTargetUser(TargetUser targetUser) {
         try {
-            // Parse userId from string to int
-            int userId = 0;
-            try {
-                String userIdStr = targetUser.getUserId();
-                if (userIdStr != null && !userIdStr.isEmpty()) {
-                    userId = Integer.parseInt(userIdStr);
-                }
-            } catch (NumberFormatException e) {
-                // userId is not a valid number, use 0
-            }
+            int userId = targetUser.getUserId();
             
             if (userId > 0) {
                 boolean success = dbManager.saveTargetUser(userId, targetUser);
                 if (success) {
-                    // Get the saved target user to return ID
-                    List<TargetUser> targets = getTargetUsersByUserId(userId);
-                    return targets.stream()
-                        .filter(t -> t.getName().equals(targetUser.getName()) && 
-                                   t.getSelectedUsername().equals(targetUser.getSelectedUsername()))
-                        .map(TargetUser::getTargetId)
-                        .findFirst()
-                        .orElse(0);
+                    return targetUser.getTargetId();
                 }
             }
             return 0;
@@ -118,17 +87,7 @@ public class TargetUserService {
             // Get target user first to get name and userId
             TargetUser target = getTargetUserById(targetId);
             if (target != null) {
-                // Parse userId from string to int
-                int userId = 0;
-                try {
-                    String userIdStr = target.getUserId();
-                    if (userIdStr != null && !userIdStr.isEmpty()) {
-                        userId = Integer.parseInt(userIdStr);
-                    }
-                } catch (NumberFormatException e) {
-                    // userId is not a valid number
-                }
-                
+                int userId = target.getUserId();
                 if (userId > 0) {
                     return deleteTargetUser(userId, target.getName());
                 }

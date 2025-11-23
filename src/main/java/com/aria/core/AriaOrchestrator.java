@@ -42,7 +42,12 @@ public class AriaOrchestrator {
         this.currentTargetUser = targetUser;
 
         Platform platform = targetUser.getSelectedPlatformType();
-        this.platformConnector = createPlatformConnector(platform);
+        // Only create platform connector if platform is not null
+        // When using SubTarget Users, platform may be null and that's OK
+        // The platform connector is not needed for basic conversation initialization
+        if (platform != null) {
+            this.platformConnector = createPlatformConnector(platform);
+        }
         this.responseStrategy.initialize(goal, targetUser);
     }
 
@@ -52,7 +57,11 @@ public class AriaOrchestrator {
         this.currentTargetUser = targetUser;
 
         Platform platform = targetUser.getSelectedPlatformType();
-        this.platformConnector = createPlatformConnector(platform);
+        // Only create platform connector if platform is not null
+        // When using SubTarget Users, platform may be null and that's OK
+        if (platform != null) {
+            this.platformConnector = createPlatformConnector(platform);
+        }
 
         this.responseStrategy = StrategyFactory.createStrategy(
                 StrategyFactory.StrategyType.ADVANCED,
