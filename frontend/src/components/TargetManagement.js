@@ -82,7 +82,14 @@ function TargetManagement({ userId = 1 }) {
       setLoading(true);
       const response = await targetApi.getAll(userId);
       if (response.data.success) {
-        setTargets(response.data.data || []);
+        const targetsData = response.data.data || [];
+        // Debug: Log profile picture URLs
+        targetsData.forEach(target => {
+          if (target.profilePictureUrl) {
+            console.log(`Target ${target.name} (ID: ${target.id}) profile picture:`, target.profilePictureUrl);
+          }
+        });
+        setTargets(targetsData);
       } else {
         setError(response.data.error || 'Failed to load targets');
       }
@@ -156,9 +163,14 @@ function TargetManagement({ userId = 1 }) {
         // Upload profile picture separately if provided
         if (profilePicture && targetId) {
           try {
-            await targetApi.uploadProfilePicture(targetId, profilePicture, userId);
+            const picResponse = await targetApi.uploadProfilePicture(targetId, profilePicture, userId);
+            console.log('Profile picture uploaded:', picResponse.data);
+            if (picResponse.data.success && picResponse.data.data?.profilePictureUrl) {
+              console.log('Profile picture URL saved:', picResponse.data.data.profilePictureUrl);
+            }
           } catch (picErr) {
             console.error('Failed to upload profile picture:', picErr);
+            console.error('Error details:', picErr.response?.data);
             // Don't fail the whole operation if profile picture upload fails
           }
         }
@@ -257,6 +269,11 @@ function TargetManagement({ userId = 1 }) {
                       src={profilePicturePreview} 
                       alt="Preview" 
                       style={{ width: '80px', height: '80px', borderRadius: '50%', objectFit: 'cover' }}
+                      onError={(e) => {
+                        // If image fails to load, hide it
+                        e.target.style.display = 'none';
+                        console.error('Failed to load profile picture:', profilePicturePreview);
+                      }}
                     />
                   )}
                   <input
@@ -269,6 +286,10 @@ function TargetManagement({ userId = 1 }) {
                       if (file) {
                         setProfilePicture(file);
                         const preview = URL.createObjectURL(file);
+                        // Revoke old preview if it was a blob URL
+                        if (profilePicturePreview && profilePicturePreview.startsWith('blob:')) {
+                          URL.revokeObjectURL(profilePicturePreview);
+                        }
                         setProfilePicturePreview(preview);
                       }
                     }}
@@ -279,8 +300,11 @@ function TargetManagement({ userId = 1 }) {
                       className="btn btn-secondary btn-sm"
                       onClick={() => {
                         setProfilePicture(null);
+                        // Only revoke if it's a blob URL (new upload), not if it's an existing image URL
+                        if (profilePicturePreview.startsWith('blob:')) {
+                          URL.revokeObjectURL(profilePicturePreview);
+                        }
                         setProfilePicturePreview(null);
-                        URL.revokeObjectURL(profilePicturePreview);
                       }}
                     >
                       Remove
@@ -704,6 +728,15 @@ function TargetManagement({ userId = 1 }) {
                     onClick={() => {
                       setEditingTarget(target);
                       setShowAdvanced(true); // Show advanced settings when editing
+                      
+                      // Load existing profile picture if available
+                      if (target.profilePictureUrl) {
+                        setProfilePicturePreview(target.profilePictureUrl);
+                      } else {
+                        setProfilePicturePreview(null);
+                      }
+                      setProfilePicture(null); // Reset file input
+                      
                       setFormData({
                         name: target.name,
                         username: target.username || '',

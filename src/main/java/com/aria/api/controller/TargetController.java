@@ -671,21 +671,121 @@ public class TargetController {
             // Use same folder structure as dialog medias: media/telegramConnector/user_<username>/<chat_name>_chat/
             String userLabel = (acc.username != null && !acc.username.isBlank()) ? acc.username : 
                               (acc.number != null ? acc.number : "unknown");
-            String chatName = targetUser.getName().replaceAll("[^A-Za-z0-9_]", "_");
+            
+            // Get the actual dialog name from database (matches what Python script uses)
+            // This ensures we use the same folder name as the Python ingestion script
+            // The dialog name is the Telegram display name (e.g., "Philip inno 2023"), not the target user name
+            String chatName = targetUser.getName(); // Default to target name
+            try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                    System.getenv("DATABASE_URL") != null
+                            ? System.getenv("DATABASE_URL")
+                            : "jdbc:postgresql://localhost:5432/aria",
+                    System.getenv("DATABASE_USER") != null
+                            ? System.getenv("DATABASE_USER")
+                            : "postgres",
+                    System.getenv("DATABASE_PASSWORD") != null
+                            ? System.getenv("DATABASE_PASSWORD")
+                            : "Ezekiel(23)")) {
+                // Try to find dialog by matching target user name first
+                try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                        "SELECT name FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' AND (name = ? OR name LIKE ?) ORDER BY id DESC LIMIT 1")) {
+                    ps.setInt(1, currentUserId);
+                    ps.setInt(2, selected.getPlatformId());
+                    ps.setString(3, targetUser.getName());
+                    ps.setString(4, targetUser.getName() + "%"); // Also try partial match
+                    try (java.sql.ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            String dialogName = rs.getString("name");
+                            if (dialogName != null && !dialogName.isEmpty()) {
+                                chatName = dialogName;
+                            }
+                        }
+                    }
+                }
+                
+                // If not found, try to get any dialog for this platform account (fallback)
+                if (chatName.equals(targetUser.getName())) {
+                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                            "SELECT name FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type = 'private' ORDER BY last_synced DESC NULLS LAST, id DESC LIMIT 1")) {
+                        ps.setInt(1, currentUserId);
+                        ps.setInt(2, selected.getPlatformId());
+                        try (java.sql.ResultSet rs = ps.executeQuery()) {
+                            if (rs.next()) {
+                                String dialogName = rs.getString("name");
+                                if (dialogName != null && !dialogName.isEmpty()) {
+                                    // Only use if it seems related (contains target name or starts with it)
+                                    if (dialogName.contains(targetUser.getName()) || targetUser.getName().contains(dialogName.split(" ")[0])) {
+                                        chatName = dialogName;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Warning: Failed to get dialog name from database, using target name: " + e.getMessage());
+            }
+            
+            // Apply same sanitization as Python script: remove only [<>:"/\\|?*] characters, preserve spaces
+            // Python: re.sub(r'[<>:"/\\|?*]', '', chat_name).strip()
+            chatName = chatName.replaceAll("[<>:\"/\\\\|?*]", "").trim();
+            if (chatName.isEmpty()) {
+                chatName = targetUser.getName().replaceAll("[<>:\"/\\\\|?*]", "").trim();
+                if (chatName.isEmpty()) {
+                    chatName = "unknown";
+                }
+            }
+            
             String fileName = "profile_" + targetId + "_" + System.currentTimeMillis() + 
                 getFileExtension(file.getOriginalFilename());
             
             // Save to the same folder as dialog medias
-            java.nio.file.Path mediaDir = java.nio.file.Paths.get("media", "telegramConnector", "user_" + userLabel, chatName + "_chat");
-            java.nio.file.Files.createDirectories(mediaDir);
+            // Use absolute path to avoid Tomcat work directory issues
+            java.nio.file.Path baseDir = java.nio.file.Paths.get(System.getProperty("user.dir"));
+            java.nio.file.Path mediaDir = baseDir.resolve("media").resolve("telegramConnector").resolve("user_" + userLabel).resolve(chatName + "_chat");
+            
+            // Ensure parent directories exist
+            try {
+                java.nio.file.Files.createDirectories(mediaDir);
+                System.out.println("Created profile picture directory: " + mediaDir.toAbsolutePath().toString());
+            } catch (Exception e) {
+                System.err.println("Failed to create directory: " + mediaDir.toAbsolutePath().toString());
+                System.err.println("Error: " + e.getMessage());
+                throw new RuntimeException("Failed to create media directory: " + e.getMessage(), e);
+            }
+            
             java.nio.file.Path filePath = mediaDir.resolve(fileName);
-            file.transferTo(filePath.toFile());
+            
+            System.out.println("Target user name: " + targetUser.getName());
+            System.out.println("Chat name used: " + chatName);
+            System.out.println("User label: " + userLabel);
+            System.out.println("Full file path: " + filePath.toAbsolutePath().toString());
+            
+            // Verify directory exists before writing
+            if (!java.nio.file.Files.exists(mediaDir)) {
+                throw new RuntimeException("Media directory does not exist: " + mediaDir.toAbsolutePath().toString());
+            }
+            
+            // Write file
+            try {
+                file.transferTo(filePath.toFile());
+                System.out.println("Profile picture saved successfully to: " + filePath.toAbsolutePath().toString());
+            } catch (Exception e) {
+                System.err.println("Failed to save file to: " + filePath.toAbsolutePath().toString());
+                System.err.println("Error: " + e.getMessage());
+                throw new RuntimeException("Failed to save profile picture: " + e.getMessage(), e);
+            }
             
             // Save relative path to database (same structure as media files)
             // Format: media/telegramConnector/user_<username>/<chat_name>_chat/<fileName>
-            String relativePath = mediaDir.toString().replace("\\", "/") + "/" + fileName;
+            // Use relative path from project root for database storage
+            String relativePath = "media/telegramConnector/user_" + userLabel + "/" + chatName + "_chat/" + fileName;
+            // Store the full API URL for the frontend to use directly
             String profilePictureUrl = "/api/targets/" + targetId + "/profile-picture?path=" + 
                 java.net.URLEncoder.encode(relativePath, "UTF-8");
+            
+            System.out.println("Profile picture uploaded for target " + targetId + ": " + profilePictureUrl);
+            System.out.println("File saved to: " + filePath.toString());
             
             try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
                     System.getenv("DATABASE_URL") != null
