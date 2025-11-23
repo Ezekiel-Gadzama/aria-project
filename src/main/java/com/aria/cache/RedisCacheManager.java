@@ -139,8 +139,17 @@ public class RedisCacheManager {
             String key = "messages:user:" + userId + ":target:" + targetId;
             jedis.del(key);
         } catch (Exception e) {
-            System.err.println("Failed to invalidate cached messages: " + e.getMessage());
+            if (!isConnectionError(e)) {
+                System.err.println("Failed to invalidate cached messages: " + e.getMessage());
+            }
         }
+    }
+    
+    /**
+     * Alias for invalidateMessages (for backward compatibility)
+     */
+    public void invalidateCachedMessages(int userId, int targetId) {
+        invalidateMessages(userId, targetId);
     }
     
     /**

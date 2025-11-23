@@ -395,62 +395,39 @@ async def ingest_priority_target(target_username: str):
                 raw_json = json.dumps(message_dict, default=str)
                 
                 # Check if message was edited on Telegram
-                # Telegram messages have an 'edit_date' field if they were edited
-                edit_date = message_dict.get('edit_date')
+                # Simplest and most reliable: check for edit_date in the message
                 is_edited_on_telegram = False
                 
-                # If message exists in DB, check if it was edited on Telegram
-                # IMPORTANT: If message was recently edited via app (last_updated within last 30 seconds),
-                # preserve the DB text and don't overwrite it with Telegram text
-                if message.id in db_messages_info:
+                # Check if message has edit_date (most reliable indicator of Telegram edit)
+                if hasattr(message, 'edit_date') and message.edit_date:
+                    is_edited_on_telegram = True
+                else:
+                    # Also check in raw JSON
+                    try:
+                        raw_json_dict = json.loads(raw_json) if raw_json else {}
+                        if raw_json_dict.get('edit_date'):
+                            is_edited_on_telegram = True
+                    except:
+                        pass
+                
+                # If message exists in DB and was edited on Telegram, update it
+                # BUT: If message was recently edited via app (last_updated within last 5 seconds),
+                # preserve the DB text to avoid overwriting app edits
+                if message.id in db_messages_info and is_edited_on_telegram:
                     db_text, db_timestamp, last_updated_db = db_messages_info[message.id]
                     
-                    # Check if message was recently edited via app (within last 30 seconds)
-                    # If so, preserve the DB text and don't treat it as a Telegram edit
-                    is_recently_edited_via_app = False
+                    # Check if message was recently edited via app (within last 5 seconds)
+                    # If so, preserve the DB text and don't overwrite it with Telegram text
                     if last_updated_db:
-                        # last_updated_db is a timezone-aware datetime from PostgreSQL
-                        # Compare with current UTC time
                         time_diff = datetime.now(timezone.utc) - last_updated_db
-                        if time_diff.total_seconds() < 30:
-                            # Message was edited via app within last 30 seconds - preserve DB text
-                            is_recently_edited_via_app = True
-                    
-                    # Only treat as Telegram edit if:
-                    # 1. Not recently edited via app (to preserve app edits)
-                    # 2. Has edit_date OR text/timestamp changed in Telegram
-                    if not is_recently_edited_via_app:
-                        # Check if message was edited by comparing edit_date, text, or timestamp
-                        if edit_date:
-                            # Definitely edited on Telegram (has edit_date)
-                            is_edited_on_telegram = True
+                        if time_diff.total_seconds() < 5:
+                            # Message was edited via app very recently - preserve DB text
+                            is_edited_on_telegram = False
+                        else:
+                            # Message was edited on Telegram - update it
                             messages_updated += 1
-                        elif db_text and message.text and db_text.strip() != message.text.strip():
-                            # Text changed - could be edited on Telegram or via app
-                            # If timestamp is newer than DB timestamp, it was likely edited on Telegram
-                            if db_timestamp and message.date.timestamp() > db_timestamp.timestamp():
-                                is_edited_on_telegram = True
-                                messages_updated += 1
-                        elif db_timestamp and message.date.timestamp() > db_timestamp.timestamp():
-                            # Timestamp changed (newer) - might have been edited on Telegram
-                            # Check if text also changed or if edit_date exists in raw_json
-                            if db_text and message.text and db_text.strip() != message.text.strip():
-                                # Text changed and timestamp is newer - likely edited on Telegram
-                                is_edited_on_telegram = True
-                                messages_updated += 1
-                            else:
-                                # Timestamp changed but text same - check raw_json for edit_date
-                                try:
-                                    raw_json_dict = json.loads(raw_json) if raw_json else {}
-                                    if raw_json_dict.get('edit_date'):
-                                        # Has edit_date in raw_json - definitely edited on Telegram
-                                        is_edited_on_telegram = True
-                                        messages_updated += 1
-                                except:
-                                    pass
-                elif edit_date:
-                    # New message with edit_date (shouldn't happen, but handle it)
-                    is_edited_on_telegram = True
+                elif is_edited_on_telegram:
+                    messages_updated += 1
                 
                 # Extract reference_id from reply_to if present
                 reference_id = None
@@ -510,18 +487,19 @@ async def ingest_priority_target(target_username: str):
             
             # Find messages in database that don't exist in Telegram (were deleted)
             # Check ALL messages in DB that are in the range of the last 50 messages we fetched from Telegram
-            # We need to check messages that are >= lowest_telegram_id (inclusive) to account for all recent messages
             if telegram_message_ids:
                 highest_telegram_id = max(telegram_message_ids)
                 lowest_telegram_id = min(telegram_message_ids)
-                # Check ALL DB messages that are in the range [lowest_telegram_id, highest_telegram_id + buffer]
-                # We add a buffer of 50 to account for message ID gaps (reduced from 100 since we're checking 50 messages)
-                # This ensures we catch all messages that should exist in the last 50 but don't
+                # Check ALL DB messages that are in the range [lowest_telegram_id - 100, highest_telegram_id + 100]
+                # This wider range ensures we catch all messages that should exist but don't
                 db_message_ids_in_range = {
                     msg_id for msg_id in db_message_ids 
-                    if msg_id >= lowest_telegram_id and msg_id <= highest_telegram_id + 50
+                    if msg_id >= (lowest_telegram_id - 100) and msg_id <= (highest_telegram_id + 100)
                 }
                 deleted_message_ids = db_message_ids_in_range - telegram_message_ids
+                
+                # Also exclude messages that were deleted via app (don't delete them again)
+                deleted_message_ids = deleted_message_ids - app_deleted_message_ids
             else:
                 # No messages in Telegram - skip deletion check
                 deleted_message_ids = set()
@@ -549,6 +527,8 @@ async def ingest_priority_target(target_username: str):
                 safe_print(f"Priority ingestion: No deleted messages found (all messages in DB exist in Telegram)")
         except Exception as e:
             safe_print(f"Warning: Failed to check for deleted messages: {e}")
+            import traceback
+            traceback.print_exc()
 
         await client.disconnect()
         

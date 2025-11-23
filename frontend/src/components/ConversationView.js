@@ -176,8 +176,7 @@ function ConversationView({ userId = 1 }) {
         // This will check for new messages and delete messages that no longer exist in Telegram
         // Only trigger if not already running (backend will check and skip if already running)
         // BUT: Skip priority ingestion if operation is in progress
-        // IMPORTANT: Don't wait for ingestion - trigger it and fetch messages immediately
-        // Ingestion runs in background and will update database asynchronously
+        // IMPORTANT: Wait a bit after triggering ingestion to let it update database and invalidate cache
         if (!operationInProgressRef.current && !isOperationInProgress) {
           // Trigger ingestion in background (non-blocking) - don't wait for it
           conversationApi.ingestTarget(targetId, userId).catch(err => {
@@ -187,8 +186,9 @@ function ConversationView({ userId = 1 }) {
               console.warn('Priority ingestion failed:', err);
             }
           });
-          // Don't wait - fetch messages immediately while ingestion runs in background
-          // The next polling cycle will pick up the changes
+          // Wait 1 second for priority ingestion to update database and invalidate cache
+          // This ensures we get fresh data from database, not stale cache
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
         
         // Final check before fetching messages (use ref for synchronous check)
@@ -196,7 +196,7 @@ function ConversationView({ userId = 1 }) {
           return; // Stop immediately if operation started
         }
         
-        // Then fetch messages from database
+        // Then fetch messages from database (cache will be invalidated by priority ingestion)
         const resp = await conversationApi.getMessages(targetId, userId, 50);
         
         // Check again after API call (use ref for synchronous check)

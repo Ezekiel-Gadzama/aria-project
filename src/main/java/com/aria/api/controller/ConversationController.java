@@ -1725,15 +1725,21 @@ public class ConversationController {
             final String finalTargetUsername = targetUsername;
             
             // Priority ingestion runs independently - it doesn't need to check if main ingestion is running
-            // It's lightweight (just 80 messages) and should run every 5 seconds
+            // It's lightweight (just 50 messages) and should run every 5 seconds
             // Trigger priority ingestion in background thread (non-blocking)
-            // This runs every 5 seconds and always re-ingests the last 80 messages
+            // This runs every 5 seconds and always re-ingests the last 50 messages
             // to check for new messages and deletions
             new Thread(() -> {
                 try {
                     System.out.println("Starting priority ingestion for target user conversation: " + finalTargetUsername);
                     connector.ingestPriorityTarget(finalTargetUsername, acc);
                     System.out.println("Priority ingestion completed for target user: " + finalTargetUsername);
+                    
+                    // CRITICAL: Invalidate cache after priority ingestion completes
+                    // This ensures the next getMessages() call fetches fresh data from database
+                    com.aria.cache.RedisCacheManager cache = com.aria.cache.RedisCacheManager.getInstance();
+                    cache.invalidateMessages(currentUserId, targetUserId);
+                    System.out.println("Cache invalidated for user " + currentUserId + ", target " + targetUserId);
                 } catch (Exception e) {
                     System.err.println("Error in priority ingestion for target user: " + e.getMessage());
                     e.printStackTrace();
