@@ -161,7 +161,8 @@ public class DatabaseManager {
                     raw_json JSONB,
                     reference_id BIGINT,
                     status TEXT DEFAULT 'sent',
-                    last_updated TIMESTAMPTZ
+                    last_updated TIMESTAMPTZ,
+                    pinned BOOLEAN DEFAULT FALSE
                 )
             """;
 
@@ -340,6 +341,8 @@ public class DatabaseManager {
             stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS last_updated TIMESTAMPTZ");
             // Ensure message_link column exists for groups/channels (URL to message)
             stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS message_link TEXT");
+            // Ensure pinned column exists for pinned messages
+            stmt.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS pinned BOOLEAN DEFAULT FALSE");
             // Ensure account_name column exists in platform_accounts
             stmt.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS account_name TEXT");
             

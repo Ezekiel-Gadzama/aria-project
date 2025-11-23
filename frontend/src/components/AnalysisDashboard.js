@@ -151,7 +151,16 @@ function AnalysisDashboard({ userId = 1 }) {
               <>
                 <button 
                   className="btn btn-secondary"
-                  onClick={() => navigate(`/conversations/${targetId}`)}
+                  onClick={() => {
+                    // Preserve subtargetUserId from URL params when navigating back
+                    const urlParams = new URLSearchParams(location.search);
+                    const subtargetUserId = urlParams.get('subtargetUserId');
+                    if (subtargetUserId) {
+                      navigate(`/conversations/${targetId}?subtargetUserId=${subtargetUserId}`);
+                    } else {
+                      navigate(`/conversations/${targetId}`);
+                    }
+                  }}
                   style={{ marginRight: '0.5rem' }}
                 >
                   ← Back to Conversation

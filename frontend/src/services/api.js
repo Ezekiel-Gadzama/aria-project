@@ -148,14 +148,21 @@ export const conversationApi = {
     if (subtargetUserId) params.append('subtargetUserId', subtargetUserId);
     return api.delete(`/conversations/message?${params.toString()}`);
   },
-  sendMedia: (targetUserId, userId, file) => {
+  sendMedia: (targetUserId, userId, file, subtargetUserId) => {
     const form = new FormData();
     form.append('file', file);
-    return api.post(`/conversations/sendMedia?targetUserId=${targetUserId}&userId=${userId}`, form, {
+    const params = new URLSearchParams({
+      targetUserId,
+      userId: userId || 1,
+    });
+    if (subtargetUserId) {
+      params.append('subtargetUserId', subtargetUserId);
+    }
+    return api.post(`/conversations/sendMedia?${params.toString()}`, form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
-  sendMediaWithText: (targetUserId, userId, file, caption, referenceId) => {
+  sendMediaWithText: (targetUserId, userId, file, caption, referenceId, subtargetUserId) => {
     const form = new FormData();
     form.append('file', file);
     if (caption) {
@@ -168,19 +175,40 @@ export const conversationApi = {
     if (referenceId) {
       params.append('referenceId', referenceId);
     }
+    if (subtargetUserId) {
+      params.append('subtargetUserId', subtargetUserId);
+    }
     return api.post(`/conversations/sendMedia?${params.toString()}`, form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
-  replaceMedia: (targetUserId, userId, messageId, file, caption) => {
+  replaceMedia: (targetUserId, userId, messageId, file, caption, subtargetUserId) => {
     const form = new FormData();
     form.append('file', file);
     if (caption) {
       form.append('caption', caption);
     }
-    return api.post(`/conversations/replaceMedia?targetUserId=${targetUserId}&userId=${userId}&messageId=${messageId}`, form, {
+    const params = new URLSearchParams({
+      targetUserId,
+      userId: userId || 1,
+      messageId,
+    });
+    if (subtargetUserId) {
+      params.append('subtargetUserId', subtargetUserId);
+    }
+    return api.post(`/conversations/replaceMedia?${params.toString()}`, form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
+  },
+  pin: (targetUserId, userId, messageId, pin, subtargetUserId = null) => {
+    const params = new URLSearchParams({
+      targetUserId,
+      userId: userId || 1,
+      messageId,
+      pin: pin.toString()
+    });
+    if (subtargetUserId) params.append('subtargetUserId', subtargetUserId);
+    return api.post(`/conversations/pin?${params.toString()}`);
   },
 };
 

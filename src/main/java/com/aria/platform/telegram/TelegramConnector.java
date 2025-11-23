@@ -566,6 +566,58 @@ public class TelegramConnector implements PlatformConnector {
         }
     }
 
+    public boolean pinMessage(String target, int messageId, boolean pin) {
+        if (!isConfigured()) {
+            System.err.println("Telegram connector not configured");
+            return false;
+        }
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                    "python3",
+                    "scripts/telethon/message_pinner.py",
+                    target,
+                    String.valueOf(messageId),
+                    String.valueOf(pin)
+            );
+            Map<String, String> env = processBuilder.environment();
+            env.put("TELEGRAM_API_ID", this.apiId);
+            env.put("TELEGRAM_API_HASH", this.apiHash);
+            env.put("TELEGRAM_PHONE", this.phoneNumber);
+            env.put("TELEGRAM_USERNAME", this.username);
+            env.put("PLATFORM_ACCOUNT_ID", String.valueOf(this.platformAccountId));
+            env.put("TELETHON_LOCK_PATH", "/app/telethon_send.lock");
+            env.put("TELETHON_SESSION_PATH", buildSessionPath(this.username, this.phoneNumber));
+
+            processBuilder.directory(Paths.get("").toAbsolutePath().toFile());
+            processBuilder.redirectErrorStream(true);
+
+            Process process = processBuilder.start();
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("Python: " + line);
+                    output.append(line).append("\n");
+                }
+            }
+            int exitCode = process.waitFor();
+            
+            // Parse JSON response
+            String fullOutput = output.toString().trim();
+            try {
+                com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(fullOutput).getAsJsonObject();
+                return json.has("success") && json.get("success").getAsBoolean();
+            } catch (Exception e) {
+                // Fallback to exit code check
+                return exitCode == 0;
+            }
+        } catch (Exception e) {
+            System.err.println("Exception in pinMessage: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+
     private String buildSessionPath(String username, String phone) {
         String userPart = (username != null && !username.isBlank()) ? username : (phone != null ? phone : "unknown");
         if (userPart.startsWith("@")) userPart = userPart.substring(1);

@@ -221,7 +221,7 @@ public class ConversationController {
                 String placeholders = String.join(",", java.util.Collections.nCopies(dialogRowIds.size(), "?"));
                 String messagesSql = "SELECT m.id, m.message_id, m.sender, m.text, m.timestamp, m.has_media, m.reference_id, " +
                         "CASE WHEN m.last_updated IS NOT NULL AND m.last_updated > m.timestamp THEN TRUE ELSE FALSE END as edited, " +
-                        "m.last_updated, COALESCE(m.status, 'sent') as status, m.dialog_id " +
+                        "m.last_updated, COALESCE(m.status, 'sent') as status, m.dialog_id, COALESCE(m.pinned, FALSE) as pinned " +
                         "FROM messages m WHERE m.dialog_id IN (" + placeholders + ") " +
                         "ORDER BY m.timestamp DESC LIMIT ?";
                 
@@ -655,6 +655,14 @@ public class ConversationController {
                     }
                 }
             }
+        }
+        
+        // Get pinned status (column 12)
+        try {
+            boolean pinned = rs.getBoolean(12);
+            row.put("pinned", pinned);
+        } catch (Exception e) {
+            row.put("pinned", false);
         }
         
         return row;
@@ -1981,6 +1989,7 @@ public class ConversationController {
     public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> sendMedia(
             @RequestParam("targetUserId") Integer targetUserId,
             @RequestParam(value = "userId", required = false) Integer userId,
+            @RequestParam(value = "subtargetUserId", required = false) Integer subtargetUserId,
             @org.springframework.web.bind.annotation.RequestPart("file") org.springframework.web.multipart.MultipartFile file,
             @org.springframework.web.bind.annotation.RequestParam(value = "caption", required = false) String caption,
             @org.springframework.web.bind.annotation.RequestParam(value = "referenceId", required = false) Long referenceId
@@ -1999,13 +2008,38 @@ public class ConversationController {
                 return ResponseEntity.badRequest().body(ApiResponse.error("Target user not found"));
             }
 
-            // Determine platform and account id
-            com.aria.platform.UserPlatform selected = targetUser.getSelectedPlatform();
-            if (selected == null) {
-                return ResponseEntity.badRequest().body(ApiResponse.error("Target user has no selected platform"));
+            // Determine platform and account id - prioritize SubTarget User if provided
+            com.aria.platform.Platform platform = null;
+            int accountId = 0;
+            String targetUsername = null;
+            DatabaseManager.PlatformAccount acc = null;
+            
+            if (subtargetUserId != null) {
+                // Use SubTarget User
+                com.aria.service.SubTargetUserService subTargetUserService = new com.aria.service.SubTargetUserService(databaseManager);
+                com.aria.core.model.SubTargetUser subTarget = subTargetUserService.getSubTargetUserById(subtargetUserId);
+                if (subTarget == null || subTarget.getTargetUserId() != targetUserId) {
+                    return ResponseEntity.badRequest().body(ApiResponse.error("SubTarget user not found or does not belong to this Target user"));
+                }
+                platform = subTarget.getPlatform();
+                accountId = subTarget.getPlatformAccountId();
+                targetUsername = subTarget.getUsername();
+                acc = DatabaseManager.getPlatformAccountById(accountId);
+            } else {
+                // Fallback to legacy platform selection
+                com.aria.platform.UserPlatform selected = targetUser.getSelectedPlatform();
+                if (selected == null) {
+                    return ResponseEntity.badRequest().body(ApiResponse.error("Target user has no selected platform or SubTarget User"));
+                }
+                platform = selected.getPlatform();
+                accountId = selected.getPlatformId();
+                targetUsername = selected.getUsername();
+                acc = DatabaseManager.getPlatformAccountById(accountId);
             }
-            com.aria.platform.Platform platform = selected.getPlatform();
-            int accountId = selected.getPlatformId();
+            
+            if (acc == null) {
+                return ResponseEntity.badRequest().body(ApiResponse.error("Platform account not found"));
+            }
 
             // Determine MIME type and file name
             String mimeType = file.getContentType();
@@ -2015,14 +2049,6 @@ public class ConversationController {
             String fileName = file.getOriginalFilename();
             if (fileName == null || fileName.isEmpty()) {
                 fileName = "media.bin";
-            }
-
-            DatabaseManager.PlatformAccount acc = null;
-            if (platform == com.aria.platform.Platform.TELEGRAM) {
-                acc = DatabaseManager.getPlatformAccountById(accountId);
-                if (acc == null) {
-                    return ResponseEntity.badRequest().body(ApiResponse.error("Platform account not found"));
-                }
             }
 
             // Save file to media folder structure: media/<platform>/user_<username>/<chat_name>_chat/<filename>
@@ -2076,7 +2102,7 @@ public class ConversationController {
                 com.aria.platform.telegram.TelegramConnector connector =
                         (com.aria.platform.telegram.TelegramConnector)
                         com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
-                sendResult = connector.sendMediaAndGetResult(selected.getUsername(), absoluteMediaPath, caption, referenceId);
+                sendResult = connector.sendMediaAndGetResult(targetUsername, absoluteMediaPath, caption, referenceId);
             } else {
                 return ResponseEntity.badRequest().body(ApiResponse.error("Media sending not yet supported for platform: " + platform));
             }
@@ -2105,7 +2131,7 @@ public class ConversationController {
                 try (java.sql.PreparedStatement ps = conn.prepareStatement(
                         "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' AND name = ? ORDER BY id DESC LIMIT 1")) {
                     ps.setInt(1, currentUserId);
-                    ps.setInt(2, selected.getPlatformId());
+                    ps.setInt(2, accountId);
                     ps.setString(3, targetUser.getName());
                     try (java.sql.ResultSet rs = ps.executeQuery()) {
                         if (rs.next()) {
@@ -2119,7 +2145,7 @@ public class ConversationController {
                     try (java.sql.PreparedStatement ps = conn.prepareStatement(
                             "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND dialog_id = ? LIMIT 1")) {
                         ps.setInt(1, currentUserId);
-                        ps.setInt(2, selected.getPlatformId());
+                        ps.setInt(2, accountId);
                         ps.setLong(3, peerId);
                         try (java.sql.ResultSet rs = ps.executeQuery()) {
                             if (rs.next()) {
@@ -2134,7 +2160,7 @@ public class ConversationController {
                     try {
                         dialogRowId = DatabaseManager.saveDialog(
                             currentUserId,
-                            selected.getPlatformId(),
+                            accountId,
                             peerId,
                             targetUser.getName(),
                             "private",
@@ -2233,6 +2259,7 @@ public class ConversationController {
             @RequestParam("targetUserId") Integer targetUserId,
             @RequestParam("messageId") Integer oldMessageId,
             @RequestParam(value = "userId", required = false) Integer userId,
+            @RequestParam(value = "subtargetUserId", required = false) Integer subtargetUserId,
             @org.springframework.web.bind.annotation.RequestPart("file") org.springframework.web.multipart.MultipartFile file,
             @org.springframework.web.bind.annotation.RequestParam(value = "caption", required = false) String caption
     ) {
@@ -2250,21 +2277,41 @@ public class ConversationController {
                 return ResponseEntity.badRequest().body(ApiResponse.error("Target user not found"));
             }
 
-            // Determine platform and account id
-            com.aria.platform.UserPlatform selected = targetUser.getSelectedPlatform();
-            if (selected == null) {
-                return ResponseEntity.badRequest().body(ApiResponse.error("Target user has no selected platform"));
+            // Determine platform and account id - prioritize SubTarget User if provided
+            com.aria.platform.Platform platform = null;
+            int accountId = 0;
+            String targetUsername = null;
+            DatabaseManager.PlatformAccount acc = null;
+            
+            if (subtargetUserId != null) {
+                // Use SubTarget User
+                com.aria.service.SubTargetUserService subTargetUserService = new com.aria.service.SubTargetUserService(databaseManager);
+                com.aria.core.model.SubTargetUser subTarget = subTargetUserService.getSubTargetUserById(subtargetUserId);
+                if (subTarget == null || subTarget.getTargetUserId() != targetUserId) {
+                    return ResponseEntity.badRequest().body(ApiResponse.error("SubTarget user not found or does not belong to this Target user"));
+                }
+                platform = subTarget.getPlatform();
+                accountId = subTarget.getPlatformAccountId();
+                targetUsername = subTarget.getUsername();
+                acc = DatabaseManager.getPlatformAccountById(accountId);
+            } else {
+                // Fallback to legacy platform selection
+                com.aria.platform.UserPlatform selected = targetUser.getSelectedPlatform();
+                if (selected == null) {
+                    return ResponseEntity.badRequest().body(ApiResponse.error("Target user has no selected platform or SubTarget User"));
+                }
+                platform = selected.getPlatform();
+                accountId = selected.getPlatformId();
+                targetUsername = selected.getUsername();
+                acc = DatabaseManager.getPlatformAccountById(accountId);
             }
-            com.aria.platform.Platform platform = selected.getPlatform();
-            int accountId = selected.getPlatformId();
+            
+            if (acc == null) {
+                return ResponseEntity.badRequest().body(ApiResponse.error("Platform account not found"));
+            }
 
             if (platform != com.aria.platform.Platform.TELEGRAM) {
                 return ResponseEntity.badRequest().body(ApiResponse.error("Media replacement only supported for Telegram"));
-            }
-
-            DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(accountId);
-            if (acc == null) {
-                return ResponseEntity.badRequest().body(ApiResponse.error("Platform account not found"));
             }
 
             // Determine MIME type and file name
@@ -2319,7 +2366,7 @@ public class ConversationController {
                     (com.aria.platform.telegram.TelegramConnector)
                     com.aria.platform.ConnectorRegistry.getInstance().getOrCreateTelegramConnector(acc);
             
-            boolean edited = connector.editMediaMessage(selected.getUsername(), oldMessageId, absoluteMediaPath, caption);
+            boolean edited = connector.editMediaMessage(targetUsername, oldMessageId, absoluteMediaPath, caption);
             if (!edited) {
                 return ResponseEntity.internalServerError().body(ApiResponse.error("Failed to edit media message"));
             }
@@ -2340,14 +2387,24 @@ public class ConversationController {
                             ? System.getenv("DATABASE_PASSWORD")
                             : "Ezekiel(23)")) {
                 
-                // Find dialog
-                try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                        "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' AND name = ? ORDER BY id DESC LIMIT 1")) {
-                    ps.setInt(1, currentUserId);
-                    ps.setInt(2, selected.getPlatformId());
-                    ps.setString(3, targetUser.getName());
-                    try (java.sql.ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) dialogRowId = rs.getInt(1);
+                // Find dialog using findDialogForSubTarget helper
+                com.aria.core.model.SubTargetUser currentSubTarget = null;
+                if (subtargetUserId != null) {
+                    com.aria.service.SubTargetUserService subTargetUserService = new com.aria.service.SubTargetUserService(databaseManager);
+                    currentSubTarget = subTargetUserService.getSubTargetUserById(subtargetUserId);
+                }
+                dialogRowId = findDialogForSubTarget(conn, currentUserId, targetUser, currentSubTarget);
+                
+                // Fallback: try direct lookup if helper didn't find it
+                if (dialogRowId == null) {
+                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                            "SELECT id FROM dialogs WHERE user_id = ? AND platform_account_id = ? AND type='private' AND name = ? ORDER BY id DESC LIMIT 1")) {
+                        ps.setInt(1, currentUserId);
+                        ps.setInt(2, accountId);
+                        ps.setString(3, targetUser.getName());
+                        try (java.sql.ResultSet rs = ps.executeQuery()) {
+                            if (rs.next()) dialogRowId = rs.getInt(1);
+                        }
                     }
                 }
                 
@@ -2442,7 +2499,135 @@ public class ConversationController {
                 return ResponseEntity.internalServerError().body(ApiResponse.error("Error editing media: " + e.getMessage()));
             }
         } catch (Exception e) {
-            return ResponseEntity.internalServerError().body(ApiResponse.error("Error replacing media: " + e.getMessage()));
+                return ResponseEntity.internalServerError().body(ApiResponse.error("Error replacing media: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Pin or unpin a message
+     * POST /api/conversations/pin
+     */
+    @PostMapping("/pin")
+    public ResponseEntity<ApiResponse<String>> pinMessage(
+            @RequestParam("targetUserId") Integer targetUserId,
+            @RequestParam("messageId") Long messageId,
+            @RequestParam(value = "userId", required = false) Integer userId,
+            @RequestParam(value = "subtargetUserId", required = false) Integer subtargetUserId,
+            @RequestParam(value = "pin", defaultValue = "true") Boolean pin) {
+        try {
+            int currentUserId = userId != null ? userId : 1;
+            
+            DatabaseManager databaseManager = new DatabaseManager();
+            TargetUserService targetUserService = new TargetUserService(databaseManager);
+            TargetUser targetUser = targetUserService.getTargetUserById(targetUserId);
+            
+            if (targetUser == null) {
+                return ResponseEntity.badRequest().body(ApiResponse.error("Target user not found"));
+            }
+
+            // Find dialog using the same logic as other endpoints
+            com.aria.core.model.SubTargetUser subTargetForDialog = null;
+            if (subtargetUserId != null) {
+                com.aria.service.SubTargetUserService subTargetUserService = new com.aria.service.SubTargetUserService(databaseManager);
+                subTargetForDialog = subTargetUserService.getSubTargetUserById(subtargetUserId);
+            }
+            
+            Integer dialogRowId = null;
+            String dbUrl = System.getenv("DATABASE_URL");
+            java.sql.Connection conn = null;
+            try {
+                if (dbUrl != null && !dbUrl.isEmpty()) {
+                    conn = java.sql.DriverManager.getConnection(dbUrl);
+                } else {
+                    String dbHost = System.getenv("DB_HOST") != null ? System.getenv("DB_HOST") : "localhost";
+                    String dbUser = System.getenv("DATABASE_USER") != null ? System.getenv("DATABASE_USER") : "postgres";
+                    String dbPassword = System.getenv("DATABASE_PASSWORD") != null ? System.getenv("DATABASE_PASSWORD") : "Ezekiel(23)";
+                    conn = java.sql.DriverManager.getConnection("jdbc:postgresql://" + dbHost + ":5432/aria", dbUser, dbPassword);
+                }
+                
+                dialogRowId = findDialogForSubTarget(conn, currentUserId, targetUser, subTargetForDialog);
+                
+                if (dialogRowId == null) {
+                    return ResponseEntity.badRequest().body(ApiResponse.error("Dialog not found"));
+                }
+
+                // Update pinned status in database
+                try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                        "UPDATE messages SET pinned = ? WHERE dialog_id = ? AND message_id = ?")) {
+                    ps.setBoolean(1, pin);
+                    ps.setInt(2, dialogRowId);
+                    ps.setLong(3, messageId);
+                    int updated = ps.executeUpdate();
+                    if (updated == 0) {
+                        return ResponseEntity.badRequest().body(ApiResponse.error("Message not found"));
+                    }
+                }
+            } catch (java.sql.SQLException e) {
+                System.err.println("SQL error in pin endpoint: " + e.getMessage());
+                e.printStackTrace();
+                return ResponseEntity.internalServerError().body(ApiResponse.error("Database error: " + e.getMessage()));
+            } finally {
+                if (conn != null) {
+                    try {
+                        if (!conn.isClosed()) {
+                            conn.close();
+                        }
+                    } catch (java.sql.SQLException e) {
+                        System.err.println("Error closing connection: " + e.getMessage());
+                    }
+                }
+            }
+
+            // Pin/unpin on Telegram if connector is available
+            com.aria.platform.Platform platform = null;
+            int accountId = 0;
+            String targetUsername = null;
+            DatabaseManager.PlatformAccount acc = null;
+            
+            if (subtargetUserId != null) {
+                com.aria.service.SubTargetUserService subTargetUserService = new com.aria.service.SubTargetUserService(databaseManager);
+                com.aria.core.model.SubTargetUser subTarget = subTargetUserService.getSubTargetUserById(subtargetUserId);
+                if (subTarget != null && subTarget.getTargetUserId() == targetUserId) {
+                    platform = subTarget.getPlatform();
+                    accountId = subTarget.getPlatformAccountId();
+                    targetUsername = subTarget.getUsername();
+                    acc = DatabaseManager.getPlatformAccountById(accountId);
+                }
+            } else {
+                // Fallback to legacy platform selection
+                com.aria.platform.UserPlatform selectedPlatform = targetUser.getSelectedPlatform();
+                if (selectedPlatform != null) {
+                    platform = selectedPlatform.getPlatform();
+                    accountId = selectedPlatform.getPlatformId(); // Use platformId as accountId for legacy
+                    targetUsername = selectedPlatform.getUsername();
+                    acc = DatabaseManager.getPlatformAccountById(accountId);
+                }
+            }
+
+            if (platform == com.aria.platform.Platform.TELEGRAM && acc != null && targetUsername != null) {
+                try {
+                    com.aria.platform.telegram.TelegramConnector connector = new com.aria.platform.telegram.TelegramConnector(
+                        acc.apiId, acc.apiHash, acc.number, acc.username, acc.id);
+                    
+                    // Pin/unpin message on Telegram
+                    boolean success = connector.pinMessage(targetUsername, messageId.intValue(), pin);
+                    if (!success) {
+                        System.err.println("Warning: Failed to pin/unpin message on Telegram, but database was updated");
+                    }
+                } catch (Exception e) {
+                    System.err.println("Warning: Error pinning/unpinning message on Telegram: " + e.getMessage());
+                    e.printStackTrace();
+                    // Continue - database was already updated
+                }
+            }
+
+            // Invalidate cache
+            com.aria.cache.RedisCacheManager cache = com.aria.cache.RedisCacheManager.getInstance();
+            cache.invalidateMessages(currentUserId, targetUserId);
+
+            return ResponseEntity.ok(ApiResponse.success(pin ? "Message pinned" : "Message unpinned"));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(ApiResponse.error("Error pinning message: " + e.getMessage()));
         }
     }
 }

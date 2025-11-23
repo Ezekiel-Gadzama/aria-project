@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { targetApi, conversationApi, platformApi } from '../services/api';
 import './ConversationView.css';
 
@@ -63,16 +63,31 @@ const isUrl = (text) => {
 function ConversationView({ userId = 1 }) {
   const { targetId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [subtargetUserId, setSubtargetUserId] = useState(null);
   
-  // Get subtargetUserId from query params
+  // Get subtargetUserId from query params (re-read when location changes)
+  // Also persist it in sessionStorage as a fallback
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(location.search);
     const subtargetId = params.get('subtargetUserId');
     if (subtargetId) {
-      setSubtargetUserId(parseInt(subtargetId));
+      const parsedId = parseInt(subtargetId);
+      setSubtargetUserId(parsedId);
+      // Persist in sessionStorage as fallback
+      sessionStorage.setItem(`subtargetUserId_${targetId}`, parsedId.toString());
+    } else {
+      // Try to restore from sessionStorage if not in URL
+      const storedId = sessionStorage.getItem(`subtargetUserId_${targetId}`);
+      if (storedId) {
+        setSubtargetUserId(parseInt(storedId));
+        // Update URL to include it
+        const newParams = new URLSearchParams(location.search);
+        newParams.set('subtargetUserId', storedId);
+        navigate(`/conversations/${targetId}?${newParams.toString()}`, { replace: true });
+      }
     }
-  }, []);
+  }, [location.search, targetId, navigate]);
   const [target, setTarget] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -105,6 +120,7 @@ function ConversationView({ userId = 1 }) {
   const [contextMenu, setContextMenu] = useState(null); // { x, y, messageId, fromUser } for right-click context menu
   const [lastHighestMessageId, setLastHighestMessageId] = useState(0); // Track highest message ID to detect new messages
   const [mediaViewer, setMediaViewer] = useState(null); // { type: 'image'|'video'|'audio', url, fileName } for media viewer modal
+  const [pinnedMessages, setPinnedMessages] = useState([]); // Array of pinned messages to display at top
 
   useEffect(() => {
     loadTarget();
@@ -576,7 +592,8 @@ function ConversationView({ userId = 1 }) {
         userId, 
         file, 
         messageText,
-        replyToId
+        replyToId,
+        subtargetUserId
       ).then(response => {
         if (response.data?.success && response.data?.data) {
           const messageData = response.data.data;
@@ -706,7 +723,7 @@ function ConversationView({ userId = 1 }) {
       setPendingMediaReplacement(null);
       
       try {
-        const response = await conversationApi.replaceMedia(targetId, userId, msgId, file, messageText);
+        const response = await conversationApi.replaceMedia(targetId, userId, msgId, file, messageText, subtargetUserId);
         if (response.data?.success && response.data?.data) {
           const messageData = response.data.data;
           const updatedMsg = {
@@ -900,17 +917,24 @@ function ConversationView({ userId = 1 }) {
             edited: r.edited || false, // Preserve edited flag from database or API
             referenceId: r.referenceId || null, // Include reference_id for replies
             fileSize: r.fileSize || null, // Include file size
+            pinned: r.pinned || false, // Include pinned status
           };
         });
         // CRITICAL: Filter out deleted messages before setting state
         // This ensures deleted messages never appear even on initial load
         const filteredLoadedMessages = loadedMessages.filter(msg => !deletedMessageIds.has(msg.messageId));
-        setMessages(filteredLoadedMessages);
-        console.log(`Loaded ${filteredLoadedMessages.length} messages for target ${targetId}`);
+        
+        // Extract pinned messages and separate them
+        const pinned = filteredLoadedMessages.filter(msg => msg.pinned).sort((a, b) => b.messageId - a.messageId);
+        const unpinned = filteredLoadedMessages.filter(msg => !msg.pinned);
+        
+        setPinnedMessages(pinned);
+        setMessages(unpinned);
+        console.log(`Loaded ${filteredLoadedMessages.length} messages for target ${targetId} (${pinned.length} pinned)`);
         
         // Track highest message ID for new message detection
-        if (loadedMessages.length > 0) {
-          const highestId = Math.max(...loadedMessages.map(m => m.messageId || 0));
+        if (filteredLoadedMessages.length > 0) {
+          const highestId = Math.max(...filteredLoadedMessages.map(m => m.messageId || 0));
           setLastHighestMessageId(highestId);
         }
         
@@ -1255,12 +1279,17 @@ function ConversationView({ userId = 1 }) {
                       }
                     }
                     
-                    // Navigate with platform account ID in URL params for auto-filtering
+                    // Navigate with platform account ID and subtargetUserId in URL params
+                    // This preserves the subtargetUserId so we can navigate back correctly
+                    const params = new URLSearchParams();
                     if (platformAccountId) {
-                      navigate(`/analysis/${targetId}?platformAccountId=${platformAccountId}`);
-                    } else {
-                      navigate(`/analysis/${targetId}`);
+                      params.append('platformAccountId', platformAccountId);
                     }
+                    if (subtargetUserId) {
+                      params.append('subtargetUserId', subtargetUserId);
+                    }
+                    const queryString = params.toString();
+                    navigate(`/analysis/${targetId}${queryString ? '?' + queryString : ''}`);
                   }}
                 >
                   View Analysis
@@ -1281,54 +1310,141 @@ function ConversationView({ userId = 1 }) {
               </button>
             </div>
           </div>
-            <div className="toolbar" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8, gap: 8 }}>
-              <button
-                className="btn btn-secondary"
-                onClick={() => {
-                  if (isMultiSelectMode) {
-                    // Clear selection when exiting multi-select mode
-                    setSelectedMessages(new Set());
-                  }
-                  setIsMultiSelectMode(!isMultiSelectMode);
-                }}
-                style={{ fontSize: '0.85rem' }}
-              >
-                {isMultiSelectMode ? '✕ Cancel Select' : '✓ Select Messages'}
-              </button>
-              <label className="btn btn-secondary" style={{ marginLeft: 0 }}>
-                Upload Media
-                <input
-                  type="file"
-                  accept="image/*,video/*,audio/*,application/pdf"
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    
-                    // Create preview URL
-                    const preview = URL.createObjectURL(file);
-                    setPendingMedia({ file, preview });
-                    
-                    // Clear file input
-                    e.target.value = '';
-                  }}
-                />
-              </label>
-              {pendingMedia && (
-                <button
-                  className="btn btn-secondary"
-                  style={{ marginLeft: 8 }}
-                  onClick={() => {
-                    setPendingMedia(null);
-                    if (pendingMedia.preview) {
-                      URL.revokeObjectURL(pendingMedia.preview);
-                    }
-                  }}
-                >
-                  Remove Media
-                </button>
+          
+          {/* Multi-select Mode Controls - positioned just below header */}
+          {isMultiSelectMode && (
+            <div style={{
+              background: '#667eea',
+              color: 'white',
+              padding: '8px 16px',
+              borderRadius: '8px',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+              marginBottom: '8px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '12px',
+              width: 'auto'
+            }}>
+              <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>{selectedMessages.size} selected</span>
+              {selectedMessages.size > 0 && (
+                <>
+                  <button
+                    style={{
+                      background: 'rgba(255,255,255,0.2)',
+                      border: 'none',
+                      color: 'white',
+                      padding: '4px 10px',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '0.85rem'
+                    }}
+                    onClick={() => {
+                      // Copy selected messages
+                      const selectedTexts = Array.from(selectedMessages)
+                        .map(id => {
+                          const msg = messages.find(m => m.messageId === id);
+                          return msg ? (msg.text || (msg.hasMedia ? 'Media' : 'Message')) : '';
+                        })
+                        .filter(t => t)
+                        .join('\n');
+                      navigator.clipboard.writeText(selectedTexts).then(() => {
+                        setError('Selected messages copied to clipboard');
+                        setTimeout(() => setError(null), 2000);
+                      });
+                    }}
+                  >
+                    📋 Copy
+                  </button>
+                  <button
+                    style={{
+                      background: 'rgba(255,255,255,0.2)',
+                      border: 'none',
+                      color: 'white',
+                      padding: '4px 10px',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '0.85rem'
+                    }}
+                    onClick={async () => {
+                      // Delete selected messages - track all deleted IDs
+                      const selectedArray = Array.from(selectedMessages);
+                      
+                      // Track all selected messages as deleted
+                      setDeletedMessageIds(prev => new Set([...prev, ...selectedArray]));
+                      
+                      // Remove from UI immediately
+                      setMessages(prev => prev.filter(m => !selectedArray.includes(m.messageId)));
+                      
+                      // Clear selection and exit multi-select mode
+                      setSelectedMessages(new Set());
+                      setIsMultiSelectMode(false);
+                      
+                      // Pause polling while deletions are in progress
+                      setIsOperationInProgress(true);
+                      
+                      // Delete each message from Telegram
+                      try {
+                        await Promise.all(selectedArray.map(async (messageId) => {
+                          try {
+                            await conversationApi.delete(targetId, userId, messageId, true, subtargetUserId);
+                          } catch (err) {
+                            console.error(`Failed to delete message ${messageId}:`, err);
+                          }
+                        }));
+                        
+                        // Wait for deletions to complete
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        
+                        // Keep deleted messages tracked for 30 seconds
+                        setTimeout(() => {
+                          setDeletedMessageIds(prev => {
+                            const updated = new Set(prev);
+                            selectedArray.forEach(id => updated.delete(id));
+                            return updated;
+                          });
+                        }, 30000);
+                      } catch (err) {
+                        console.error('Error deleting selected messages:', err);
+                        // If deletion fails, reload messages to restore
+                        setTimeout(() => loadMessages(), 1000);
+                        // Remove from tracking since deletion failed
+                        setDeletedMessageIds(prev => {
+                          const updated = new Set(prev);
+                          selectedArray.forEach(id => updated.delete(id));
+                          return updated;
+                        });
+                      } finally {
+                        // Resume polling after deletions complete
+                        setTimeout(() => {
+                          setIsOperationInProgress(false);
+                        }, 2500);
+                      }
+                    }}
+                  >
+                    🗑️ Delete
+                  </button>
+                  <button
+                    style={{
+                      background: 'rgba(255,255,255,0.2)',
+                      border: 'none',
+                      color: 'white',
+                      padding: '4px 10px',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '0.85rem'
+                    }}
+                    onClick={() => {
+                      setSelectedMessages(new Set());
+                      setIsMultiSelectMode(false);
+                    }}
+                  >
+                    ✕ Cancel
+                  </button>
+                </>
               )}
             </div>
+          )}
+          
             <div 
               ref={messagesContainerRef}
               className="messages-container"
@@ -1342,7 +1458,68 @@ function ConversationView({ userId = 1 }) {
                 }
               }}
             >
-              {messages.length === 0 ? (
+              {/* Pinned Messages Section */}
+              {pinnedMessages.length > 0 && (
+                <div style={{ 
+                  padding: '8px', 
+                  background: 'rgba(102, 126, 234, 0.1)', 
+                  borderBottom: '2px solid #667eea',
+                  marginBottom: '8px'
+                }}>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 'bold', marginBottom: '4px', color: '#667eea' }}>
+                    📌 Pinned Messages
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {pinnedMessages.map((pinnedMsg, idx) => {
+                      const displayText = pinnedMsg.hasMedia 
+                        ? (pinnedMsg.fileName || 'Media')
+                        : (pinnedMsg.text || 'Message');
+                      const truncatedText = displayText.length > 50 
+                        ? displayText.substring(0, 50) + '...'
+                        : displayText;
+                      
+                      return (
+                        <div
+                          key={idx}
+                          onClick={() => {
+                            // Scroll to the pinned message
+                            const messageEl = document.querySelector(`[data-message-id="${pinnedMsg.messageId}"]`);
+                            if (messageEl) {
+                              messageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                              // Highlight the message briefly
+                              messageEl.style.background = 'rgba(102, 126, 234, 0.2)';
+                              setTimeout(() => {
+                                messageEl.style.background = '';
+                              }, 1000);
+                            }
+                          }}
+                          style={{
+                            padding: '6px 8px',
+                            background: 'white',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '0.85rem',
+                            border: '1px solid #667eea',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
+                          }}
+                          onMouseEnter={(e) => e.target.style.background = '#f0f0f0'}
+                          onMouseLeave={(e) => e.target.style.background = 'white'}
+                        >
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {truncatedText}
+                          </span>
+                          <span style={{ fontSize: '0.7rem', color: '#666', marginLeft: '8px' }}>
+                            {new Date(pinnedMsg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {messages.length === 0 && pinnedMessages.length === 0 ? (
                 <div className="empty-messages">
                   <p>No messages yet. {conversationInitialized ? 'Start the conversation!' : 'Messages will appear here once ingestion is complete.'}</p>
                 </div>
@@ -1381,8 +1558,10 @@ function ConversationView({ userId = 1 }) {
                           if (touchStartY && touchEndY < touchStartY - 50) { // Swipe up more than 50px
                             setReplyingTo({
                               messageId: msg.messageId,
-                              text: msg.text || (msg.hasMedia ? 'Media' : 'Message'),
-                              fromUser: msg.fromUser
+                              text: msg.hasMedia ? (msg.fileName || 'Media') : (msg.text || 'Message'),
+                              fromUser: msg.fromUser,
+                              hasMedia: msg.hasMedia || false,
+                              fileName: msg.fileName || null
                             });
                             // Focus the message input field after a brief delay to ensure state update
                             setTimeout(() => {
@@ -1395,15 +1574,20 @@ function ConversationView({ userId = 1 }) {
                       }}
                       onContextMenu={(e) => {
                         e.preventDefault();
+                        e.stopPropagation();
                         // Don't show context menu in multi-select mode
                         if (isMultiSelectMode) return;
+                        // Get the message element to position context menu relative to it
+                        const messageElement = e.currentTarget;
+                        const rect = messageElement.getBoundingClientRect();
                         setContextMenu({
-                          x: e.pageX,
-                          y: e.pageY,
+                          x: rect.right + 8, // Position to the right of the message
+                          y: rect.top, // Position at the top of the message
                           messageId: msg.messageId,
                           fromUser: msg.fromUser,
                           hasMedia: msg.hasMedia || false,
-                          text: msg.text || ''
+                          text: msg.text || '',
+                          fileName: msg.fileName || null
                         });
                       }}
                       onClick={(e) => {
@@ -1460,7 +1644,7 @@ function ConversationView({ userId = 1 }) {
                         }}
                         title="Click to scroll to referenced message"
                       >
-                        {repliedToMsg.fromUser ? 'You' : target?.name}: {repliedToMsg.text || (repliedToMsg.hasMedia ? 'Media' : 'Message')}
+                        {repliedToMsg.fromUser ? 'You' : target?.name}: {repliedToMsg.hasMedia ? (repliedToMsg.fileName ? repliedToMsg.fileName : 'Media') : (repliedToMsg.text || 'Message')}
                       </div>
                     )}
                     {!repliedToMsg && msg.referenceId && (
@@ -1499,7 +1683,6 @@ function ConversationView({ userId = 1 }) {
                           e.stopPropagation();
                         }
                       }}
-                      onContextMenu={(e) => e.stopPropagation()}
                     >
                       {(() => {
                         // Check if this is just a link (not actual downloadable media)
@@ -1569,50 +1752,64 @@ function ConversationView({ userId = 1 }) {
                                   )}
                                 </div>
                               )}
+                              {/* Show text if present */}
+                              {msg.text && msg.text.trim() && (
+                                <div style={{ marginTop: 8 }}>
+                                  {renderTextWithLinks(msg.text)}
+                                </div>
+                              )}
                             </div>
                           );
                         } else if (msg.hasMedia && msg.mediaUrl && (msg.mediaUrl.match(/\.(ogg|oga|mp3|m4a|wav|opus)$/i) || msg.mimeType?.match(/^audio\//))) {
                           // Audio/voice note player
                           return (
-                            <div style={{ 
-                              padding: '12px', 
-                              background: 'rgba(255,255,255,0.1)', 
-                              borderRadius: 8,
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '12px',
-                              minWidth: '200px'
-                            }}>
-                              <audio 
-                                src={msg.mediaUrl} 
-                                controls 
-                                style={{ flex: 1, maxWidth: '100%' }}
-                                onClick={(e) => e.stopPropagation()}
-                                onError={(e) => {
-                                  console.error('Failed to load audio:', msg.mediaUrl);
-                                }}
-                              />
-                              {msg.fileName && (
-                                <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.8)' }}>
-                                  {msg.fileName}
-                                </span>
-                              )}
-                              {msg.mediaUrl && (
-                                <a 
-                                  href={msg.mediaUrl} 
-                                  download={msg.fileName || 'audio.ogg'}
+                            <div>
+                              <div style={{ 
+                                padding: '12px', 
+                                background: 'rgba(255,255,255,0.1)', 
+                                borderRadius: 8,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '12px',
+                                minWidth: '200px'
+                              }}>
+                                <audio 
+                                  src={msg.mediaUrl} 
+                                  controls 
+                                  style={{ flex: 1, maxWidth: '100%' }}
                                   onClick={(e) => e.stopPropagation()}
-                                  style={{ 
-                                    padding: '4px 8px', 
-                                    background: 'rgba(255,255,255,0.2)', 
-                                    color: 'white', 
-                                    textDecoration: 'none', 
-                                    borderRadius: 4,
-                                    fontSize: '0.7rem'
+                                  onError={(e) => {
+                                    console.error('Failed to load audio:', msg.mediaUrl);
                                   }}
-                                >
-                                  ⬇
-                                </a>
+                                />
+                                {msg.fileName && (
+                                  <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.8)' }}>
+                                    {msg.fileName}
+                                  </span>
+                                )}
+                                {msg.mediaUrl && (
+                                  <a 
+                                    href={msg.mediaUrl} 
+                                    download={msg.fileName || 'audio.ogg'}
+                                    onClick={(e) => e.stopPropagation()}
+                                    style={{ 
+                                      padding: '4px 8px', 
+                                      background: 'rgba(255,255,255,0.2)', 
+                                      color: 'white', 
+                                      textDecoration: 'none', 
+                                      borderRadius: 4,
+                                      fontSize: '0.7rem'
+                                    }}
+                                  >
+                                    ⬇
+                                  </a>
+                                )}
+                              </div>
+                              {/* Show text if present */}
+                              {msg.text && msg.text.trim() && (
+                                <div style={{ marginTop: 8 }}>
+                                  {renderTextWithLinks(msg.text)}
+                                </div>
                               )}
                             </div>
                           );
@@ -1678,94 +1875,108 @@ function ConversationView({ userId = 1 }) {
                                   )}
                                 </div>
                               )}
+                              {/* Show text if present */}
+                              {msg.text && msg.text.trim() && (
+                                <div style={{ marginTop: 8 }}>
+                                  {renderTextWithLinks(msg.text)}
+                                </div>
+                              )}
                             </div>
                           );
                         } else if (msg.hasMedia && msg.mediaUrl) {
                           return (
                             // Display files (PDF, documents, etc.) - similar to Telegram style
-                            <div 
-                              style={{ 
-                                padding: '8px 12px', 
-                                border: '1px solid rgba(255,255,255,0.3)', 
-                                borderRadius: 8, 
-                                background: 'rgba(255,255,255,0.1)',
-                                cursor: msg.mediaUrl ? 'pointer' : 'default',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '12px'
-                              }}
-                              onClick={(e) => {
-                                if (!msg.mediaUrl) {
+                            <div>
+                              <div 
+                                style={{ 
+                                  padding: '8px 12px', 
+                                  border: '1px solid rgba(255,255,255,0.3)', 
+                                  borderRadius: 8, 
+                                  background: 'rgba(255,255,255,0.1)',
+                                  cursor: msg.mediaUrl ? 'pointer' : 'default',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '12px'
+                                }}
+                                onClick={(e) => {
+                                  if (!msg.mediaUrl) {
+                                    e.stopPropagation();
+                                    return;
+                                  }
                                   e.stopPropagation();
-                                  return;
-                                }
-                                e.stopPropagation();
-                                // Open file in new tab
-                                window.open(msg.mediaUrl, '_blank');
-                              }}
-                            >
-                              {/* File icon - circular with document icon */}
-                              <div style={{
-                                width: '40px',
-                                height: '40px',
-                                borderRadius: '50%',
-                                background: 'rgba(255,255,255,0.2)',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '20px',
-                                flexShrink: 0
-                              }}>
-                                📄
-                              </div>
-                              {/* File info */}
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ 
-                                  fontWeight: 'bold', 
-                                  color: 'white',
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap',
-                                  fontSize: '0.9rem'
+                                  // Open file in new tab
+                                  window.open(msg.mediaUrl, '_blank');
+                                }}
+                              >
+                                {/* File icon - circular with document icon */}
+                                <div style={{
+                                  width: '40px',
+                                  height: '40px',
+                                  borderRadius: '50%',
+                                  background: 'rgba(255,255,255,0.2)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontSize: '20px',
+                                  flexShrink: 0
                                 }}>
-                                  {msg.fileName && msg.fileName.trim() ? msg.fileName : 'Media file'}
+                                  📄
                                 </div>
-                                {msg.fileSize && (
-                                  <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.7)', marginTop: '2px' }}>
-                                    {(msg.fileSize / 1024).toFixed(1)} KB
+                                {/* File info */}
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ 
+                                    fontWeight: 'bold', 
+                                    color: 'white',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                    fontSize: '0.9rem'
+                                  }}>
+                                    {msg.fileName && msg.fileName.trim() ? msg.fileName : 'Media file'}
                                   </div>
+                                  {msg.fileSize && (
+                                    <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.7)', marginTop: '2px' }}>
+                                      {(msg.fileSize / 1024).toFixed(1)} KB
+                                    </div>
+                                  )}
+                                </div>
+                                {/* Download button - only show if mediaUrl exists */}
+                                {msg.mediaUrl && (
+                                  <a 
+                                    href={msg.mediaUrl} 
+                                    download={msg.fileName && msg.fileName.trim() ? msg.fileName : 'media'}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      // Force download
+                                      e.preventDefault();
+                                      const link = document.createElement('a');
+                                      link.href = msg.mediaUrl;
+                                      link.download = msg.fileName && msg.fileName.trim() ? msg.fileName : 'media';
+                                      document.body.appendChild(link);
+                                      link.click();
+                                      document.body.removeChild(link);
+                                    }}
+                                    style={{ 
+                                      padding: '6px 12px', 
+                                      background: 'rgba(255,255,255,0.2)', 
+                                      color: 'white', 
+                                      textDecoration: 'none', 
+                                      borderRadius: 6,
+                                      fontSize: '0.75rem',
+                                      cursor: 'pointer',
+                                      fontWeight: 'bold',
+                                      flexShrink: 0
+                                    }}
+                                  >
+                                    Download
+                                  </a>
                                 )}
                               </div>
-                              {/* Download button - only show if mediaUrl exists */}
-                              {msg.mediaUrl && (
-                                <a 
-                                  href={msg.mediaUrl} 
-                                  download={msg.fileName && msg.fileName.trim() ? msg.fileName : 'media'}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    // Force download
-                                    e.preventDefault();
-                                    const link = document.createElement('a');
-                                    link.href = msg.mediaUrl;
-                                    link.download = msg.fileName && msg.fileName.trim() ? msg.fileName : 'media';
-                                    document.body.appendChild(link);
-                                    link.click();
-                                    document.body.removeChild(link);
-                                  }}
-                                  style={{ 
-                                    padding: '6px 12px', 
-                                    background: 'rgba(255,255,255,0.2)', 
-                                    color: 'white', 
-                                    textDecoration: 'none', 
-                                    borderRadius: 6,
-                                    fontSize: '0.75rem',
-                                    cursor: 'pointer',
-                                    fontWeight: 'bold',
-                                    flexShrink: 0
-                                  }}
-                                >
-                                  Download
-                                </a>
+                              {/* Show text if present */}
+                              {msg.text && msg.text.trim() && (
+                                <div style={{ marginTop: 8 }}>
+                                  {renderTextWithLinks(msg.text)}
+                                </div>
                               )}
                             </div>
                           );
@@ -1814,80 +2025,6 @@ function ConversationView({ userId = 1 }) {
                         </span>
                       )}
                     </div>
-                    {msg.fromUser && msg.messageId !== undefined && (
-                      <div className="message-actions" style={{ display: 'flex', gap: 4, marginTop: 2 }}>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem' }}
-                          onClick={() => {
-                            setSelectedMessageId(msg.messageId);
-                            setEditText(msg.text || '');
-                            setSelectedMessageHasMedia(msg.hasMedia || false);
-                            setPendingMediaReplacement(null); // Clear any pending replacement
-                          }}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem' }}
-                          onClick={() => handleDelete(msg.messageId)}
-                        >
-                          Delete
-                        </button>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem' }}
-                          onClick={() => {
-                            setReplyingTo({
-                              messageId: msg.messageId,
-                              text: msg.text || (msg.hasMedia ? 'Media' : 'Message'),
-                              fromUser: msg.fromUser
-                            });
-                            // Focus the message input field after a brief delay to ensure state update
-                            setTimeout(() => {
-                              if (messageInputRef.current) {
-                                messageInputRef.current.focus();
-                              }
-                            }, 100);
-                          }}
-                          title="Reply to this message"
-                        >
-                          Reply
-                        </button>
-                      </div>
-                    )}
-                    {!msg.fromUser && msg.messageId !== undefined && (
-                      <div className="message-actions" style={{ display: 'flex', gap: 4, marginTop: 2 }}>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem', background: '#f5f5f5', color: '#333' }}
-                          onClick={() => {
-                            setReplyingTo({
-                              messageId: msg.messageId,
-                              text: msg.text || (msg.hasMedia ? 'Media' : 'Message'),
-                              fromUser: msg.fromUser
-                            });
-                            // Focus the message input field after a brief delay to ensure state update
-                            setTimeout(() => {
-                              if (messageInputRef.current) {
-                                messageInputRef.current.focus();
-                              }
-                            }, 100);
-                          }}
-                          title="Reply to this message"
-                        >
-                          Reply
-                        </button>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem', background: '#f5f5f5', color: '#333' }}
-                          onClick={() => handleDelete(msg.messageId)}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    )}
                     </div>
                     {/* Multi-select checkbox - positioned to the extreme right */}
                     {isMultiSelectMode && (
@@ -2093,13 +2230,45 @@ function ConversationView({ userId = 1 }) {
                   {pendingMedia.preview && pendingMedia.file.type.startsWith('image/') ? (
                     <img src={pendingMedia.preview} alt="Preview" style={{ maxWidth: '60px', maxHeight: '60px', borderRadius: 4 }} />
                   ) : (
-                    <div style={{ padding: '4px 6px', background: '#fff', borderRadius: 4, fontSize: '0.8rem' }}>
-                      📎 {pendingMedia.file.name}
+                    <div style={{ padding: '4px 6px', background: '#fff', borderRadius: 4, fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: '40px', minHeight: '40px' }}>
+                      📎
                     </div>
                   )}
-                  <span style={{ flex: 1, fontSize: '0.85rem', color: '#666' }}>
-                    {pendingMedia.file.name} ({(pendingMedia.file.size / 1024).toFixed(1)} KB)
-                  </span>
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                    <span style={{ fontSize: '0.85rem', color: '#333', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {pendingMedia.file.name}
+                    </span>
+                    <span style={{ fontSize: '0.75rem', color: '#666' }}>
+                      ({(pendingMedia.file.size / 1024).toFixed(1)} KB)
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setPendingMedia(null);
+                      if (pendingMedia.preview) {
+                        URL.revokeObjectURL(pendingMedia.preview);
+                      }
+                    }}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      padding: '4px 8px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#666',
+                      fontSize: '18px',
+                      lineHeight: 1,
+                      borderRadius: '4px',
+                      flexShrink: 0,
+                    }}
+                    onMouseEnter={(e) => e.target.style.background = '#e0e0e0'}
+                    onMouseLeave={(e) => e.target.style.background = 'transparent'}
+                    title="Remove media"
+                  >
+                    ✕
+                  </button>
                 </div>
               </div>
             )}
@@ -2116,7 +2285,7 @@ function ConversationView({ userId = 1 }) {
                 fontSize: '0.85rem'
               }}>
                 <div>
-                  <strong>Replying to:</strong> {replyingTo.text || (replyingTo.hasMedia ? 'Media' : 'Message')}
+                  <strong>Replying to:</strong> {replyingTo.hasMedia ? (replyingTo.fileName ? `"${replyingTo.fileName}"` : 'Media') : (replyingTo.text || 'Message')}
                 </div>
                 <button
                   className="btn btn-secondary btn-sm"
@@ -2127,7 +2296,37 @@ function ConversationView({ userId = 1 }) {
                 </button>
               </div>
             )}
-            <form onSubmit={handleSendMessage} className="message-form">
+            <form onSubmit={handleSendMessage} className="message-form" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <label style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'center',
+                padding: '8px',
+                cursor: 'pointer',
+                borderRadius: '50%',
+                background: '#f0f0f0',
+                width: '36px',
+                height: '36px',
+                flexShrink: 0
+              }}>
+                📎
+                <input
+                  type="file"
+                  accept="image/*,video/*,audio/*,application/pdf"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    
+                    // Create preview URL
+                    const preview = URL.createObjectURL(file);
+                    setPendingMedia({ file, preview });
+                    
+                    // Clear file input
+                    e.target.value = '';
+                  }}
+                />
+              </label>
               <input
                 ref={messageInputRef}
                 type="text"
@@ -2140,6 +2339,7 @@ function ConversationView({ userId = 1 }) {
                     : "Type a message..."}
                 className="message-input"
                 disabled={selectedMessageId !== null}
+                style={{ flex: 1 }}
               />
               <button 
                 type="button" 
@@ -2178,7 +2378,9 @@ function ConversationView({ userId = 1 }) {
                 boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
                 zIndex: 1000,
                 minWidth: '150px',
-                padding: '4px 0'
+                padding: '4px 0',
+                maxHeight: '90vh',
+                overflowY: 'auto'
               }}
               onClick={(e) => e.stopPropagation()}
             >
@@ -2187,8 +2389,10 @@ function ConversationView({ userId = 1 }) {
                 onClick={() => {
                   setReplyingTo({
                     messageId: contextMenu.messageId,
-                    text: contextMenu.text || (contextMenu.hasMedia ? 'Media' : 'Message'),
-                    fromUser: contextMenu.fromUser
+                    text: contextMenu.hasMedia ? (contextMenu.fileName || 'Media') : (contextMenu.text || 'Message'),
+                    fromUser: contextMenu.fromUser,
+                    hasMedia: contextMenu.hasMedia || false,
+                    fileName: contextMenu.fileName || null
                   });
                   setContextMenu(null);
                   setTimeout(() => {
@@ -2220,15 +2424,30 @@ function ConversationView({ userId = 1 }) {
               )}
               <div
                 style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}
-                onClick={() => {
-                  // Pin functionality (placeholder)
-                  console.log('Pin message:', contextMenu.messageId);
+                onClick={async () => {
+                  try {
+                    const msg = messages.find(m => m.messageId === contextMenu.messageId);
+                    const isPinned = msg?.pinned || false;
+                    await conversationApi.pin(targetId, userId, contextMenu.messageId, !isPinned, subtargetUserId);
+                    // Update local state
+                    setMessages(prev => prev.map(m => 
+                      m.messageId === contextMenu.messageId 
+                        ? { ...m, pinned: !isPinned }
+                        : m
+                    ));
+                    // Reload messages to get updated pinned status
+                    await loadMessages();
+                  } catch (err) {
+                    console.error('Error pinning message:', err);
+                    setError('Failed to pin message');
+                    setTimeout(() => setError(null), 3000);
+                  }
                   setContextMenu(null);
                 }}
                 onMouseEnter={(e) => e.target.style.background = '#f5f5f5'}
                 onMouseLeave={(e) => e.target.style.background = 'transparent'}
               >
-                📌 Pin
+                {messages.find(m => m.messageId === contextMenu.messageId)?.pinned ? '📌 Unpin' : '📌 Pin'}
               </div>
               <div
                 style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}
@@ -2246,18 +2465,6 @@ function ConversationView({ userId = 1 }) {
                 onMouseLeave={(e) => e.target.style.background = 'transparent'}
               >
                 📋 Copy Text
-              </div>
-              <div
-                style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}
-                onClick={() => {
-                  // Forward functionality (placeholder)
-                  console.log('Forward message:', contextMenu.messageId);
-                  setContextMenu(null);
-                }}
-                onMouseEnter={(e) => e.target.style.background = '#f5f5f5'}
-                onMouseLeave={(e) => e.target.style.background = 'transparent'}
-              >
-                ➡️ Forward
               </div>
               <div
                 style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}
@@ -2287,139 +2494,6 @@ function ConversationView({ userId = 1 }) {
           </>
         )}
 
-        {/* Multi-select Mode Controls */}
-        {isMultiSelectMode && (
-          <div style={{
-            position: 'fixed',
-            bottom: '80px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: '#667eea',
-            color: 'white',
-            padding: '12px 24px',
-            borderRadius: '25px',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
-            zIndex: 1000,
-            display: 'flex',
-            alignItems: 'center',
-            gap: '16px'
-          }}>
-            <span>{selectedMessages.size} selected</span>
-            {selectedMessages.size > 0 && (
-              <>
-                <button
-                  style={{
-                    background: 'rgba(255,255,255,0.2)',
-                    border: 'none',
-                    color: 'white',
-                    padding: '6px 12px',
-                    borderRadius: '6px',
-                    cursor: 'pointer'
-                  }}
-                  onClick={() => {
-                    // Copy selected messages
-                    const selectedTexts = Array.from(selectedMessages)
-                      .map(id => {
-                        const msg = messages.find(m => m.messageId === id);
-                        return msg ? (msg.text || (msg.hasMedia ? 'Media' : 'Message')) : '';
-                      })
-                      .filter(t => t)
-                      .join('\n');
-                    navigator.clipboard.writeText(selectedTexts).then(() => {
-                      setError('Selected messages copied to clipboard');
-                      setTimeout(() => setError(null), 2000);
-                    });
-                  }}
-                >
-                  📋 Copy
-                </button>
-                <button
-                  style={{
-                    background: 'rgba(255,255,255,0.2)',
-                    border: 'none',
-                    color: 'white',
-                    padding: '6px 12px',
-                    borderRadius: '6px',
-                    cursor: 'pointer'
-                  }}
-                  onClick={async () => {
-                    // Delete selected messages - track all deleted IDs
-                    const selectedArray = Array.from(selectedMessages);
-                    
-                    // Track all selected messages as deleted
-                    setDeletedMessageIds(prev => new Set([...prev, ...selectedArray]));
-                    
-                    // Remove from UI immediately
-                    setMessages(prev => prev.filter(m => !selectedArray.includes(m.messageId)));
-                    
-                    // Clear selection and exit multi-select mode
-                    setSelectedMessages(new Set());
-                    setIsMultiSelectMode(false);
-                    
-                    // Pause polling while deletions are in progress
-                    setIsOperationInProgress(true);
-                    
-                    // Delete each message from Telegram
-                    try {
-                      await Promise.all(selectedArray.map(async (messageId) => {
-                        try {
-                          await conversationApi.delete(targetId, userId, messageId, true, subtargetUserId);
-                        } catch (err) {
-                          console.error(`Failed to delete message ${messageId}:`, err);
-                        }
-                      }));
-                      
-                      // Wait for deletions to complete
-                      await new Promise(resolve => setTimeout(resolve, 2000));
-                      
-                      // Keep deleted messages tracked for 30 seconds
-                      setTimeout(() => {
-                        setDeletedMessageIds(prev => {
-                          const updated = new Set(prev);
-                          selectedArray.forEach(id => updated.delete(id));
-                          return updated;
-                        });
-                      }, 30000);
-                    } catch (err) {
-                      console.error('Error deleting selected messages:', err);
-                      // If deletion fails, reload messages to restore
-                      setTimeout(() => loadMessages(), 1000);
-                      // Remove from tracking since deletion failed
-                      setDeletedMessageIds(prev => {
-                        const updated = new Set(prev);
-                        selectedArray.forEach(id => updated.delete(id));
-                        return updated;
-                      });
-                    } finally {
-                      // Resume polling after deletions complete
-                      setTimeout(() => {
-                        setIsOperationInProgress(false);
-                      }, 2500);
-                    }
-                  }}
-                >
-                  🗑️ Delete
-                </button>
-                <button
-                  style={{
-                    background: 'rgba(255,255,255,0.2)',
-                    border: 'none',
-                    color: 'white',
-                    padding: '6px 12px',
-                    borderRadius: '6px',
-                    cursor: 'pointer'
-                  }}
-                    onClick={() => {
-                      setSelectedMessages(new Set());
-                      // Don't exit multi-select mode on clear, just clear selection
-                    }}
-                  >
-                    ✕ Clear
-                  </button>
-                </>
-              )}
-            </div>
-          )}
 
         {/* Media Viewer Modal */}
         {mediaViewer && (
