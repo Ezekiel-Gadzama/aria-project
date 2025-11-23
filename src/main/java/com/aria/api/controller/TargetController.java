@@ -86,13 +86,19 @@ public class TargetController {
                         }
                     }
                     
-                    // Load profile_json
+                    // Load profile_json and profile_picture_url
                     try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                            "SELECT profile_json FROM target_users WHERE id = ?")) {
+                            "SELECT profile_json, profile_picture_url FROM target_users WHERE id = ?")) {
                         ps.setInt(1, target.getTargetId());
                         try (ResultSet rs = ps.executeQuery()) {
                             if (rs.next()) {
-                                String profileJson = rs.getString(1);
+                                // Load profile picture URL
+                                String profilePictureUrl = rs.getString("profile_picture_url");
+                                if (profilePictureUrl != null && !profilePictureUrl.isEmpty()) {
+                                    dto.setProfilePictureUrl(profilePictureUrl);
+                                }
+                                
+                                String profileJson = rs.getString("profile_json");
                                 if (profileJson != null && !profileJson.isEmpty()) {
                                     org.json.JSONObject profile = new org.json.JSONObject(profileJson);
                                     
@@ -351,11 +357,17 @@ public class TargetController {
                                 ? System.getenv("DATABASE_PASSWORD")
                                 : "Ezekiel(23)")) {
                     try (java.sql.PreparedStatement ps = conn.prepareStatement(
-                            "SELECT profile_json FROM target_users WHERE id = ?")) {
+                            "SELECT profile_json, profile_picture_url FROM target_users WHERE id = ?")) {
                         ps.setInt(1, id);
                         try (ResultSet rs = ps.executeQuery()) {
                             if (rs.next()) {
-                                String profileJson = rs.getString(1);
+                                // Load profile picture URL
+                                String profilePictureUrl = rs.getString("profile_picture_url");
+                                if (profilePictureUrl != null && !profilePictureUrl.isEmpty()) {
+                                    dto.setProfilePictureUrl(profilePictureUrl);
+                                }
+                                
+                                String profileJson = rs.getString("profile_json");
                                 if (profileJson != null && !profileJson.isEmpty()) {
                                     org.json.JSONObject profile = new org.json.JSONObject(profileJson);
                                     
@@ -634,18 +646,47 @@ public class TargetController {
                     .body(ApiResponse.error("File must be an image"));
             }
             
-            // Save file to media directory
+            // Get target user to find platform account and chat name
+            DatabaseManager databaseManager = new DatabaseManager();
+            TargetUserService targetUserService = new TargetUserService(databaseManager);
+            TargetUser targetUser = targetUserService.getTargetUserById(targetId);
+            if (targetUser == null) {
+                return ResponseEntity.badRequest()
+                    .body(ApiResponse.error("Target user not found"));
+            }
+            
+            // Get platform account to determine user folder
+            com.aria.platform.UserPlatform selected = targetUser.getSelectedPlatform();
+            if (selected == null) {
+                return ResponseEntity.badRequest()
+                    .body(ApiResponse.error("Target user has no selected platform"));
+            }
+            
+            DatabaseManager.PlatformAccount acc = DatabaseManager.getPlatformAccountById(selected.getPlatformId());
+            if (acc == null) {
+                return ResponseEntity.badRequest()
+                    .body(ApiResponse.error("Platform account not found"));
+            }
+            
+            // Use same folder structure as dialog medias: media/telegramConnector/user_<username>/<chat_name>_chat/
+            String userLabel = (acc.username != null && !acc.username.isBlank()) ? acc.username : 
+                              (acc.number != null ? acc.number : "unknown");
+            String chatName = targetUser.getName().replaceAll("[^A-Za-z0-9_]", "_");
             String fileName = "profile_" + targetId + "_" + System.currentTimeMillis() + 
                 getFileExtension(file.getOriginalFilename());
-            java.nio.file.Path uploadPath = java.nio.file.Paths.get("media/profiles");
-            if (!java.nio.file.Files.exists(uploadPath)) {
-                java.nio.file.Files.createDirectories(uploadPath);
-            }
-            java.nio.file.Path filePath = uploadPath.resolve(fileName);
+            
+            // Save to the same folder as dialog medias
+            java.nio.file.Path mediaDir = java.nio.file.Paths.get("media", "telegramConnector", "user_" + userLabel, chatName + "_chat");
+            java.nio.file.Files.createDirectories(mediaDir);
+            java.nio.file.Path filePath = mediaDir.resolve(fileName);
             file.transferTo(filePath.toFile());
             
-            // Save URL to database
-            String profilePictureUrl = "/api/targets/" + targetId + "/profile-picture/" + fileName;
+            // Save relative path to database (same structure as media files)
+            // Format: media/telegramConnector/user_<username>/<chat_name>_chat/<fileName>
+            String relativePath = mediaDir.toString().replace("\\", "/") + "/" + fileName;
+            String profilePictureUrl = "/api/targets/" + targetId + "/profile-picture?path=" + 
+                java.net.URLEncoder.encode(relativePath, "UTF-8");
+            
             try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
                     System.getenv("DATABASE_URL") != null
                             ? System.getenv("DATABASE_URL")
@@ -675,6 +716,128 @@ public class TargetController {
         } catch (Exception e) {
             return ResponseEntity.internalServerError()
                 .body(ApiResponse.error("Failed to upload profile picture: " + e.getMessage()));
+        }
+    }
+    
+    /**
+     * Serve profile picture file
+     * GET /api/targets/{id}/profile-picture?path=<encoded_path>
+     * Also supports legacy format: GET /api/targets/{id}/profile-picture/{fileName}
+     */
+    @GetMapping({"/{id}/profile-picture", "/{id}/profile-picture/{fileName}"})
+    public org.springframework.http.ResponseEntity<org.springframework.core.io.Resource> serveProfilePicture(
+            @PathVariable("id") Integer targetId,
+            @PathVariable(value = "fileName", required = false) String fileName,
+            @org.springframework.web.bind.annotation.RequestParam(value = "path", required = false) String path) {
+        try {
+            java.nio.file.Path filePath;
+            
+            // New format: use path parameter (from database)
+            if (path != null && !path.isEmpty()) {
+                try {
+                    String decodedPath = java.net.URLDecoder.decode(path, "UTF-8");
+                    filePath = java.nio.file.Paths.get(decodedPath);
+                } catch (Exception e) {
+                    // Fallback: try using path as-is
+                    filePath = java.nio.file.Paths.get(path);
+                }
+            } 
+            // Legacy format: try old location first, then check database
+            else if (fileName != null && !fileName.isEmpty()) {
+                // First try old location
+                java.nio.file.Path oldPath = java.nio.file.Paths.get("media/profiles").resolve(fileName);
+                if (java.nio.file.Files.exists(oldPath)) {
+                    filePath = oldPath;
+                } else {
+                    // If not found, try to get path from database
+                    try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                            System.getenv("DATABASE_URL") != null
+                                    ? System.getenv("DATABASE_URL")
+                                    : "jdbc:postgresql://localhost:5432/aria",
+                            System.getenv("DATABASE_USER") != null
+                                    ? System.getenv("DATABASE_USER")
+                                    : "postgres",
+                            System.getenv("DATABASE_PASSWORD") != null
+                                    ? System.getenv("DATABASE_PASSWORD")
+                                    : "Ezekiel(23)")) {
+                        try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                "SELECT profile_picture_url FROM target_users WHERE id = ?")) {
+                            ps.setInt(1, targetId);
+                            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                if (rs.next()) {
+                                    String url = rs.getString("profile_picture_url");
+                                    if (url != null && url.contains("path=")) {
+                                        String pathParam = url.substring(url.indexOf("path=") + 5);
+                                        String decodedPath = java.net.URLDecoder.decode(pathParam, "UTF-8");
+                                        filePath = java.nio.file.Paths.get(decodedPath);
+                                    } else {
+                                        filePath = oldPath; // Fallback to old path
+                                    }
+                                } else {
+                                    filePath = oldPath; // Fallback to old path
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        filePath = oldPath; // Fallback to old path
+                    }
+                }
+            } else {
+                // No path or fileName provided, try to get from database
+                try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                        System.getenv("DATABASE_URL") != null
+                                ? System.getenv("DATABASE_URL")
+                                : "jdbc:postgresql://localhost:5432/aria",
+                        System.getenv("DATABASE_USER") != null
+                                ? System.getenv("DATABASE_USER")
+                                : "postgres",
+                        System.getenv("DATABASE_PASSWORD") != null
+                                ? System.getenv("DATABASE_PASSWORD")
+                                : "Ezekiel(23)")) {
+                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                            "SELECT profile_picture_url FROM target_users WHERE id = ?")) {
+                        ps.setInt(1, targetId);
+                        try (java.sql.ResultSet rs = ps.executeQuery()) {
+                            if (rs.next()) {
+                                String url = rs.getString("profile_picture_url");
+                                if (url != null && url.contains("path=")) {
+                                    String pathParam = url.substring(url.indexOf("path=") + 5);
+                                    String decodedPath = java.net.URLDecoder.decode(pathParam, "UTF-8");
+                                    filePath = java.nio.file.Paths.get(decodedPath);
+                                } else {
+                                    return org.springframework.http.ResponseEntity.notFound().build();
+                                }
+                            } else {
+                                return org.springframework.http.ResponseEntity.notFound().build();
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    return org.springframework.http.ResponseEntity.notFound().build();
+                }
+            }
+            
+            org.springframework.core.io.Resource resource = new org.springframework.core.io.FileSystemResource(filePath);
+            
+            if (resource.exists() && resource.isReadable()) {
+                String contentType = org.springframework.http.MediaType.IMAGE_JPEG_VALUE;
+                String fileNameStr = filePath.getFileName().toString().toLowerCase();
+                if (fileNameStr.endsWith(".png")) {
+                    contentType = org.springframework.http.MediaType.IMAGE_PNG_VALUE;
+                } else if (fileNameStr.endsWith(".gif")) {
+                    contentType = org.springframework.http.MediaType.IMAGE_GIF_VALUE;
+                } else if (fileNameStr.endsWith(".webp")) {
+                    contentType = "image/webp";
+                }
+                
+                return org.springframework.http.ResponseEntity.ok()
+                    .contentType(org.springframework.http.MediaType.parseMediaType(contentType))
+                    .body(resource);
+            } else {
+                return org.springframework.http.ResponseEntity.notFound().build();
+            }
+        } catch (Exception e) {
+            return org.springframework.http.ResponseEntity.notFound().build();
         }
     }
     

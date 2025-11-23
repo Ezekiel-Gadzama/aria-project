@@ -137,27 +137,32 @@ function TargetManagement({ userId = 1 }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      // Create FormData if profile picture is included
-      const submitData = profilePicture 
-        ? (() => {
-            const formDataObj = new FormData();
-            Object.keys(formData).forEach(key => {
-              formDataObj.append(key, formData[key]);
-            });
-            formDataObj.append('profilePicture', profilePicture);
-            return formDataObj;
-          })()
-        : formData;
-
       let response;
       if (editingTarget) {
         // Update existing target
-        response = await targetApi.update(editingTarget.id, submitData, userId);
+        response = await targetApi.update(editingTarget.id, formData, userId);
       } else {
         // Create new target
-        response = await targetApi.create(submitData, userId);
+        response = await targetApi.create(formData, userId);
       }
       if (response.data.success) {
+        // Get target ID from response or editing target
+        let targetId = editingTarget ? editingTarget.id : null;
+        if (!targetId && response.data.data) {
+          // Try to get ID from response data
+          targetId = response.data.data.id || response.data.data;
+        }
+        
+        // Upload profile picture separately if provided
+        if (profilePicture && targetId) {
+          try {
+            await targetApi.uploadProfilePicture(targetId, profilePicture, userId);
+          } catch (picErr) {
+            console.error('Failed to upload profile picture:', picErr);
+            // Don't fail the whole operation if profile picture upload fails
+          }
+        }
+        
         setShowForm(false);
         setEditingTarget(null);
         setShowAdvanced(false);

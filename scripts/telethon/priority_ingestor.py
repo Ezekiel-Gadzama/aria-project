@@ -143,6 +143,16 @@ async def download_media(client, message, chat_name, message_id):
     if not message.media:
         return None
     try:
+        # Skip webpage previews (links) - Telegram creates these automatically for URLs
+        # These should not be downloaded as files
+        if hasattr(message.media, 'webpage'):
+            # This is a link preview, not actual media - skip it
+            return None
+        # Also check for MessageMediaWebPage type
+        from telethon.tl.types import MessageMediaWebPage
+        if isinstance(message.media, MessageMediaWebPage):
+            # This is a link preview, not actual media - skip it
+            return None
         # Get user directory from environment
         username = os.getenv('TELEGRAM_USERNAME', 'unknown')
         USER_DIR = f"user_{username}"
@@ -390,7 +400,13 @@ async def ingest_priority_target(target_username: str):
                 telegram_message_ids.add(message.id)
                 
                 sender = "me" if message.out else safe_chat_name
-                has_media = message.media is not None
+                # Check if media is just a webpage preview (link) - if so, don't treat it as media
+                has_media = False
+                if message.media is not None:
+                    # Skip webpage previews - these are automatically created by Telegram for links
+                    from telethon.tl.types import MessageMediaWebPage
+                    if not isinstance(message.media, MessageMediaWebPage) and not hasattr(message.media, 'webpage'):
+                        has_media = True
                 message_dict = message.to_dict()
                 raw_json = json.dumps(message_dict, default=str)
                 

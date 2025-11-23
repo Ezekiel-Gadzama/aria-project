@@ -18,6 +18,7 @@ public class TargetUserDTO {
     private Integer platformAccountId;
     private String platformAccountUsername; // Username of the platform account (e.g., @Gadzama23)
     private String platformAccountName; // Display name of the platform account (e.g., Ezekiel)
+    private String profilePictureUrl; // Profile picture URL/path
     
     // ChatProfile fields for communication preferences
     private Double humorLevel;
@@ -196,6 +197,14 @@ public class TargetUserDTO {
 
     public void setPreferredOpening(String preferredOpening) {
         this.preferredOpening = preferredOpening;
+    }
+
+    public String getProfilePictureUrl() {
+        return profilePictureUrl;
+    }
+
+    public void setProfilePictureUrl(String profilePictureUrl) {
+        this.profilePictureUrl = profilePictureUrl;
     }
 }
 

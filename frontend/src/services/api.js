@@ -43,6 +43,13 @@ export const targetApi = {
   update: (id, targetData, userId) => api.put(`/targets/${id}?userId=${userId}`, targetData),
   delete: (id, userId) => api.delete(`/targets/${id}?userId=${userId}`),
   checkOnlineStatus: (id, userId) => api.get(`/targets/${id}/online?userId=${userId}`),
+  uploadProfilePicture: (id, file, userId) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post(`/targets/${id}/profile-picture?userId=${userId}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+  },
 };
 
 // Conversation API
