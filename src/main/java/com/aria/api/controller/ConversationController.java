@@ -113,18 +113,10 @@ public class ConversationController {
             int currentUserId = userId != null ? userId : 1;
             int lim = (limit == null || limit <= 0 || limit > 500) ? 100 : limit;
 
-            // Try to get from cache first
-            com.aria.cache.RedisCacheManager cache = com.aria.cache.RedisCacheManager.getInstance();
-            java.util.List<java.util.Map<String, Object>> cachedMessages = cache.getCachedMessagesAsMapList(
-                currentUserId, targetUserId);
-            if (cachedMessages != null && cachedMessages.size() >= lim) {
-                // Return cached messages (limit to requested amount)
-                java.util.List<java.util.Map<String, Object>> limited = new java.util.ArrayList<>();
-                for (int i = 0; i < Math.min(lim, cachedMessages.size()); i++) {
-                    limited.add(cachedMessages.get(i));
-                }
-                return ResponseEntity.ok(ApiResponse.success("OK", limited));
-            }
+            // Skip cache for now - always fetch fresh from database
+            // Cache is invalidated after priority ingestion, but we want real-time updates
+            // This ensures messages sent/edited on Telegram appear immediately
+            // TODO: Could optimize by checking cache timestamp and only using if very recent (< 2 seconds)
 
             DatabaseManager databaseManager = new DatabaseManager();
             TargetUserService targetUserService = new TargetUserService(databaseManager);
@@ -440,8 +432,8 @@ public class ConversationController {
             // reverse chronological to chronological
             java.util.Collections.reverse(out);
             
-            // Cache the results for 5 minutes
-            cache.cacheMessages(currentUserId, targetUserId, out, 300);
+            // Cache disabled for real-time updates - always fetch fresh from database
+            // Cache invalidation happens after priority ingestion completes
             
             return ResponseEntity.ok(ApiResponse.success("OK", out));
         } catch (Exception e) {

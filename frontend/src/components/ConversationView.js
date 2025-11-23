@@ -176,9 +176,10 @@ function ConversationView({ userId = 1 }) {
         // This will check for new messages and delete messages that no longer exist in Telegram
         // Only trigger if not already running (backend will check and skip if already running)
         // BUT: Skip priority ingestion if operation is in progress
-        // IMPORTANT: Wait a bit after triggering ingestion to let it update database and invalidate cache
+        // IMPORTANT: Trigger ingestion and fetch messages immediately - cache is invalidated by backend
         if (!operationInProgressRef.current && !isOperationInProgress) {
           // Trigger ingestion in background (non-blocking) - don't wait for it
+          // Backend will invalidate cache after ingestion completes
           conversationApi.ingestTarget(targetId, userId).catch(err => {
             // Ignore ingestion errors - it's a background process
             // The backend will skip if ingestion is already running
@@ -186,9 +187,8 @@ function ConversationView({ userId = 1 }) {
               console.warn('Priority ingestion failed:', err);
             }
           });
-          // Wait 1 second for priority ingestion to update database and invalidate cache
-          // This ensures we get fresh data from database, not stale cache
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          // Don't wait - fetch messages immediately
+          // Cache will be invalidated by backend after ingestion, so next poll will get fresh data
         }
         
         // Final check before fetching messages (use ref for synchronous check)
@@ -271,11 +271,18 @@ function ConversationView({ userId = 1 }) {
                 
                 // CRITICAL: If message was recently edited in the app, ALWAYS preserve the optimistic version
                 // This prevents polling from overwriting app edits before database is updated
-                // Check this FIRST before any other logic
+                // Check this FIRST before any other logic - this is the most important check
                 if (isRecentlyEdited && prevMsg) {
                   // Always preserve the optimistic edit, even if database has different text
                   // The database might not be updated yet, so we trust the optimistic version
-                  return prevMsg; // Keep the edited version from previous state
+                  // CRITICAL: Don't let polling overwrite app edits - preserve the edited text
+                  return {
+                    ...prevMsg,
+                    // Keep the edited text from optimistic update
+                    text: prevMsg.text,
+                    edited: true,
+                    isPending: prevMsg.isPending || false,
+                  };
                 }
                 
                 // If message is pending (being sent/edited), preserve the optimistic version
@@ -722,6 +729,10 @@ function ConversationView({ userId = 1 }) {
     const messageText = selectedMessageHasMedia ? editText : editText.trim();
     const msgId = selectedMessageId;
     
+    // CRITICAL: Set operation in progress to pause polling
+    operationInProgressRef.current = true;
+    setIsOperationInProgress(true);
+    
     // INSTANT UI UPDATE: Update message optimistically immediately
     setMessages(prev => {
       const updated = prev.map(msg => {
@@ -743,7 +754,7 @@ function ConversationView({ userId = 1 }) {
     setSelectedMessageId(null);
     
     // Mark this message as recently edited to prevent polling from overwriting it
-    // Use longer timeout to ensure database has time to update (10 seconds)
+    // Use longer timeout to ensure database has time to update (15 seconds)
     setRecentlyEditedMessages(prev => new Set(prev).add(msgId));
     setTimeout(() => {
       setRecentlyEditedMessages(prev => {
@@ -751,7 +762,7 @@ function ConversationView({ userId = 1 }) {
         next.delete(msgId);
         return next;
       });
-    }, 10000); // Increased to 10 seconds to give database more time to update
+    }, 15000); // Increased to 15 seconds to ensure database is fully updated and polling doesn't revert
     
     // Edit in background (don't block UI)
     const editPromise = msgId 
@@ -759,6 +770,10 @@ function ConversationView({ userId = 1 }) {
       : conversationApi.editLast(targetId, userId, messageText);
     
     editPromise.then(response => {
+      // Clear operation in progress flag
+      operationInProgressRef.current = false;
+      setIsOperationInProgress(false);
+      
       if (response.data?.success && response.data?.data) {
         const messageData = response.data.data;
         // Update with real data from backend, but keep isPending until we're sure it's in DB
@@ -797,6 +812,11 @@ function ConversationView({ userId = 1 }) {
         setError('Failed to edit message');
         setTimeout(() => setError(null), 5000);
         // Remove from recentlyEditedMessages since edit failed
+        setRecentlyEditedMessages(prev => {
+          const next = new Set(prev);
+          next.delete(msgId);
+          return next;
+        });
         setRecentlyEditedMessages(prev => {
           const next = new Set(prev);
           next.delete(msgId);
@@ -900,6 +920,10 @@ function ConversationView({ userId = 1 }) {
     const messageIdToDelete = messageId;
     setDeleteModal(null);
     
+    // CRITICAL: Set operation in progress to pause polling
+    operationInProgressRef.current = true;
+    setIsOperationInProgress(true);
+    
     // CRITICAL: Track this message as deleted FIRST (before removing from UI)
     // This ensures polling can't re-add it even if it runs during deletion
     // Use functional update to ensure we're working with latest state
@@ -916,8 +940,8 @@ function ConversationView({ userId = 1 }) {
       return prev.filter(m => m.messageId !== messageIdToDelete);
     });
     
-    // Also ensure deletedMessageIds is updated synchronously by using a callback
-    // This ensures the state is updated before any polling can run
+    // CRITICAL: Set deletedMessageIds again to ensure it's definitely in state
+    // This is a safety measure to ensure polling can't re-add the message
     setDeletedMessageIds(prev => {
       const updated = new Set(prev);
       updated.add(messageIdToDelete);
@@ -927,6 +951,10 @@ function ConversationView({ userId = 1 }) {
     // Delete in background (don't block UI)
     conversationApi.delete(targetId, userId, messageIdToDelete, revoke)
       .then(response => {
+        // Clear operation in progress flag
+        operationInProgressRef.current = false;
+        setIsOperationInProgress(false);
+        
         if (response.data?.success) {
           if (response.data?.data?.message) {
             // Show info if message was only deleted for user (not revoked)
@@ -958,6 +986,10 @@ function ConversationView({ userId = 1 }) {
         }
       })
       .catch(err => {
+        // Clear operation in progress flag
+        operationInProgressRef.current = false;
+        setIsOperationInProgress(false);
+        
         setError(err.response?.data?.error || err.message || 'Failed to delete message');
         setTimeout(() => setError(null), 5000);
         // Remove from deleted tracking since deletion failed
