@@ -1364,6 +1364,64 @@ public class TargetController {
     }
     
     /**
+     * Get categories for a specific target user
+     * GET /api/targets/{id}/categories?userId=...
+     */
+    @GetMapping("/{id}/categories")
+    public ResponseEntity<ApiResponse<List<String>>> getTargetCategories(
+            @PathVariable("id") Integer targetId,
+            @RequestParam(value = "userId", required = false) Integer userId) {
+        try {
+            int currentUserId = userId != null ? userId : 1;
+            
+            // Get dialog IDs for this target user
+            DatabaseManager databaseManager = new DatabaseManager();
+            List<Integer> dialogIds = databaseManager.getDialogIdsForTargetUser(targetId, currentUserId);
+            
+            if (dialogIds.isEmpty()) {
+                return ResponseEntity.ok(ApiResponse.success(new ArrayList<>()));
+            }
+            
+            // Get distinct categories for these dialogs
+            String placeholders = String.join(",", java.util.Collections.nCopies(dialogIds.size(), "?"));
+            String sql = String.format("""
+                SELECT DISTINCT cg.category_name
+                FROM chat_goals cg
+                WHERE cg.dialog_id IN (%s)
+                ORDER BY cg.category_name
+            """, placeholders);
+            
+            List<String> categories = new ArrayList<>();
+            try (Connection conn = java.sql.DriverManager.getConnection(
+                    System.getenv("DATABASE_URL") != null
+                            ? System.getenv("DATABASE_URL")
+                            : "jdbc:postgresql://localhost:5432/aria",
+                    System.getenv("DATABASE_USER") != null
+                            ? System.getenv("DATABASE_USER")
+                            : "postgres",
+                    System.getenv("DATABASE_PASSWORD") != null
+                            ? System.getenv("DATABASE_PASSWORD")
+                            : "Ezekiel(23)")) {
+                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                    for (int i = 0; i < dialogIds.size(); i++) {
+                        ps.setInt(i + 1, dialogIds.get(i));
+                    }
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            categories.add(rs.getString("category_name"));
+                        }
+                    }
+                }
+            }
+            
+            return ResponseEntity.ok(ApiResponse.success(categories));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError()
+                .body(ApiResponse.error("Failed to get target categories: " + e.getMessage()));
+        }
+    }
+    
+    /**
      * Get analysis data for targets
      * GET /api/targets/analysis?userId=...&targetId=...&platform=...&category=...
      */

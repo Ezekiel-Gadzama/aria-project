@@ -2533,17 +2533,16 @@ public class ConversationController {
             }
             
             Integer dialogRowId = null;
-            String dbUrl = System.getenv("DATABASE_URL");
-            java.sql.Connection conn = null;
-            try {
-                if (dbUrl != null && !dbUrl.isEmpty()) {
-                    conn = java.sql.DriverManager.getConnection(dbUrl);
-                } else {
-                    String dbHost = System.getenv("DB_HOST") != null ? System.getenv("DB_HOST") : "localhost";
-                    String dbUser = System.getenv("DATABASE_USER") != null ? System.getenv("DATABASE_USER") : "postgres";
-                    String dbPassword = System.getenv("DATABASE_PASSWORD") != null ? System.getenv("DATABASE_PASSWORD") : "Ezekiel(23)";
-                    conn = java.sql.DriverManager.getConnection("jdbc:postgresql://" + dbHost + ":5432/aria", dbUser, dbPassword);
-                }
+            try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                    System.getenv("DATABASE_URL") != null
+                            ? System.getenv("DATABASE_URL")
+                            : "jdbc:postgresql://localhost:5432/aria",
+                    System.getenv("DATABASE_USER") != null
+                            ? System.getenv("DATABASE_USER")
+                            : "postgres",
+                    System.getenv("DATABASE_PASSWORD") != null
+                            ? System.getenv("DATABASE_PASSWORD")
+                            : "Ezekiel(23)")) {
                 
                 dialogRowId = findDialogForSubTarget(conn, currentUserId, targetUser, subTargetForDialog);
                 
@@ -2566,16 +2565,6 @@ public class ConversationController {
                 System.err.println("SQL error in pin endpoint: " + e.getMessage());
                 e.printStackTrace();
                 return ResponseEntity.internalServerError().body(ApiResponse.error("Database error: " + e.getMessage()));
-            } finally {
-                if (conn != null) {
-                    try {
-                        if (!conn.isClosed()) {
-                            conn.close();
-                        }
-                    } catch (java.sql.SQLException e) {
-                        System.err.println("Error closing connection: " + e.getMessage());
-                    }
-                }
             }
 
             // Pin/unpin on Telegram if connector is available
@@ -2627,6 +2616,8 @@ public class ConversationController {
 
             return ResponseEntity.ok(ApiResponse.success(pin ? "Message pinned" : "Message unpinned"));
         } catch (Exception e) {
+            System.err.println("Error in pin endpoint: " + e.getMessage());
+            e.printStackTrace();
             return ResponseEntity.internalServerError().body(ApiResponse.error("Error pinning message: " + e.getMessage()));
         }
     }

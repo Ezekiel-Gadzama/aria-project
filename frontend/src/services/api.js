@@ -31,6 +31,7 @@ export const userApi = {
 export const targetApi = {
   getAll: (userId) => api.get(`/targets?userId=${userId}`),
   getCategories: () => api.get('/targets/categories'),
+  getTargetCategories: (id, userId) => api.get(`/targets/${id}/categories?userId=${userId}`),
   getAnalysis: (userId, targetId, filters) => {
     const params = new URLSearchParams({ userId });
     if (targetId) params.append('targetId', targetId);

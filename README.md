@@ -1,10 +1,12 @@
 # ARIA - Automated Relationship & Interaction Assistant
 
-ARIA is a Java-based desktop application that automates and optimizes user-initiated conversations on social platforms (starting with Telegram) with the goal of achieving user-defined outcomes (e.g., dates, investments, sponsorships). The core innovation is an AI that personalizes its communication strategy by prioritizing the user's own successful historical chats.
+ARIA is a full-stack web application that automates and optimizes user-initiated conversations on social platforms (starting with Telegram) with the goal of achieving user-defined outcomes (e.g., dates, investments, sponsorships). The core innovation is an AI that personalizes its communication strategy by prioritizing the user's own successful historical chats.
 
 ## Features
 
 ### Core Functionality
+- **Hierarchical Target Management**: Create Target Users (platform-agnostic person info) with multiple SubTarget Users (platform-specific instances)
+- **Cross-Platform Context**: Toggle to aggregate chat history across all platforms for a Target User, enabling AI to understand the same person across different platforms
 - **Goal-Based Conversation Management**: Define conversation goals (dating, investment, sponsorship, etc.) and ARIA adapts accordingly
 - **Historical Chat Analysis**: Analyzes years of chat history to learn your successful communication patterns
 - **Weighted Response Synthesis (70%/15%/15%)**:
@@ -16,37 +18,59 @@ ARIA is a Java-based desktop application that automates and optimizes user-initi
 - **Smart Score Merging**: Intelligently merges old and new scores based on message count ratio and engagement metrics
 - **Contextual Success Scoring**: Understands circumstantial rejections vs. approach failures (e.g., "I have a boyfriend" = high score)
 - **Humanized Responses**: Integrates with Undetectable.ai to make AI responses undetectable
+- **Target Groups & Channels**: Manage group chats and channels with hierarchical structure (Target Group/Channel → SubTarget Group/Channel)
+- **Message Pinning**: Pin important messages in conversations (syncs with Telegram)
+- **Media Support**: Send, receive, edit, and delete media messages (images, videos, files, audio)
+- **Real-time Conversation UI**: Modern React-based conversation interface with message polling, optimistic updates, and media previews
 
-### Advanced Features (Phase 3)
+### Advanced Features
 - **Disinterest Detection**: Monitors engagement indicators and alerts when conversation shows signs of disinterest
 - **Response Timing Analysis**: Analyzes optimal response delays based on engagement and historical patterns
 - **Automated Conversation Management**: Handles sending/receiving messages with intelligent timing
 - **Conversation Summarization**: Generates comprehensive summaries after conversations
 - **Quiz System**: Tests user's memory of key conversation details before meetings/dates
+- **Analysis Dashboard**: View conversation statistics, engagement metrics, and top targets with platform filtering
 
 ## Architecture
 
 ### Technology Stack
-- **Language**: Java 17+
-- **Build Tool**: Maven
-- **UI**: JavaFX
-- **Database**: PostgreSQL
+- **Backend**: Java 17+ with Spring Boot 3.2.0
+- **Frontend**: React 18+ with React Router
+- **Build Tool**: Maven (backend), npm (frontend)
+- **Database**: PostgreSQL 15+
 - **AI/NLP**: OpenAI API
 - **Humanization**: Undetectable.ai API
 - **Platform Integration**: Telethon (Python) for Telegram
+- **Deployment**: Docker & Docker Compose
 
 ### Project Structure
 ```
-src/main/java/com/aria/
-├── ai/                    # AI clients (OpenAI, Undetectable.ai)
-├── analysis/              # Chat analysis (categorization, disinterest detection)
-├── core/                  # Core orchestration and models
-│   ├── model/            # Data models
-│   └── strategy/         # Response strategies (70/15/15 synthesis)
-├── platform/             # Platform connectors (Telegram, WhatsApp, Instagram)
-├── service/              # Business logic services
-├── storage/              # Database management
-└── ui/                   # JavaFX UI controllers
+Aria/
+├── src/main/java/com/aria/
+│   ├── api/                  # REST API controllers
+│   │   ├── controller/      # API endpoints (TargetController, ConversationController, etc.)
+│   │   └── dto/             # Data Transfer Objects
+│   ├── ai/                   # AI clients (OpenAI, Undetectable.ai)
+│   ├── analysis/             # Chat analysis (categorization, disinterest detection)
+│   ├── core/                 # Core orchestration and models
+│   │   ├── model/            # Data models (TargetUser, SubTargetUser, etc.)
+│   │   └── strategy/         # Response strategies (70/15/15 synthesis)
+│   ├── platform/             # Platform connectors (Telegram, WhatsApp, Instagram)
+│   ├── service/              # Business logic services
+│   └── storage/              # Database management
+├── frontend/
+│   ├── src/
+│   │   ├── components/       # React components
+│   │   │   ├── TargetManagement.js
+│   │   │   ├── EditTargetUser.js
+│   │   │   ├── SubTargetUsersView.js
+│   │   │   ├── ConversationView.js
+│   │   │   ├── AnalysisDashboard.js
+│   │   │   └── ...
+│   │   └── services/
+│   │       └── api.js        # API client
+│   └── package.json
+└── scripts/telethon/         # Python scripts for Telegram integration
 ```
 
 ## Setup
@@ -54,6 +78,7 @@ src/main/java/com/aria/
 ### Prerequisites
 - Java 17 or later
 - Maven 3.6+
+- Node.js 18+ and npm (for frontend development)
 - PostgreSQL 15+
 - Python 3.8+ (for Telethon scripts)
 - Docker & Docker Compose (optional, for easy deployment)
@@ -67,21 +92,27 @@ src/main/java/com/aria/
    ```
 
 2. **Set environment variables**
-   Create a `.env` file:
+   Create a `.env` file or set environment variables:
    ```env
    OPENAI_API_KEY=your_openai_api_key
    UNDETECTABLE_AI_API_KEY=your_undetectable_ai_api_key
+   DATABASE_URL=jdbc:postgresql://postgres:5432/aria
+   DATABASE_USER=postgres
+   DATABASE_PASSWORD=your_password
    ```
 
 3. **Start services**
    ```bash
-   docker-compose up -d
+   docker-compose up -d --build
    ```
 
-4. **Initialize database schema**
-   The database schema will be automatically initialized when the application starts.
+4. **Access the application**
+   - Frontend UI: http://localhost:8080
+   - API: http://localhost:8080/api
 
 ### Manual Setup
+
+#### Backend Setup
 
 1. **Install PostgreSQL**
    ```bash
@@ -90,11 +121,11 @@ src/main/java/com/aria/
    ```
 
 2. **Update configuration**
-   Edit `src/main/resources/config.properties`:
+   Edit `src/main/resources/application.properties`:
    ```properties
-   database.url=jdbc:postgresql://localhost:5432/aria
-   database.user=postgres
-   database.password=your_password
+   spring.datasource.url=jdbc:postgresql://localhost:5432/aria
+   spring.datasource.username=postgres
+   spring.datasource.password=your_password
    
    openai.api.key=your_openai_api_key
    undetectable.ai.api.key=your_undetectable_ai_api_key
@@ -106,78 +137,112 @@ src/main/java/com/aria/
    pip install -r requirements.txt
    ```
 
-4. **Build the project**
+4. **Build and run the backend**
    ```bash
    mvn clean package
+   mvn spring-boot:run
    ```
 
-5. **Run the application**
+#### Frontend Setup
+
+1. **Install dependencies**
    ```bash
-   mvn javafx:run
+   cd frontend
+   npm install
    ```
+
+2. **Run the frontend**
+   ```bash
+   npm start
+   ```
+   The frontend will run on http://localhost:3000 (with hot-reload)
+
+### Development Setup (Recommended)
+
+For development, run frontend and backend separately for hot-reload:
+
+**Terminal 1 - Backend:**
+```bash
+mvn spring-boot:run
+```
+
+**Terminal 2 - Frontend:**
+```bash
+cd frontend
+npm start
+```
+
+Access:
+- Frontend: http://localhost:3000 (with hot-reload)
+- API: http://localhost:8080/api
 
 ## Configuration
 
 ### Database Connection
-Update `src/main/resources/config.properties` or use environment variables:
+Update `src/main/resources/application.properties` or use environment variables:
 - `DATABASE_URL`
 - `DATABASE_USER`
 - `DATABASE_PASSWORD`
 
 ### API Keys
-Set in `config.properties` or environment variables:
+Set in `application.properties` or environment variables:
 - `OPENAI_API_KEY`: Your OpenAI API key
 - `UNDETECTABLE_AI_API_KEY`: Your Undetectable.ai API key (optional)
 
 ### Telegram Configuration
 1. Get API credentials from [https://my.telegram.org/apps](https://my.telegram.org/apps)
-2. Update `config.properties`:
-   ```properties
-   telegram.api.id=your_api_id
-   telegram.api.hash=your_api_hash
-   telegram.phone=+1234567890
-   ```
+2. Register platform account through the web UI (Platform Registration page)
 
 ## Usage
 
 ### 1. User Registration
-- Launch the application
-- Register your user profile
+- Register your user profile through the web UI
 - Add your phone number and personal information
 
 ### 2. Connect Platform Account
-- Go to Platform Registration
+- Go to Platform Registration page
 - Enter your Telegram API credentials
-- Complete authentication
+- Complete authentication (OTP verification)
 
 ### 3. Import Chat History
 - ARIA will automatically ingest your Telegram chat history
 - The system categorizes chats based on goals using OpenAI
 - Chats are stored in the database with proper indexing
 
-### 4. Define Target & Goal
-- Create a new target user (the person you want to chat with)
-- Define the conversation goal (e.g., "Arrange a romantic date")
-- Provide meeting context (e.g., "Met at tech conference, she works in VC")
+### 4. Create Target User
+- Create a Target User with basic information:
+  - Name, Bio, Desired Outcome, Where/How You Met, Important Details
+- Add one or more SubTarget Users (platform-specific instances):
+  - Name (platform-specific), Username, Platform, Account, Advanced Communication Settings
+- Enable Cross-Platform Context toggle to aggregate chat history across all platforms
 
-### 5. Start Automated Conversation
+### 5. Start Conversation
+- Click on a SubTarget User to start a conversation
 - ARIA analyzes your historical chats relevant to the goal
 - Synthesizes a communication profile using 70/15/15 weighting
 - Generates and sends personalized responses
 - Monitors engagement and adjusts timing
-- Alerts you if disinterest is detected
 
-### 6. Review Summary & Quiz
-- After conversation ends, view the summary
-- Take the quiz to ensure you remember key details
-- Review next steps before your meeting/date
+### 6. Manage Conversations
+- Send, edit, delete, and pin messages
+- Send media (images, videos, files, audio)
+- Reply to messages
+- View conversation history with cross-platform context (if enabled)
+- View analysis dashboard with platform filtering
 
 ## Database Schema
 
 ### Key Tables
 - `users`: User profiles
+- `target_users`: Parent Target Users (platform-agnostic person info)
+- `subtarget_users`: Child SubTarget Users (platform-specific instances)
+- `target_groups`: Parent Target Groups
+- `subtarget_groups`: Child SubTarget Groups
+- `target_channels`: Parent Target Channels
+- `subtarget_channels`: Child SubTarget Channels
 - `dialogs`: Chat conversations
-- `messages`: Individual messages
+- `messages`: Individual messages (with `pinned` and `message_link` fields)
+- `conversations`: Active conversations (with `subtarget_user_id`)
 - `goals`: Conversation goals
 - `chat_goals`: Maps chats to goals/categories
 - `conversation_states`: Active conversation states
@@ -188,7 +253,51 @@ Set in `config.properties` or environment variables:
 
 All tables have optimal indexes for fast queries.
 
+## REST API
+
+The application exposes a REST API at `/api`:
+
+### Main Endpoints
+- `GET /api/targets` - Get all target users
+- `POST /api/targets` - Create target user
+- `PUT /api/targets/{id}` - Update target user
+- `DELETE /api/targets/{id}` - Delete target user
+- `POST /api/targets/{id}/toggle-cross-platform-context` - Toggle cross-platform context
+- `GET /api/conversations/messages` - Get messages for a conversation
+- `POST /api/conversations/initialize` - Initialize conversation
+- `POST /api/conversations/respond` - Send message
+- `POST /api/conversations/edit` - Edit message
+- `POST /api/conversations/editLast` - Edit last message
+- `DELETE /api/conversations/message` - Delete message
+- `POST /api/conversations/pin` - Pin/unpin message
+- `POST /api/conversations/sendMedia` - Send media
+- `GET /api/targets/analysis` - Get analysis data
+
+See the API documentation in `documentation/` for complete endpoint details.
+
 ## How It Works
+
+### Hierarchical Target Model
+
+**Target User (Parent)**:
+- Platform-agnostic person information
+- Fields: Name, Bio, Desired Outcome, Where/How You Met, Important Details
+- Can have multiple SubTarget Users
+
+**SubTarget User (Child)**:
+- Platform-specific instance of a Target User
+- Fields: Name (platform-specific), Username, Platform, Account, Advanced Communication Settings
+- Conversations are started at the SubTarget User level
+
+### Cross-Platform Context
+
+When enabled for a Target User:
+- AI aggregates chat history from ALL SubTarget Users of that Target User
+- AI understands it's the same person across different platforms
+- Generates more informed and context-aware suggestions
+
+When disabled:
+- AI uses only the current SubTarget User's chat history
 
 ### Chat Categorization
 
@@ -218,25 +327,28 @@ All tables have optimal indexes for fast queries.
 
 ### Response Generation Flow
 1. Receive incoming message from target
-2. Analyze conversation for disinterest indicators
-3. Fetch relevant historical chat examples
-4. Build enhanced prompt with:
+2. Check cross-platform context toggle
+3. Aggregate chat history (all SubTarget Users if enabled, or just current if disabled)
+4. Analyze conversation for disinterest indicators
+5. Fetch relevant historical chat examples
+6. Build enhanced prompt with:
    - Goal and context
    - Successful examples
    - Synthesized style profile
-   - Conversation history
-5. Generate response using OpenAI
-6. Humanize response using Undetectable.ai
-7. Calculate optimal response delay
-8. Schedule response sending
+   - Conversation history (cross-platform if enabled)
+7. Generate response using OpenAI
+8. Humanize response using Undetectable.ai
+9. Calculate optimal response delay
+10. Schedule response sending
 
-### Disinterest Detection
-Monitors:
-- Response length (short responses = disinterest)
-- Response timing (long delays = disinterest)
-- Question rate (low questions = disinterest)
-- One-word response rate
-- Engagement decline over time
+### Target Groups & Channels
+
+- **Target Groups/Channels**: Parent entities for communal spaces
+- **SubTarget Groups/Channels**: Platform-specific instances
+- Only explicitly defined groups/channels are ingested
+- Messages from groups/channels include `message_link` for reference
+- Group/channel data is used for trend analysis, admin oversight, and knowledge base
+- **Never used for 1-on-1 reply generation**
 
 ### Performance Optimizations
 - **Incremental Ingestion**: Only processes new messages on subsequent runs (checks last message ID)
@@ -245,12 +357,22 @@ Monitors:
 - **Smart Score Merging**: Balances message count ratio (60%) and engagement metrics (40%)
 - **Smart Filtering**: Progressive AND filtering manages token limits automatically
 - **Efficient Queries**: SQL-level filtering and deduplication
+- **Message Polling**: Efficient polling for new messages
+- **Optimistic UI Updates**: Immediate UI feedback with backend confirmation
 
 ## Development
 
 ### Building
+
+**Backend:**
 ```bash
 mvn clean package
+```
+
+**Frontend:**
+```bash
+cd frontend
+npm run build
 ```
 
 ### Running Tests
@@ -259,7 +381,17 @@ mvn test
 ```
 
 ### Code Style
-The project follows standard Java conventions.
+The project follows standard Java and JavaScript/React conventions.
+
+## Documentation
+
+Comprehensive documentation is available in the `documentation/` folder:
+- [Architecture Overview](documentation/ARCHITECTURE.md)
+- [Core Models](documentation/CORE_MODELS.md)
+- [AI Services](documentation/AI_SERVICES.md)
+- [Response Strategy](documentation/RESPONSE_STRATEGY.md)
+- [Categorization Logic](documentation/CATEGORIZATION_LOGIC.md)
+- [Setup Guide](SETUP.md)
 
 ## License
 
@@ -276,4 +408,3 @@ For issues and questions, please open an issue on the repository.
 ## Disclaimer
 
 ARIA is designed to assist with authentic communication. Users are responsible for ensuring their use complies with platform terms of service and applicable laws. The tool should enhance, not replace, genuine human connection.
-

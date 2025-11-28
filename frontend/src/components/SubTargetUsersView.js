@@ -30,12 +30,34 @@ function SubTargetUsersView({ userId = 1 }) {
     engagementLevel: 0.6,
     preferredOpening: 'Hey! How are you doing?',
   });
+  const [allTargets, setAllTargets] = useState([]);
+  const [selectedImportTargetId, setSelectedImportTargetId] = useState('');
+  const [selectedImportSubTargetId, setSelectedImportSubTargetId] = useState('');
+  const [availableSubTargetsForImport, setAvailableSubTargetsForImport] = useState([]);
 
   useEffect(() => {
     loadTarget();
     loadPlatforms();
     loadPlatformAccounts();
   }, [targetId]);
+
+  useEffect(() => {
+    // Reload all targets when target changes (to include/exclude current target based on subtargets)
+    // Only reload if target is loaded
+    if (target) {
+      loadAllTargets();
+    }
+  }, [targetId, target]);
+
+  useEffect(() => {
+    // When import target is selected, load its subtarget users
+    if (selectedImportTargetId) {
+      loadSubTargetsForImport(selectedImportTargetId);
+    } else {
+      setAvailableSubTargetsForImport([]);
+      setSelectedImportSubTargetId('');
+    }
+  }, [selectedImportTargetId]);
 
   const loadTarget = async () => {
     try {
@@ -73,6 +95,166 @@ function SubTargetUsersView({ userId = 1 }) {
     } catch (err) {
       console.error('Failed to load platform accounts:', err);
     }
+  };
+
+  const loadAllTargets = async () => {
+    try {
+      const response = await targetApi.getAll(userId);
+      if (response.data.success) {
+        const allTargetsData = response.data.data || [];
+        
+        // Include current target if it has at least one subtarget user
+        const currentTarget = allTargetsData.find(t => t.id === parseInt(targetId));
+        if (currentTarget && currentTarget.subTargetUsers && currentTarget.subTargetUsers.length > 0) {
+          // Include current target in the list
+          setAllTargets(allTargetsData);
+        } else {
+          // Filter out current target if it has no subtarget users
+          const filteredTargets = allTargetsData.filter(t => t.id !== parseInt(targetId));
+          setAllTargets(filteredTargets);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load all targets:', err);
+    }
+  };
+
+  const loadSubTargetsForImport = async (targetUserId) => {
+    try {
+      // First check if this is the current target (already loaded)
+      if (target && target.id === parseInt(targetUserId) && target.subTargetUsers) {
+        const subTargets = target.subTargetUsers || [];
+        setAvailableSubTargetsForImport(subTargets);
+        // If only one subtarget, auto-select it
+        if (subTargets.length === 1) {
+          setSelectedImportSubTargetId(subTargets[0].id.toString());
+        } else {
+          setSelectedImportSubTargetId('');
+        }
+        return;
+      }
+
+      // Then check if we already have this target in allTargets
+      const existingTarget = allTargets.find(t => t.id === parseInt(targetUserId));
+      if (existingTarget && existingTarget.subTargetUsers) {
+        const subTargets = existingTarget.subTargetUsers || [];
+        setAvailableSubTargetsForImport(subTargets);
+        // If only one subtarget, auto-select it
+        if (subTargets.length === 1) {
+          setSelectedImportSubTargetId(subTargets[0].id.toString());
+        } else {
+          setSelectedImportSubTargetId('');
+        }
+        return;
+      }
+
+      // Otherwise, fetch the target details
+      const response = await targetApi.getById(parseInt(targetUserId), userId);
+      if (response.data.success) {
+        const targetData = response.data.data;
+        const subTargets = targetData.subTargetUsers || [];
+        setAvailableSubTargetsForImport(subTargets);
+        // If only one subtarget, auto-select it
+        if (subTargets.length === 1) {
+          setSelectedImportSubTargetId(subTargets[0].id.toString());
+        } else {
+          setSelectedImportSubTargetId('');
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load subtargets for import:', err);
+      setAvailableSubTargetsForImport([]);
+    }
+  };
+
+  const handleImportSettings = async () => {
+    if (!selectedImportTargetId) {
+      setError('Please select a target user to import from');
+      return;
+    }
+
+    // Find the target user
+    let importTarget = null;
+    
+    // First check if it's the current target (already loaded)
+    if (target && target.id === parseInt(selectedImportTargetId)) {
+      importTarget = target;
+    } else {
+      // Then check allTargets
+      importTarget = allTargets.find(t => t.id === parseInt(selectedImportTargetId));
+    }
+    
+    // If not found, fetch it
+    if (!importTarget || !importTarget.subTargetUsers) {
+      try {
+        const response = await targetApi.getById(parseInt(selectedImportTargetId), userId);
+        if (response.data.success) {
+          importTarget = response.data.data;
+        } else {
+          setError('Selected target user not found');
+          return;
+        }
+      } catch (err) {
+        setError('Failed to load target user details');
+        return;
+      }
+    }
+
+    // Get subtarget users
+    const subTargets = importTarget.subTargetUsers || [];
+    
+    // Check if target has any subtarget users
+    if (subTargets.length === 0) {
+      // Show popup
+      alert(`There is no Instance of "${importTarget.name}" on any platform. Hence can not import.`);
+      return;
+    }
+
+    // Determine which subtarget to import from
+    let subTargetToImport = null;
+    if (selectedImportSubTargetId) {
+      subTargetToImport = subTargets.find(st => st.id === parseInt(selectedImportSubTargetId));
+    }
+    
+    // If no subtarget selected, use the first one
+    if (!subTargetToImport && subTargets.length > 0) {
+      subTargetToImport = subTargets[0];
+    }
+
+    if (!subTargetToImport) {
+      setError('No subtarget user found to import from');
+      return;
+    }
+
+    // Parse advanced communication settings
+    let importedSettings = {};
+    if (subTargetToImport.advancedCommunicationSettings) {
+      try {
+        importedSettings = JSON.parse(subTargetToImport.advancedCommunicationSettings);
+      } catch (e) {
+        console.error('Failed to parse advanced communication settings:', e);
+      }
+    }
+
+    // Update form data with imported settings
+    setSubTargetFormData({
+      ...subTargetFormData,
+      humorLevel: importedSettings.humorLevel !== undefined ? importedSettings.humorLevel : 0.4,
+      formalityLevel: importedSettings.formalityLevel !== undefined ? importedSettings.formalityLevel : 0.5,
+      empathyLevel: importedSettings.empathyLevel !== undefined ? importedSettings.empathyLevel : 0.7,
+      responseTimeAverage: importedSettings.responseTimeAverage !== undefined ? importedSettings.responseTimeAverage : 120.0,
+      messageLengthAverage: importedSettings.messageLengthAverage !== undefined ? importedSettings.messageLengthAverage : 25.0,
+      questionRate: importedSettings.questionRate !== undefined ? importedSettings.questionRate : 0.3,
+      engagementLevel: importedSettings.engagementLevel !== undefined ? importedSettings.engagementLevel : 0.6,
+      preferredOpening: importedSettings.preferredOpening || 'Hey! How are you doing?',
+    });
+
+    // Show advanced settings if importing
+    if (Object.keys(importedSettings).length > 0) {
+      setShowAdvanced(true);
+    }
+
+    setError(null);
   };
 
   const handleSubTargetFormChange = (e) => {
@@ -243,7 +425,7 @@ function SubTargetUsersView({ userId = 1 }) {
               className="btn btn-primary btn-sm"
               onClick={() => {
                 // Navigate to analysis without platform filter (from list page)
-                navigate(`/analysis/${targetId}`);
+                navigate(`/analysis/${targetId}?from=subtargets`);
               }}
             >
               View Analysis
@@ -371,6 +553,55 @@ function SubTargetUsersView({ userId = 1 }) {
                 
                 {showAdvanced && (
                   <div>
+                    {/* Import Settings Section */}
+                    <div style={{ marginBottom: '1.5rem', padding: '1rem', border: '1px solid #ccc', borderRadius: '4px', backgroundColor: '#f9f9f9' }}>
+                      <h6 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Import Settings from Other Target User</h6>
+                      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                        <div style={{ flex: '1', minWidth: '200px' }}>
+                          <label htmlFor="importTargetUser" style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.9rem' }}>Target User:</label>
+                          <select
+                            id="importTargetUser"
+                            value={selectedImportTargetId}
+                            onChange={(e) => setSelectedImportTargetId(e.target.value)}
+                            style={{ width: '100%', padding: '0.5rem' }}
+                          >
+                            <option value="">Select target user</option>
+                            {allTargets.map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {t.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div style={{ flex: '1', minWidth: '200px' }}>
+                          <label htmlFor="importSubTargetUser" style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.9rem' }}>SubTarget User (Optional):</label>
+                          <select
+                            id="importSubTargetUser"
+                            value={selectedImportSubTargetId}
+                            onChange={(e) => setSelectedImportSubTargetId(e.target.value)}
+                            disabled={!selectedImportTargetId || availableSubTargetsForImport.length === 0}
+                            style={{ width: '100%', padding: '0.5rem' }}
+                          >
+                            <option value="">{availableSubTargetsForImport.length === 0 ? 'No instances available' : 'Select subtarget user (or use first)'}</option>
+                            {availableSubTargetsForImport.map((st) => (
+                              <option key={st.id} value={st.id}>
+                                {st.name || st.username} ({st.platform})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-primary"
+                            onClick={handleImportSettings}
+                            disabled={!selectedImportTargetId}
+                          >
+                            Import Settings
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                     {/* Advanced settings inputs - same structure as TargetManagement.js */}
                     <div className="form-group">
                       <label htmlFor="subTargetHumorLevel">Humor Level: {(subTargetFormData.humorLevel || 0).toFixed(1)}</label>
@@ -527,11 +758,13 @@ function SubTargetUsersView({ userId = 1 }) {
                       className="btn btn-primary btn-sm"
                       onClick={() => {
                         // Navigate with platform account ID for auto-filtering
+                        // Add from=subtargets to indicate coming from subtarget user instance
+                        const params = new URLSearchParams();
+                        params.append('from', 'subtargets');
                         if (subTarget.platformAccountId) {
-                          navigate(`/analysis/${targetId}?platformAccountId=${subTarget.platformAccountId}`);
-                        } else {
-                          navigate(`/analysis/${targetId}`);
+                          params.append('platformAccountId', subTarget.platformAccountId);
                         }
+                        navigate(`/analysis/${targetId}?${params.toString()}`);
                       }}
                     >
                       View Analysis

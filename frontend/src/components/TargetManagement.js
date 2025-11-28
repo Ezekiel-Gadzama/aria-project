@@ -460,7 +460,7 @@ function TargetManagement({ userId = 1 }) {
                       className="btn btn-primary btn-sm"
                       onClick={(e) => {
                         e.stopPropagation();
-                        navigate(`/analysis/${target.id}`);
+                        navigate(`/analysis/${target.id}?from=targets`);
                       }}
                       style={{ flexShrink: 0 }}
                     >

@@ -13,22 +13,32 @@ This document describes the overall architecture of the ARIA application, includ
 
 ## System Overview
 
-ARIA is a Java-based desktop application that automates and optimizes conversations on social platforms. The system uses AI to personalize communication strategies based on the user's successful historical chats.
+ARIA is a full-stack web application (Spring Boot REST API + React frontend) that automates and optimizes conversations on social platforms. The system uses AI to personalize communication strategies based on the user's successful historical chats.
 
 ### Core Principles
 
 1. **Platform Abstraction**: Support for multiple platforms (Telegram, WhatsApp, Instagram) through a unified connector interface
 2. **AI-Driven Personalization**: Uses OpenAI to analyze and categorize chats, then synthesizes communication styles
 3. **Weighted Learning**: 70%/15%/15% weighting system (successful/failed/base) for response generation
-4. **Human-in-the-Loop**: Allows user intervention for complex decisions
-5. **Token Management**: Intelligent filtering to manage OpenAI API token limits
+4. **Hierarchical Data Model**: Target Users (parent) with SubTarget Users (children) for cross-platform management
+5. **Cross-Platform Context**: Aggregate chat history across platforms for unified AI understanding
+6. **Human-in-the-Loop**: Allows user intervention for complex decisions
+7. **Token Management**: Intelligent filtering to manage OpenAI API token limits
+8. **RESTful Architecture**: Clean separation between backend API and frontend UI
 
 ## Architecture Layers
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    UI Layer (JavaFX)                     │
-│  User Registration | Target Management | Conversations   │
+│              Frontend Layer (React)                      │
+│  TargetManagement | ConversationView | AnalysisDashboard │
+│  EditTargetUser | SubTargetUsersView | Navigation        │
+└─────────────────────────────────────────────────────────┘
+                          ↓ HTTP/REST
+┌─────────────────────────────────────────────────────────┐
+│              REST API Layer (Spring Boot)                │
+│  TargetController | ConversationController | Platform    │
+│  UserController | AnalysisController                      │
 └─────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────┐
@@ -55,21 +65,53 @@ ARIA is a Java-based desktop application that automates and optimizes conversati
 │  Platform Layer      │        │   Storage Layer      │
 │ - Telegram Connector │        │ - Database Schema    │
 │ - Platform Abstraction│       │ - Database Manager   │
+│ - Python Scripts     │        │ - PostgreSQL         │
 └──────────────────────┘        └──────────────────────┘
 ```
 
 ### Layer Descriptions
 
-#### 1. UI Layer
-**Location**: `src/main/java/com/aria/ui/`
+#### 1. Frontend Layer (React)
+**Location**: `frontend/src/`
 
-- **Purpose**: JavaFX-based user interface for user interaction
+- **Purpose**: React-based web user interface for user interaction
 - **Components**:
-  - `MainApp.java` - Application entry point
-  - `UserRegistrationController.java` - User registration UI
-  - `TargetManagementController.java` - Target user management
-  - `ConversationController.java` - Conversation monitoring
-- **Reference**: See [UI Components Documentation](UI_COMPONENTS.md)
+  - `App.js` - Main application router
+  - `components/TargetManagement.js` - Target user list and management
+  - `components/EditTargetUser.js` - Target user editing page
+  - `components/SubTargetUsersView.js` - SubTarget user management page
+  - `components/ConversationView.js` - Conversation UI with real-time messaging
+  - `components/AnalysisDashboard.js` - Analysis and statistics dashboard
+  - `components/PlatformRegistration.js` - Platform account registration
+  - `components/UserRegistration.js` - User registration
+  - `services/api.js` - API client for backend communication
+- **Key Features**:
+  - React Router for navigation
+  - Real-time message polling
+  - Optimistic UI updates
+  - Media preview and upload
+  - Message pinning UI
+  - Cross-platform context toggle
+- **Reference**: See [Frontend Components Documentation](FRONTEND_COMPONENTS.md)
+
+#### 1b. REST API Layer (Spring Boot)
+**Location**: `src/main/java/com/aria/api/`
+
+- **Purpose**: RESTful API endpoints for frontend communication
+- **Components**:
+  - `controller/TargetController.java` - Target user CRUD operations
+  - `controller/ConversationController.java` - Conversation management (messages, send, edit, delete, pin)
+  - `controller/PlatformController.java` - Platform registration and management
+  - `controller/UserController.java` - User management
+  - `controller/AnalysisController.java` - Analysis and statistics endpoints
+  - `dto/` - Data Transfer Objects for API requests/responses
+- **Key Features**:
+  - RESTful endpoints at `/api/*`
+  - JSON request/response format
+  - CORS support for frontend
+  - Error handling with ApiResponse wrapper
+  - SubTarget User support in all endpoints
+- **Reference**: See [REST API Documentation](REST_API.md)
 
 #### 2. Core Orchestration Layer
 **Location**: `src/main/java/com/aria/core/`
@@ -277,13 +319,21 @@ User goal defined → Categories identified
 
 ## Technology Stack
 
-### Core Technologies
+### Backend Technologies
 
 - **Java 17+**: Primary language for application logic
+- **Spring Boot 3.2.0**: REST API framework
 - **Maven**: Build and dependency management
-- **JavaFX**: Desktop UI framework
 - **PostgreSQL 15+**: Relational database
 - **OkHttp**: HTTP client for API calls
+- **Gson**: JSON processing
+
+### Frontend Technologies
+
+- **React 18+**: UI framework
+- **React Router 6+**: Client-side routing
+- **Axios**: HTTP client for API calls
+- **npm**: Package management
 
 ### External Services
 
@@ -293,12 +343,20 @@ User goal defined → Categories identified
 
 ### Dependencies
 
-See `pom.xml` for complete dependency list:
+**Backend** (See `pom.xml`):
+- `org.springframework.boot:spring-boot-starter-web` - Spring Boot web
+- `org.springframework.boot:spring-boot-starter-data-jpa` - JPA support
 - `com.google.code.gson:gson` - JSON processing
 - `org.json:json` - JSON handling
-- `org.slf4j:slf4j-api` - Logging
-- `javafx-controls` - JavaFX UI controls
-- `postgresql` - PostgreSQL JDBC driver
+- `org.postgresql:postgresql` - PostgreSQL JDBC driver
+- `com.squareup.okhttp3:okhttp` - HTTP client
+
+**Frontend** (See `frontend/package.json`):
+- `react` - React library
+- `react-dom` - React DOM rendering
+- `react-router-dom` - Routing
+- `axios` - HTTP client
+- `react-scripts` - Build tooling
 
 ## Design Patterns
 
@@ -352,20 +410,50 @@ See `pom.xml` for complete dependency list:
 ## Module Organization
 
 ```
-com.aria/
-├── Main.java                          # Application entry point
-├── ai/                                # AI service integrations
-├── analysis/                          # Chat analysis services
-├── core/                              # Core orchestration
-│   ├── model/                         # Data models
-│   └── strategy/                      # Response strategies
-├── platform/                          # Platform connectors
-│   ├── telegram/
-│   ├── whatsapp/
-│   └── instagram/
-├── service/                           # Business logic services
-├── storage/                           # Database layer
-└── ui/                                # JavaFX UI controllers
+Aria/
+├── src/main/java/com/aria/
+│   ├── api/                           # REST API layer
+│   │   ├── controller/                # API controllers
+│   │   │   ├── TargetController.java
+│   │   │   ├── ConversationController.java
+│   │   │   ├── PlatformController.java
+│   │   │   ├── UserController.java
+│   │   │   └── AnalysisController.java
+│   │   └── dto/                       # Data Transfer Objects
+│   ├── ai/                            # AI service integrations
+│   ├── analysis/                      # Chat analysis services
+│   ├── core/                          # Core orchestration
+│   │   ├── model/                     # Data models
+│   │   │   ├── TargetUser.java
+│   │   │   ├── SubTargetUser.java
+│   │   │   ├── TargetGroup.java
+│   │   │   ├── SubTargetGroup.java
+│   │   │   └── ...
+│   │   └── strategy/                  # Response strategies
+│   ├── platform/                      # Platform connectors
+│   │   ├── telegram/
+│   │   ├── whatsapp/
+│   │   └── instagram/
+│   ├── service/                       # Business logic services
+│   ├── storage/                       # Database layer
+│   └── AriaApiApplication.java        # Spring Boot entry point
+├── frontend/
+│   ├── src/
+│   │   ├── components/                # React components
+│   │   │   ├── TargetManagement.js
+│   │   │   ├── EditTargetUser.js
+│   │   │   ├── SubTargetUsersView.js
+│   │   │   ├── ConversationView.js
+│   │   │   └── ...
+│   │   ├── services/
+│   │   │   └── api.js                 # API client
+│   │   └── App.js                     # Main app component
+│   └── package.json
+└── scripts/telethon/                  # Python scripts
+    ├── chat_ingestor.py
+    ├── priority_ingestor.py
+    ├── message_sender.py
+    └── ...
 ```
 
 ## Configuration Management

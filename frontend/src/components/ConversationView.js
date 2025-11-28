@@ -121,6 +121,21 @@ function ConversationView({ userId = 1 }) {
   const [lastHighestMessageId, setLastHighestMessageId] = useState(0); // Track highest message ID to detect new messages
   const [mediaViewer, setMediaViewer] = useState(null); // { type: 'image'|'video'|'audio', url, fileName } for media viewer modal
   const [pinnedMessages, setPinnedMessages] = useState([]); // Array of pinned messages to display at top
+  const [pinNotifications, setPinNotifications] = useState([]); // Array of pin notification messages { messageId, text, timestamp, pinnedBy }
+  const [previousPinnedState, setPreviousPinnedState] = useState(new Map()); // Track previous pinned state to detect changes
+  const [currentPinnedIndex, setCurrentPinnedIndex] = useState(0); // Index of pinned message to show at top (first one above viewport)
+
+  // Update current pinned index when pinned messages change
+  useEffect(() => {
+    if (pinnedMessages.length > 0) {
+      // Ensure current index is within bounds
+      if (currentPinnedIndex >= pinnedMessages.length || currentPinnedIndex < 0) {
+        setCurrentPinnedIndex(0);
+      }
+    } else {
+      setCurrentPinnedIndex(0);
+    }
+  }, [pinnedMessages.length, currentPinnedIndex]);
 
   useEffect(() => {
     loadTarget();
@@ -249,6 +264,7 @@ function ConversationView({ userId = 1 }) {
             mimeType: r.mimeType || null,
             edited: r.edited || false,
             referenceId: r.referenceId || null,
+            pinned: r.pinned || false, // Include pinned status in polling
           }));
           
           // Always sync messages to reflect deletions and updates from database
@@ -391,6 +407,76 @@ function ConversationView({ userId = 1 }) {
               }
             }
             
+            // CRITICAL: Separate pinned messages from regular messages for tracking
+            // BUT: Pinned messages should appear in BOTH the pinned section AND regular chat
+            const pinned = finalFilteredMessages.filter(msg => msg.pinned).sort((a, b) => b.messageId - a.messageId);
+            const unpinned = finalFilteredMessages.filter(msg => !msg.pinned);
+            // Keep all messages (including pinned) for display in chat
+            const allMessages = finalFilteredMessages;
+            
+            // Update pinned messages state - preserve existing pinned messages and merge with new ones
+            setPinnedMessages(prevPinned => {
+              // Always merge with existing pinned messages to preserve ones not in current batch
+              const existingIds = new Set(prevPinned.map(pm => pm.messageId));
+              const newPinnedIds = new Set(pinned.map(pm => pm.messageId));
+              
+              // Check for unpinned messages (were pinned before but not in new pinned list)
+              // Only remove if the message is in the current batch and explicitly not pinned
+              const messagesInBatch = new Set(finalFilteredMessages.map(m => m.messageId));
+              const unpinnedMessages = prevPinned.filter(pm => 
+                messagesInBatch.has(pm.messageId) && !newPinnedIds.has(pm.messageId)
+              );
+              
+              // Remove unpinned messages from preserved list
+              const preserved = prevPinned.filter(pm => 
+                !messagesInBatch.has(pm.messageId) || newPinnedIds.has(pm.messageId)
+              );
+              
+              // Combine preserved and new pinned messages, avoiding duplicates
+              const merged = [...pinned];
+              preserved.forEach(pm => {
+                if (!newPinnedIds.has(pm.messageId)) {
+                  merged.push(pm);
+                }
+              });
+              
+              return merged.sort((a, b) => b.messageId - a.messageId);
+            });
+            
+            // Detect newly pinned messages (for system notifications)
+            setPreviousPinnedState(prev => {
+              const newPinnedState = new Map();
+              const newNotifications = [];
+              
+              pinned.forEach(msg => {
+                newPinnedState.set(msg.messageId, true);
+                // If message wasn't pinned before, it's a new pin
+                if (!prev.has(msg.messageId) || !prev.get(msg.messageId)) {
+                  const displayText = msg.hasMedia 
+                    ? (msg.fileName || 'Media')
+                    : (msg.text || 'Message');
+                  newNotifications.push({
+                    messageId: msg.messageId,
+                    text: displayText,
+                    timestamp: msg.timestamp,
+                    pinnedBy: 'You' // Default to "You" since we don't track who pinned it
+                  });
+                }
+              });
+              
+              // Update notifications (keep existing ones, add new ones)
+              if (newNotifications.length > 0) {
+                setPinNotifications(prevNotifs => {
+                  // Merge with existing, avoiding duplicates
+                  const existingIds = new Set(prevNotifs.map(n => n.messageId));
+                  const uniqueNew = newNotifications.filter(n => !existingIds.has(n.messageId));
+                  return [...prevNotifs, ...uniqueNew].sort((a, b) => a.timestamp - b.timestamp);
+                });
+              }
+              
+              return newPinnedState;
+            });
+            
             // ALWAYS update messages after priority ingestion to reflect deletions
             // Database is the source of truth after priority ingestion has run
             // Priority ingestion has deleted messages from DB, so we must sync
@@ -403,7 +489,7 @@ function ConversationView({ userId = 1 }) {
             const idsDiffer = prevIds.size !== newIds.size || 
               [...prevIds].some(id => !newIds.has(id)) || 
               [...newIds].some(id => !prevIds.has(id));
-            const lengthDiffers = prevFiltered.length !== filteredMessages.length;
+            const lengthDiffers = prevFiltered.length !== allMessages.length;
             
             // If IDs or length differ, definitely update (deletions detected)
             // Use prevFiltered for all comparisons
@@ -420,10 +506,8 @@ function ConversationView({ userId = 1 }) {
                 }
               }, 100);
               
-              // Return synced messages (database is source of truth, except for recently edited and pending)
-              // If there were deletions, finalFilteredMessages will have fewer messages than prev
-              // Use finalFilteredMessages to ensure no deleted messages slip through
-              return finalFilteredMessages;
+              // Return all messages (including pinned) - they appear in both pinned section and chat
+              return allMessages;
             }
             
             // After priority ingestion runs, database is the source of truth
@@ -435,14 +519,14 @@ function ConversationView({ userId = 1 }) {
             
             // If IDs or length differ, always update (deletions or additions detected)
             // This ensures deletions are immediately reflected in UI
-            // Use finalFilteredMessages to ensure no deleted messages slip through
-            if (hasIdDifference || prevFiltered.length !== filteredMessages.length) {
-              return finalFilteredMessages;
+            // Return all messages (including pinned)
+            if (hasIdDifference || prevFiltered.length !== allMessages.length) {
+              return allMessages;
             }
             
-            // If everything matches exactly, return finalFilteredMessages to ensure no deleted messages
-            // This is a safety check - even if nothing changed, we want to make sure deleted messages are removed
-            return finalFilteredMessages;
+            // If everything matches exactly, return all messages (including pinned)
+            // Pinned messages appear in both pinned section and regular chat
+            return allMessages;
           });
           
           // Also update if messages array is empty (no messages in database after deletion)
@@ -928,8 +1012,47 @@ function ConversationView({ userId = 1 }) {
         const pinned = filteredLoadedMessages.filter(msg => msg.pinned).sort((a, b) => b.messageId - a.messageId);
         const unpinned = filteredLoadedMessages.filter(msg => !msg.pinned);
         
+        // Detect newly pinned messages (for system notifications)
+        setPreviousPinnedState(prev => {
+          const newPinnedState = new Map();
+          const newNotifications = [];
+          
+          pinned.forEach(msg => {
+            newPinnedState.set(msg.messageId, true);
+            // If message wasn't pinned before, it's a new pin
+            if (!prev.has(msg.messageId) || !prev.get(msg.messageId)) {
+              const displayText = msg.hasMedia 
+                ? (msg.fileName || 'Media')
+                : (msg.text || 'Message');
+              newNotifications.push({
+                messageId: msg.messageId,
+                text: displayText,
+                timestamp: msg.timestamp,
+                pinnedBy: 'You' // Default to "You" since we don't track who pinned it
+              });
+            }
+          });
+          
+          // Update notifications (keep existing ones, add new ones)
+          if (newNotifications.length > 0) {
+            setPinNotifications(prevNotifs => {
+              // Merge with existing, avoiding duplicates
+              const existingIds = new Set(prevNotifs.map(n => n.messageId));
+              const uniqueNew = newNotifications.filter(n => !existingIds.has(n.messageId));
+              return [...prevNotifs, ...uniqueNew].sort((a, b) => a.timestamp - b.timestamp);
+            });
+          }
+          
+          return newPinnedState;
+        });
+        
         setPinnedMessages(pinned);
-        setMessages(unpinned);
+        // Include pinned messages in regular chat too
+        setMessages(filteredLoadedMessages);
+        // Initialize current pinned index to 0 (first pinned message)
+        if (pinned.length > 0) {
+          setCurrentPinnedIndex(0);
+        }
         console.log(`Loaded ${filteredLoadedMessages.length} messages for target ${targetId} (${pinned.length} pinned)`);
         
         // Track highest message ID for new message detection
@@ -1456,77 +1579,291 @@ function ConversationView({ userId = 1 }) {
                 if (isNearBottom) {
                   setShowNewMessageNotification(false);
                 }
+                
+                // Update which pinned message to show based on scroll position
+                // Find the first pinned message that's above the current viewport
+                if (pinnedMessages.length > 0) {
+                  const scrollTop = container.scrollTop;
+                  const viewportTop = scrollTop;
+                  const viewportBottom = scrollTop + container.clientHeight;
+                  
+                  // Sort pinned messages by messageId (descending - newest first)
+                  const sortedPinned = [...pinnedMessages].sort((a, b) => b.messageId - a.messageId);
+                  
+                  // Always check the last pinned message first
+                  const lastPinnedIndex = sortedPinned.length - 1;
+                  const lastPinned = sortedPinned[lastPinnedIndex];
+                  const lastPinnedEl = container.querySelector(`[data-message-id="${lastPinned.messageId}"]`);
+                  
+                  if (lastPinnedEl) {
+                    const containerRect = container.getBoundingClientRect();
+                    const messageRect = lastPinnedEl.getBoundingClientRect();
+                    const lastPinnedTop = messageRect.top - containerRect.top + scrollTop;
+                    const lastPinnedBottom = lastPinnedTop + messageRect.height;
+                    
+                    // If we're at or past the last pinned message (scrolled to it or past it), always show it
+                    // Never change to a previous pinned message when we're at or past the last one
+                    if (viewportTop >= lastPinnedTop - 100) { // 100px buffer above
+                      // We're at or past the last pinned message - always show it
+                      if (currentPinnedIndex !== lastPinnedIndex) {
+                        setCurrentPinnedIndex(lastPinnedIndex);
+                      }
+                      return; // Don't check for other pinned messages
+                    }
+                  }
+                  
+                  // If we're before the last pinned message, find the first pinned message above the viewport
+                  let foundIndex = -1;
+                  for (let i = 0; i < sortedPinned.length; i++) {
+                    const pinnedMsg = sortedPinned[i];
+                    const messageEl = container.querySelector(`[data-message-id="${pinnedMsg.messageId}"]`);
+                    if (messageEl) {
+                      // Get position relative to container
+                      const containerRect = container.getBoundingClientRect();
+                      const messageRect = messageEl.getBoundingClientRect();
+                      const messageTop = messageRect.top - containerRect.top + scrollTop;
+                      const messageBottom = messageTop + messageRect.height;
+                      
+                      // Check if message is above the viewport (with some buffer)
+                      // Only consider messages that are actually above the viewport
+                      if (messageBottom < viewportTop + 100) { // 100px buffer
+                        foundIndex = i;
+                        break;
+                      }
+                    }
+                  }
+                  
+                  // If no pinned message found above viewport, show the first one
+                  if (foundIndex === -1 && sortedPinned.length > 0) {
+                    foundIndex = 0;
+                  }
+                  
+                  // Only update if we found a different index
+                  if (foundIndex >= 0 && foundIndex !== currentPinnedIndex) {
+                    setCurrentPinnedIndex(foundIndex);
+                  }
+                }
               }}
             >
-              {/* Pinned Messages Section */}
-              {pinnedMessages.length > 0 && (
-                <div style={{ 
-                  padding: '8px', 
-                  background: 'rgba(102, 126, 234, 0.1)', 
-                  borderBottom: '2px solid #667eea',
-                  marginBottom: '8px'
-                }}>
-                  <div style={{ fontSize: '0.75rem', fontWeight: 'bold', marginBottom: '4px', color: '#667eea' }}>
-                    📌 Pinned Messages
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    {pinnedMessages.map((pinnedMsg, idx) => {
-                      const displayText = pinnedMsg.hasMedia 
-                        ? (pinnedMsg.fileName || 'Media')
-                        : (pinnedMsg.text || 'Message');
-                      const truncatedText = displayText.length > 50 
-                        ? displayText.substring(0, 50) + '...'
-                        : displayText;
-                      
-                      return (
+              {/* Pinned Messages Section - Telegram Style - Shows first pinned message above viewport */}
+              {pinnedMessages.length > 0 && (() => {
+                // Sort pinned messages by messageId (descending - newest first)
+                const sortedPinned = [...pinnedMessages].sort((a, b) => b.messageId - a.messageId);
+                // Get the current pinned message to display (first one above viewport)
+                const currentPinned = sortedPinned[currentPinnedIndex] || sortedPinned[0];
+                
+                if (!currentPinned) return null;
+                
+                const displayText = currentPinned.hasMedia 
+                  ? (currentPinned.fileName || 'Media')
+                  : (currentPinned.text || 'Message');
+                const truncatedText = displayText.length > 60 
+                  ? displayText.substring(0, 60) + '...'
+                  : displayText;
+                
+                return (
+                  <div style={{ 
+                    padding: '12px 16px', 
+                    background: 'white',
+                    borderBottom: '1px solid #e0e0e0',
+                    marginBottom: '0',
+                    position: 'sticky',
+                    top: 0,
+                    zIndex: 10
+                  }}>
+                    <div style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '8px'
+                    }}>
+                      <div style={{
+                        width: '2px',
+                        height: '40px',
+                        background: '#999',
+                        borderRadius: '1px',
+                        marginLeft: '4px'
+                      }}></div>
+                      <div style={{ flex: 1 }}>
                         <div
-                          key={idx}
                           onClick={() => {
-                            // Scroll to the pinned message
-                            const messageEl = document.querySelector(`[data-message-id="${pinnedMsg.messageId}"]`);
+                            // Scroll to the pinned message within the messages container
+                            const container = messagesContainerRef.current;
+                            if (!container) return;
+                            
+                            // Try to find the message element
+                            const messageEl = container.querySelector(`[data-message-id="${currentPinned.messageId}"]`);
                             if (messageEl) {
-                              messageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                              // Calculate the position relative to the container
+                              const containerRect = container.getBoundingClientRect();
+                              const messageRect = messageEl.getBoundingClientRect();
+                              const scrollTop = container.scrollTop;
+                              const messageTop = messageRect.top - containerRect.top + scrollTop;
+                              
+                              // Scroll to center the message in the viewport
+                              const targetScroll = messageTop - (container.clientHeight / 2) + (messageRect.height / 2);
+                              container.scrollTo({
+                                top: targetScroll,
+                                behavior: 'smooth'
+                              });
+                              
                               // Highlight the message briefly
                               messageEl.style.background = 'rgba(102, 126, 234, 0.2)';
                               setTimeout(() => {
                                 messageEl.style.background = '';
-                              }, 1000);
+                              }, 2000);
+                              
+                              // After scrolling, update to show next pinned message
+                              setTimeout(() => {
+                                const sortedPinned = [...pinnedMessages].sort((a, b) => b.messageId - a.messageId);
+                                if (currentPinnedIndex < sortedPinned.length - 1) {
+                                  setCurrentPinnedIndex(currentPinnedIndex + 1);
+                                } else {
+                                  // If we're at the last pinned message, show the first one
+                                  setCurrentPinnedIndex(0);
+                                }
+                              }, 800);
+                            } else {
+                              console.warn('Pinned message element not found:', currentPinned.messageId);
                             }
                           }}
                           style={{
-                            padding: '6px 8px',
-                            background: 'white',
-                            borderRadius: '4px',
                             cursor: 'pointer',
-                            fontSize: '0.85rem',
-                            border: '1px solid #667eea',
                             display: 'flex',
+                            alignItems: 'center',
                             justifyContent: 'space-between',
-                            alignItems: 'center'
+                            padding: '4px 0'
                           }}
-                          onMouseEnter={(e) => e.target.style.background = '#f0f0f0'}
-                          onMouseLeave={(e) => e.target.style.background = 'white'}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.opacity = '0.7';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.opacity = '1';
+                          }}
                         >
-                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {truncatedText}
-                          </span>
-                          <span style={{ fontSize: '0.7rem', color: '#666', marginLeft: '8px' }}>
-                            {new Date(pinnedMsg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </span>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ 
+                              fontSize: '0.75rem', 
+                              color: '#0088cc', 
+                              fontWeight: '500',
+                              marginBottom: '2px'
+                            }}>
+                              Pinned message #{sortedPinned.length - currentPinnedIndex}
+                            </div>
+                            <div style={{ 
+                              fontSize: '0.875rem', 
+                              color: '#000',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap'
+                            }}>
+                              {truncatedText}
+                            </div>
+                          </div>
+                          <div style={{ 
+                            display: 'flex', 
+                            gap: '8px', 
+                            alignItems: 'center',
+                            marginLeft: '12px'
+                          }}>
+                            <span style={{ 
+                              fontSize: '0.75rem', 
+                              color: '#999',
+                              cursor: 'pointer'
+                            }}>📌</span>
+                            <span style={{ 
+                              fontSize: '0.75rem', 
+                              color: '#999',
+                              cursor: 'pointer'
+                            }}>☰</span>
+                          </div>
                         </div>
-                      );
-                    })}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              )}
-              {messages.length === 0 && pinnedMessages.length === 0 ? (
+                );
+              })()}
+              {messages.length === 0 && pinnedMessages.length === 0 && pinNotifications.length === 0 ? (
                 <div className="empty-messages">
                   <p>No messages yet. {conversationInitialized ? 'Start the conversation!' : 'Messages will appear here once ingestion is complete.'}</p>
                 </div>
               ) : (
-                messages.map((msg, idx) => {
-                  // Find the message being replied to (if any)
-                  const repliedToMsg = msg.referenceId ? messages.find(m => m.messageId === msg.referenceId) : null;
+                // Combine messages and pin notifications, sorted by timestamp
+                // IMPORTANT: Include pinned messages in regular chat (they show in both pinned section and chat)
+                (() => {
+                  // Create combined array with pin notifications
+                  const combined = [];
+                  
+                  // First, add all messages (including pinned ones - they should show in chat too)
+                  messages.forEach(msg => {
+                    combined.push({ ...msg, isPinNotification: false });
+                  });
+                  
+                  // Sort messages by timestamp first (so we can correctly position notifications)
+                  combined.sort((a, b) => {
+                    const timeA = a.timestamp?.getTime() || 0;
+                    const timeB = b.timestamp?.getTime() || 0;
+                    return timeA - timeB;
+                  });
+                  
+                  // Then, add pin notifications at the correct position (after the last message before the pinned message)
+                  pinNotifications.forEach(notif => {
+                    // Skip if notification already in combined array
+                    if (combined.some(item => item.isPinNotification && item.messageId === notif.messageId)) {
+                      return;
+                    }
+                    
+                    // Find the pinned message to get its timestamp
+                    const pinnedMsg = pinnedMessages.find(pm => pm.messageId === notif.messageId);
+                    if (pinnedMsg) {
+                      // Find the pinned message's position in the combined array
+                      const pinnedMsgIndex = combined.findIndex(item => 
+                        !item.isPinNotification && item.messageId === pinnedMsg.messageId
+                      );
+                      
+                      if (pinnedMsgIndex >= 0) {
+                        // Insert the notification AFTER the pinned message itself
+                        // A message can only be pinned after it was sent, so the notification should appear after the message
+                        const insertIndex = pinnedMsgIndex + 1;
+                        combined.splice(insertIndex, 0, { ...notif, isPinNotification: true, pinnedBy: notif.pinnedBy, timestamp: pinnedMsg.timestamp });
+                      } else {
+                        // Pinned message not in combined array, add notification at the end
+                        combined.push({ ...notif, isPinNotification: true, pinnedBy: notif.pinnedBy, timestamp: pinnedMsg.timestamp });
+                      }
+                    }
+                  });
+                  
+                  return combined.map((msg, idx) => {
+                    // Render pin notification as system message
+                    if (msg.isPinNotification) {
+                      return (
+                        <div
+                          key={`pin-notif-${msg.messageId}-${idx}`}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'center',
+                            alignItems: 'center',
+                            margin: '8px 0',
+                            padding: '0 16px'
+                          }}
+                        >
+                          <div style={{
+                            background: 'rgba(0, 0, 0, 0.05)',
+                            borderRadius: '12px',
+                            padding: '6px 12px',
+                            fontSize: '0.875rem',
+                            color: '#666',
+                            maxWidth: '80%',
+                            textAlign: 'center'
+                          }}>
+                            {msg.pinnedBy} pinned "{msg.text.length > 30 ? msg.text.substring(0, 30) + '...' : msg.text}"
+                          </div>
+                        </div>
+                      );
+                    }
+                    
+                    // Regular message rendering
+                    // Find the message being replied to (if any)
+                    const repliedToMsg = msg.referenceId ? messages.find(m => m.messageId === msg.referenceId) : null;
                   
                   return (
                   <div 
@@ -1666,6 +2003,9 @@ function ConversationView({ userId = 1 }) {
                     <div 
                       className="message-content" 
                       data-message-id={msg.messageId}
+                      style={{
+                        position: 'relative'
+                      }}
                       onClick={(e) => {
                         // In multi-select mode, allow clicking anywhere on message content to select
                         if (isMultiSelectMode) {
@@ -2066,7 +2406,8 @@ function ConversationView({ userId = 1 }) {
                     )}
                   </div>
                   );
-                })
+                  })
+                })()
               )}
             </div>
 
@@ -2105,7 +2446,12 @@ function ConversationView({ userId = 1 }) {
               <button
                 style={{
                   position: 'absolute',
-                  bottom: '60px',
+                  bottom: (() => {
+                    let offset = 60; // Base offset
+                    if (pendingMedia) offset += 60; // Add space for media preview
+                    if (replyingTo) offset += 50; // Add space for reply indicator
+                    return `${offset}px`;
+                  })(),
                   right: '20px',
                   width: '40px',
                   height: '40px',
@@ -2426,15 +2772,11 @@ function ConversationView({ userId = 1 }) {
                 style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}
                 onClick={async () => {
                   try {
+                    // Check if message is pinned (check both messages and pinnedMessages arrays)
                     const msg = messages.find(m => m.messageId === contextMenu.messageId);
-                    const isPinned = msg?.pinned || false;
+                    const pinnedMsg = pinnedMessages.find(pm => pm.messageId === contextMenu.messageId);
+                    const isPinned = msg?.pinned || pinnedMsg !== undefined;
                     await conversationApi.pin(targetId, userId, contextMenu.messageId, !isPinned, subtargetUserId);
-                    // Update local state
-                    setMessages(prev => prev.map(m => 
-                      m.messageId === contextMenu.messageId 
-                        ? { ...m, pinned: !isPinned }
-                        : m
-                    ));
                     // Reload messages to get updated pinned status
                     await loadMessages();
                   } catch (err) {
@@ -2447,7 +2789,7 @@ function ConversationView({ userId = 1 }) {
                 onMouseEnter={(e) => e.target.style.background = '#f5f5f5'}
                 onMouseLeave={(e) => e.target.style.background = 'transparent'}
               >
-                {messages.find(m => m.messageId === contextMenu.messageId)?.pinned ? '📌 Unpin' : '📌 Pin'}
+                {(messages.find(m => m.messageId === contextMenu.messageId)?.pinned || pinnedMessages.some(pm => pm.messageId === contextMenu.messageId)) ? '📌 Unpin' : '📌 Pin'}
               </div>
               <div
                 style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.9rem' }}

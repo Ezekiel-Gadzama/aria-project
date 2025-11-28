@@ -390,35 +390,121 @@ ConversationGoal goal = new ConversationGoal(
 - **Chat Retrieval**: `SmartChatSelector.getFilteredChats()`
 - **Response Generation**: `ResponseGenerator` uses goal for context
 
-## TargetUser Model
+## TargetUser Model (Parent Entity)
 
 **Location**: `src/main/java/com/aria/core/model/TargetUser.java`
 
 ### Purpose
 
-Represents a target user (the person the user wants to chat with). Stores basic information and platform details.
+Represents a Target User (parent entity) - platform-agnostic person information. This holds global information about the person, while SubTargetUser holds platform-specific instances.
 
 ### Structure
 
 ```java
 public class TargetUser {
-    private int id;
-    private int userId;           // Owner of this target
-    private String name;
-    private String nickname;
-    private String platform;      // "telegram", "whatsapp", etc.
-    private String platformId;    // Platform-specific ID
-    // ... other fields
+    private int targetId;
+    private int userId;                      // Owner of this target
+    private String name;                     // Person's name
+    private String bio;                     // Bio/description
+    private String desiredOutcome;          // What the user wants to achieve
+    private String meetingContext;          // Where/How You Met
+    private String importantDetails;        // Optional important details
+    private boolean crossPlatformContextEnabled; // Toggle for cross-platform context
+    private String profileJson;             // JSON profile data
+    private String profilePictureUrl;        // Profile picture URL
+    private List<SubTargetUser> subTargetUsers; // Child entities (platform-specific)
+    private ConversationGoal conversationGoal;
+    
+    // Legacy fields for backward compatibility
+    private List<UserPlatform> platforms;
+    private int selectedPlatformIndex;
 }
 ```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `targetId` | `int` | Database primary key |
+| `userId` | `int` | Owner of this target |
+| `name` | `String` | Person's name |
+| `bio` | `String` | Bio/description |
+| `desiredOutcome` | `String` | What the user wants to achieve |
+| `meetingContext` | `String` | Where/How You Met |
+| `importantDetails` | `String` | Optional important details |
+| `crossPlatformContextEnabled` | `boolean` | Toggle for cross-platform context aggregation |
+| `profileJson` | `String` | JSON profile data |
+| `profilePictureUrl` | `String` | Profile picture URL |
+| `subTargetUsers` | `List<SubTargetUser>` | Child entities (platform-specific instances) |
+
+### Key Methods
+
+- `addSubTargetUser(SubTargetUser)` - Add a SubTarget User
+- `findSubTargetByPlatform(Platform, Integer)` - Find SubTarget by platform and account
+- `getSubTargetUsers()` - Get all SubTarget Users
 
 ### Database Mapping
 
 - **Table**: `target_users`
 - **Foreign Key**: `user_id` → `users.id`
-- **Unique**: `(user_id, platform, platform_id)`
+- **Unique**: `(user_id, name)`
+- **Relationships**: One-to-many with `subtarget_users`
 
 **Reference**: [Storage Documentation](STORAGE.md#target_users-table)
+
+## SubTargetUser Model (Child Entity)
+
+**Location**: `src/main/java/com/aria/core/model/SubTargetUser.java`
+
+### Purpose
+
+Represents a platform-specific instance of a Target User. This is the child entity that holds platform-specific information. Conversations are started at the SubTarget User level.
+
+### Structure
+
+```java
+public class SubTargetUser {
+    private int id;
+    private int targetUserId;              // Parent Target User ID
+    private String name;                   // Platform-specific name/nickname
+    private String username;               // Platform username
+    private Platform platform;             // Platform enum (TELEGRAM, etc.)
+    private Integer platformAccountId;     // Reference to platform_accounts
+    private Long platformId;               // Platform-specific ID (e.g., Telegram user ID)
+    private String number;                 // Phone number if applicable
+    private String advancedCommunicationSettings; // JSON string for advanced settings
+    private LocalDateTime createdAt;
+}
+```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `int` | Database primary key |
+| `targetUserId` | `int` | Parent Target User ID |
+| `name` | `String` | Platform-specific name/nickname |
+| `username` | `String` | Platform username |
+| `platform` | `Platform` | Platform enum (TELEGRAM, etc.) |
+| `platformAccountId` | `Integer` | Reference to platform_accounts table |
+| `platformId` | `Long` | Platform-specific ID (e.g., Telegram user ID) |
+| `number` | `String` | Phone number if applicable |
+| `advancedCommunicationSettings` | `String` | JSON string for advanced settings |
+
+### Database Mapping
+
+- **Table**: `subtarget_users`
+- **Foreign Key**: `target_user_id` → `target_users.id` ON DELETE CASCADE
+- **Foreign Key**: `platform_account_id` → `platform_accounts.id` ON DELETE SET NULL
+- **Unique**: `(target_user_id, platform, platform_account_id, platform_id)`
+
+**Reference**: [Storage Documentation](STORAGE.md#subtarget_users-table)
+
+### Usage
+
+- Conversations are started at the SubTarget User level
+- Each SubTarget User represents the same person on a different platform/account
+- Cross-platform context can aggregate chat history from all SubTarget Users of a Target User
 
 ## User Model
 
@@ -462,6 +548,38 @@ Represents a communication style pattern. Similar to `ChatProfile` but used for 
 
 Used internally for style analysis and comparison.
 
+## TargetGroup and TargetChannel Models
+
+### TargetGroup Model (Parent Entity)
+
+**Location**: `src/main/java/com/aria/core/model/TargetGroup.java`
+
+Represents a parent Target Group for communal spaces. Has a hierarchical structure with SubTarget Groups.
+
+### SubTargetGroup Model (Child Entity)
+
+**Location**: `src/main/java/com/aria/core/model/SubTargetGroup.java`
+
+Represents a platform-specific instance of a Target Group. Only explicitly defined groups are ingested.
+
+### TargetChannel Model (Parent Entity)
+
+**Location**: `src/main/java/com/aria/core/model/TargetChannel.java`
+
+Represents a parent Target Channel for communal spaces. Has a hierarchical structure with SubTarget Channels.
+
+### SubTargetChannel Model (Child Entity)
+
+**Location**: `src/main/java/com/aria/core/model/SubTargetChannel.java`
+
+Represents a platform-specific instance of a Target Channel. Only explicitly defined channels are ingested.
+
+### Usage
+
+- Groups/channels are used for trend analysis, admin oversight, and knowledge base
+- Messages from groups/channels include `message_link` for reference
+- **Never used for 1-on-1 reply generation**
+
 ## Model Relationships
 
 ### Entity Relationship Diagram
@@ -470,23 +588,39 @@ Used internally for style analysis and comparison.
 users
   ├── dialogs (one-to-many)
   │   ├── messages (one-to-many)
+  │   │   └── pinned (boolean)
+  │   │   └── message_link (for groups/channels)
   │   ├── chat_goals (one-to-many)
   │   └── style_profiles (one-to-one)
-  ├── target_users (one-to-many)
+  ├── target_users (one-to-many) [PARENT]
+  │   ├── subtarget_users (one-to-many) [CHILD]
+  │   │   └── conversations (one-to-many)
+  │   │       └── subtarget_user_id (foreign key)
   │   └── goals (one-to-many)
   │       └── conversation_states (one-to-many)
-  └── user_platforms (one-to-many)
+  ├── target_groups (one-to-many) [PARENT]
+  │   └── subtarget_groups (one-to-many) [CHILD]
+  ├── target_channels (one-to-many) [PARENT]
+  │   └── subtarget_channels (one-to-many) [CHILD]
+  └── platform_accounts (one-to-many)
 ```
 
 ### Key Relationships
 
 1. **User → Dialogs**: One user has many chat dialogs
-2. **Dialog → Messages**: One dialog has many messages
+2. **Dialog → Messages**: One dialog has many messages (with `pinned` and `message_link` fields)
 3. **Dialog → ChatGoals**: One dialog can belong to multiple categories
 4. **Dialog → StyleProfile**: One dialog has one style profile (after analysis)
-5. **User → TargetUsers**: One user has many target users
-6. **TargetUser → Goals**: One target user can have multiple goals
-7. **Goal → ConversationStates**: One goal can have multiple conversation states
+5. **User → TargetUsers**: One user has many target users (parent entities)
+6. **TargetUser → SubTargetUsers**: One target user has many subtarget users (child entities) - **HIERARCHICAL**
+7. **SubTargetUser → Conversations**: Conversations are started at SubTarget User level
+8. **Conversation → SubTargetUser**: Each conversation is linked to a SubTarget User via `subtarget_user_id`
+9. **TargetUser → Goals**: One target user can have multiple goals
+10. **Goal → ConversationStates**: One goal can have multiple conversation states
+11. **User → TargetGroups**: One user has many target groups (parent entities)
+12. **TargetGroup → SubTargetGroups**: One target group has many subtarget groups (child entities) - **HIERARCHICAL**
+13. **User → TargetChannels**: One user has many target channels (parent entities)
+14. **TargetChannel → SubTargetChannels**: One target channel has many subtarget channels (child entities) - **HIERARCHICAL**
 
 ### Database Schema
 

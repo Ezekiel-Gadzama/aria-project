@@ -391,6 +391,38 @@ async def ingest_priority_target(target_username: str):
         telegram_message_info = {}  # {message_id: (text, timestamp, edit_date)}
         messages_saved = 0
         messages_updated = 0
+        
+        # Get all pinned messages for this entity once at the start
+        pinned_message_ids = set()
+        try:
+            # Check if entity has pinned_msg_id attribute (works for private chats and some group types)
+            if hasattr(entity, 'pinned_msg_id') and entity.pinned_msg_id:
+                pinned_message_ids.add(entity.pinned_msg_id)
+            
+            # For groups/channels, try to get the full entity with pinned message info
+            # Some entity types store pinned messages differently
+            try:
+                # Get full entity info which might have pinned message details
+                full_entity = await client.get_entity(entity)
+                if hasattr(full_entity, 'pinned_msg_id') and full_entity.pinned_msg_id:
+                    pinned_message_ids.add(full_entity.pinned_msg_id)
+            except Exception:
+                pass
+            
+            # Alternative: Check messages with filter for pinned messages
+            # This is more reliable for groups/channels
+            try:
+                from telethon.tl.types import InputMessagesFilterPinned
+                pinned_msgs = await client.get_messages(entity, limit=10, filter=InputMessagesFilterPinned())
+                if pinned_msgs:
+                    for msg in pinned_msgs:
+                        if hasattr(msg, 'id') and msg.id:
+                            pinned_message_ids.add(msg.id)
+            except Exception:
+                # If filter doesn't work, continue without it
+                pass
+        except Exception as e:
+            safe_print(f"Warning: Could not get pinned messages: {e}")
 
         try:
             async for message in client.iter_messages(entity, limit=50, offset_id=0):
@@ -457,6 +489,20 @@ async def ingest_priority_target(target_username: str):
                     message.date, has_media, raw_json, reference_id,
                     is_edited_on_telegram=is_edited_on_telegram
                 )
+                
+                # Check if message is pinned in Telegram and update database
+                is_pinned = message.id in pinned_message_ids
+                if msg_id:
+                    try:
+                        with get_connection() as conn, conn.cursor() as cur:
+                            cur.execute(
+                                "UPDATE messages SET pinned = %s WHERE id = %s",
+                                (is_pinned, msg_id)
+                            )
+                            conn.commit()
+                    except Exception as e:
+                        # If we can't update pinned status, continue - not critical
+                        safe_print(f"Warning: Could not update pinned status for message {message.id}: {e}")
                 if msg_id:
                     messages_saved += 1
                     # Download and save media if message has media

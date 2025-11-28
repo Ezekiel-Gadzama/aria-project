@@ -15,6 +15,7 @@ function AnalysisDashboard({ userId = 1 }) {
   const [targets, setTargets] = useState([]);
   const [registeredPlatformAccounts, setRegisteredPlatformAccounts] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [targetUserCategories, setTargetUserCategories] = useState([]);
   const [categorySearch, setCategorySearch] = useState('');
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const categoryDropdownRef = useRef(null);
@@ -24,6 +25,15 @@ function AnalysisDashboard({ userId = 1 }) {
     loadTargets();
     loadCategories();
   }, []);
+
+  useEffect(() => {
+    // Load target user categories when viewing a specific target
+    if (targetId) {
+      loadTargetUserCategories();
+    } else {
+      setTargetUserCategories([]);
+    }
+  }, [targetId]);
 
   // Check for platform account ID in URL params or location state (for auto-filtering)
   useEffect(() => {
@@ -94,6 +104,20 @@ function AnalysisDashboard({ userId = 1 }) {
     }
   };
 
+  const loadTargetUserCategories = async () => {
+    try {
+      const response = await targetApi.getTargetCategories(parseInt(targetId), userId);
+      if (response.data?.success) {
+        setTargetUserCategories(response.data.data || []);
+      } else {
+        setTargetUserCategories([]);
+      }
+    } catch (err) {
+      console.error('Failed to load target user categories:', err);
+      setTargetUserCategories([]);
+    }
+  };
+
   const loadAnalysisData = async () => {
     try {
       setLoading(true);
@@ -147,32 +171,102 @@ function AnalysisDashboard({ userId = 1 }) {
             {isTargetSpecific ? `Analysis: ${targetName}` : 'General Analysis'}
           </h1>
           <div className="header-actions">
-            {isTargetSpecific ? (
-              <>
-                <button 
-                  className="btn btn-secondary"
-                  onClick={() => {
-                    // Preserve subtargetUserId from URL params when navigating back
-                    const urlParams = new URLSearchParams(location.search);
-                    const subtargetUserId = urlParams.get('subtargetUserId');
-                    if (subtargetUserId) {
-                      navigate(`/conversations/${targetId}?subtargetUserId=${subtargetUserId}`);
-                    } else {
-                      navigate(`/conversations/${targetId}`);
-                    }
-                  }}
-                  style={{ marginRight: '0.5rem' }}
-                >
-                  ← Back to Conversation
-                </button>
-                <button 
-                  className="btn btn-secondary"
-                  onClick={() => navigate('/analysis')}
-                >
-                  General Analysis
-                </button>
-              </>
-            ) : (
+            {isTargetSpecific ? (() => {
+              // Determine back button based on navigation source
+              const urlParams = new URLSearchParams(location.search);
+              const subtargetUserId = urlParams.get('subtargetUserId');
+              const from = urlParams.get('from');
+              
+              // If subtargetUserId is present, user came from conversation view (subtarget user instance)
+              if (subtargetUserId) {
+                return (
+                  <>
+                    <button 
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        // Go back to subtarget users view (platform instances page)
+                        navigate(`/targets/${targetId}/subtargets`);
+                      }}
+                      style={{ marginRight: '0.5rem' }}
+                    >
+                      ← Back
+                    </button>
+                    <button 
+                      className="btn btn-secondary"
+                      onClick={() => navigate('/analysis')}
+                    >
+                      General Analysis
+                    </button>
+                  </>
+                );
+              }
+              
+              // Check the 'from' parameter to determine source
+              if (from === 'targets') {
+                // User came from main targets page
+                return (
+                  <>
+                    <button 
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        navigate('/targets');
+                      }}
+                      style={{ marginRight: '0.5rem' }}
+                    >
+                      ← Back to Targets
+                    </button>
+                    <button 
+                      className="btn btn-secondary"
+                      onClick={() => navigate('/analysis')}
+                    >
+                      General Analysis
+                    </button>
+                  </>
+                );
+              } else if (from === 'subtargets') {
+                // User came from platform instances page (SubTargetUsersView)
+                return (
+                  <>
+                    <button 
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        navigate(`/targets/${targetId}/subtargets`);
+                      }}
+                      style={{ marginRight: '0.5rem' }}
+                    >
+                      ← Back
+                    </button>
+                    <button 
+                      className="btn btn-secondary"
+                      onClick={() => navigate('/analysis')}
+                    >
+                      General Analysis
+                    </button>
+                  </>
+                );
+              }
+              
+              // Default: assume from platform instances page if no 'from' param
+              return (
+                <>
+                  <button 
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      navigate(`/targets/${targetId}/subtargets`);
+                    }}
+                    style={{ marginRight: '0.5rem' }}
+                  >
+                    ← Back
+                  </button>
+                  <button 
+                    className="btn btn-secondary"
+                    onClick={() => navigate('/analysis')}
+                  >
+                    General Analysis
+                  </button>
+                </>
+              );
+            })() : (
               <button 
                 className="btn btn-secondary"
                 onClick={() => navigate('/targets')}
@@ -201,77 +295,158 @@ function AnalysisDashboard({ userId = 1 }) {
               ))}
             </select>
           </div>
-          <div className="filter-group" style={{ position: 'relative' }} ref={categoryDropdownRef}>
-            <label>Category:</label>
-            <div style={{ position: 'relative' }}>
-              <input
-                type="text"
-                value={selectedCategory === 'all' ? categorySearch : (categorySearch || selectedCategory)}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setCategorySearch(val);
-                  setShowCategoryDropdown(true);
-                  if (val === '') {
-                    setSelectedCategory('all');
-                  }
-                }}
-                onFocus={() => setShowCategoryDropdown(true)}
-                placeholder={selectedCategory === 'all' ? "Search categories..." : selectedCategory.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-                style={{ width: '100%', padding: '0.5rem' }}
-              />
-              {showCategoryDropdown && (
-                <div style={{
-                  position: 'absolute',
-                  top: '100%',
-                  left: 0,
-                  right: 0,
-                  maxHeight: '400px',
-                  overflowY: 'auto',
-                  backgroundColor: 'white',
-                  border: '1px solid #ddd',
-                  borderRadius: '4px',
-                  zIndex: 1000,
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
-                }}>
-                  <div
-                    style={{ padding: '0.5rem', cursor: 'pointer', backgroundColor: selectedCategory === 'all' ? '#f0f0f0' : 'white' }}
+          {isTargetSpecific ? (
+            // Show target user categories as a list instead of search filter
+            <div className="filter-group">
+              <label>Categories:</label>
+              <div style={{ 
+                padding: '0.75rem', 
+                border: '1px solid #ddd', 
+                borderRadius: '4px', 
+                backgroundColor: '#f9f9f9',
+                minHeight: '40px',
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '0.5rem',
+                alignItems: 'center'
+              }}>
+                {targetUserCategories.length > 0 ? (
+                  targetUserCategories.map((category) => (
+                    <span
+                      key={category}
+                      style={{
+                        padding: '0.25rem 0.5rem',
+                        backgroundColor: selectedCategory === category ? '#e3f2fd' : '#e0e0e0',
+                        borderRadius: '4px',
+                        fontSize: '0.9rem',
+                        cursor: 'pointer',
+                        border: selectedCategory === category ? '1px solid #2196F3' : '1px solid #ccc'
+                      }}
+                      onClick={() => {
+                        setSelectedCategory(category);
+                      }}
+                      onMouseEnter={(e) => {
+                        if (selectedCategory !== category) {
+                          e.target.style.backgroundColor = '#d0d0d0';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (selectedCategory !== category) {
+                          e.target.style.backgroundColor = '#e0e0e0';
+                        }
+                      }}
+                    >
+                      {category.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                    </span>
+                  ))
+                ) : (
+                  <span style={{ color: '#666', fontStyle: 'italic' }}>
+                    No categories assigned yet
+                  </span>
+                )}
+                {targetUserCategories.length > 0 && (
+                  <span
+                    style={{
+                      padding: '0.25rem 0.5rem',
+                      backgroundColor: selectedCategory === 'all' ? '#e3f2fd' : '#e0e0e0',
+                      borderRadius: '4px',
+                      fontSize: '0.9rem',
+                      cursor: 'pointer',
+                      border: selectedCategory === 'all' ? '1px solid #2196F3' : '1px solid #ccc'
+                    }}
                     onClick={() => {
                       setSelectedCategory('all');
-                      setCategorySearch('');
-                      setShowCategoryDropdown(false);
+                    }}
+                    onMouseEnter={(e) => {
+                      if (selectedCategory !== 'all') {
+                        e.target.style.backgroundColor = '#d0d0d0';
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (selectedCategory !== 'all') {
+                        e.target.style.backgroundColor = '#e0e0e0';
+                      }
                     }}
                   >
                     All Categories
-                  </div>
-                  {categories
-                    .filter(cat => {
-                      const searchLower = categorySearch.toLowerCase();
-                      return cat.toLowerCase().includes(searchLower) || 
-                             cat.toLowerCase().replace(/_/g, ' ').includes(searchLower);
-                    })
-                    .map((category) => (
-                      <div
-                        key={category}
-                        style={{
-                          padding: '0.5rem',
-                          cursor: 'pointer',
-                          backgroundColor: selectedCategory === category ? '#e3f2fd' : 'white'
-                        }}
-                        onClick={() => {
-                          setSelectedCategory(category);
-                          setCategorySearch('');
-                          setShowCategoryDropdown(false);
-                        }}
-                        onMouseEnter={(e) => e.target.style.backgroundColor = '#f5f5f5'}
-                        onMouseLeave={(e) => e.target.style.backgroundColor = selectedCategory === category ? '#e3f2fd' : 'white'}
-                      >
-                        {category.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-                      </div>
-                    ))}
-                </div>
-              )}
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
+          ) : (
+            // Show category search filter for general analysis
+            <div className="filter-group" style={{ position: 'relative' }} ref={categoryDropdownRef}>
+              <label>Category:</label>
+              <div style={{ position: 'relative' }}>
+                <input
+                  type="text"
+                  value={selectedCategory === 'all' ? categorySearch : (categorySearch || selectedCategory)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setCategorySearch(val);
+                    setShowCategoryDropdown(true);
+                    if (val === '') {
+                      setSelectedCategory('all');
+                    }
+                  }}
+                  onFocus={() => setShowCategoryDropdown(true)}
+                  placeholder={selectedCategory === 'all' ? "Search categories..." : selectedCategory.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                  style={{ width: '100%', padding: '0.5rem' }}
+                />
+                {showCategoryDropdown && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '100%',
+                    left: 0,
+                    right: 0,
+                    maxHeight: '400px',
+                    overflowY: 'auto',
+                    backgroundColor: 'white',
+                    border: '1px solid #ddd',
+                    borderRadius: '4px',
+                    zIndex: 1000,
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+                  }}>
+                    <div
+                      style={{ padding: '0.5rem', cursor: 'pointer', backgroundColor: selectedCategory === 'all' ? '#f0f0f0' : 'white' }}
+                      onClick={() => {
+                        setSelectedCategory('all');
+                        setCategorySearch('');
+                        setShowCategoryDropdown(false);
+                      }}
+                    >
+                      All Categories
+                    </div>
+                    {categories
+                      .filter(cat => {
+                        const searchLower = categorySearch.toLowerCase();
+                        return cat.toLowerCase().includes(searchLower) || 
+                               cat.toLowerCase().replace(/_/g, ' ').includes(searchLower);
+                      })
+                      .map((category) => (
+                        <div
+                          key={category}
+                          style={{
+                            padding: '0.5rem',
+                            cursor: 'pointer',
+                            backgroundColor: selectedCategory === category ? '#e3f2fd' : 'white'
+                          }}
+                          onClick={() => {
+                            setSelectedCategory(category);
+                            setCategorySearch('');
+                            setShowCategoryDropdown(false);
+                          }}
+                          onMouseEnter={(e) => e.target.style.backgroundColor = '#f5f5f5'}
+                          onMouseLeave={(e) => e.target.style.backgroundColor = selectedCategory === category ? '#e3f2fd' : 'white'}
+                        >
+                          {category.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {analysisData && (
