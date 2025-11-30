@@ -124,9 +124,10 @@ function ConversationView({ userId = 1 }) {
   const [pinNotifications, setPinNotifications] = useState([]); // Array of pin notification messages { messageId, text, timestamp, pinnedBy }
   const [previousPinnedState, setPreviousPinnedState] = useState(new Map()); // Track previous pinned state to detect changes
   const [currentPinnedIndex, setCurrentPinnedIndex] = useState(0); // Index of pinned message to show at top (first one above viewport)
-  const [aiSuggestion, setAiSuggestion] = useState(null); // AI-generated suggestion (single)
-  const [aiSuggestions, setAiSuggestions] = useState(null); // AI-generated suggestions (multiple)
+  const [aiSuggestion, setAiSuggestion] = useState(null); // AI-generated suggestion (single) - can be string or {suggestion, reference}
+  const [aiSuggestions, setAiSuggestions] = useState(null); // AI-generated suggestions (multiple) - array of {suggestion, reference}
   const [showMultipleSuggestions, setShowMultipleSuggestions] = useState(false); // Checkbox state
+  const [referenceContext, setReferenceContext] = useState(null); // Reference message context for popup
   const [loadingSuggestion, setLoadingSuggestion] = useState(false); // Loading state for AI suggestion
 
   // Update current pinned index when pinned messages change
@@ -2713,8 +2714,10 @@ function ConversationView({ userId = 1 }) {
                       const response = await conversationApi.getSuggestion(targetId, userId, subtargetUserId, showMultipleSuggestions);
                       if (response.data?.success) {
                         if (showMultipleSuggestions && Array.isArray(response.data.data)) {
+                          // Handle array of SuggestionResponse objects
                           setAiSuggestions(response.data.data);
                         } else {
+                          // Handle single SuggestionResponse object
                           setAiSuggestion(response.data.data);
                         }
                       } else {
@@ -2779,6 +2782,64 @@ function ConversationView({ userId = 1 }) {
                 ×
               </button>
             </div>
+            
+            {/* Reference Display */}
+            {aiSuggestion.reference && (
+              <div style={{
+                marginBottom: '0.75rem',
+                padding: '0.75rem',
+                backgroundColor: '#fff3cd',
+                border: '1px solid #ffc107',
+                borderRadius: '6px',
+                fontSize: '0.85rem'
+              }}>
+                <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#856404' }}>
+                  📎 Based on reference message:
+                </div>
+                <div style={{ marginBottom: '0.5rem', color: '#333' }}>
+                  <strong>Conversation:</strong> {aiSuggestion.reference.dialogName || 'Unknown'}
+                </div>
+                <div style={{ 
+                  marginBottom: '0.5rem', 
+                  padding: '0.5rem',
+                  backgroundColor: 'white',
+                  borderRadius: '4px',
+                  fontStyle: 'italic',
+                  color: '#555'
+                }}>
+                  "{aiSuggestion.reference.messageText || 'Reference message'}"
+                </div>
+                {aiSuggestion.reference.messageTimestamp && (
+                  <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.5rem' }}>
+                    {new Date(aiSuggestion.reference.messageTimestamp).toLocaleString()}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const response = await conversationApi.getReferenceContext(
+                        aiSuggestion.reference.dialogId,
+                        aiSuggestion.reference.messageId,
+                        50,
+                        50,
+                        userId
+                      );
+                      if (response.data?.success) {
+                        setReferenceContext(response.data.data);
+                      }
+                    } catch (err) {
+                      setError(err.response?.data?.error || err.message || 'Failed to load reference context');
+                    }
+                  }}
+                  className="btn btn-sm btn-outline-warning"
+                  style={{ width: '100%' }}
+                >
+                  View Reference Context
+                </button>
+              </div>
+            )}
+            
             <div style={{
               padding: '0.75rem',
               backgroundColor: 'white',
@@ -2789,12 +2850,13 @@ function ConversationView({ userId = 1 }) {
               whiteSpace: 'pre-wrap',
               wordWrap: 'break-word'
             }}>
-              {aiSuggestion}
+              {typeof aiSuggestion === 'string' ? aiSuggestion : aiSuggestion.suggestion}
             </div>
             <button
               type="button"
               onClick={() => {
-                setNewMessage(aiSuggestion);
+                const suggestionText = typeof aiSuggestion === 'string' ? aiSuggestion : aiSuggestion.suggestion;
+                setNewMessage(suggestionText);
                 setAiSuggestion(null);
                 setAiSuggestions(null);
                 // Focus the input field
@@ -2865,55 +2927,117 @@ function ConversationView({ userId = 1 }) {
               </button>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              {aiSuggestions.map((suggestion, index) => (
-                <div
-                  key={index}
-                  style={{
-                    padding: '1rem',
-                    backgroundColor: '#f9f9f9',
-                    border: '1px solid #ddd',
-                    borderRadius: '8px',
-                    position: 'relative'
-                  }}
-                >
-                  <div style={{
-                    padding: '0.75rem',
-                    backgroundColor: 'white',
-                    borderRadius: '4px',
-                    marginBottom: '0.75rem',
-                    fontSize: '0.95rem',
-                    lineHeight: '1.5',
-                    whiteSpace: 'pre-wrap',
-                    wordWrap: 'break-word',
-                    minHeight: '60px'
-                  }}>
-                    {suggestion}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNewMessage(suggestion);
-                      setAiSuggestions(null);
-                      setAiSuggestion(null);
-                      // Focus the input field
-                      setTimeout(() => {
-                        if (messageInputRef.current) {
-                          messageInputRef.current.focus();
-                          // Move cursor to end
-                          messageInputRef.current.setSelectionRange(
-                            messageInputRef.current.value.length,
-                            messageInputRef.current.value.length
-                          );
-                        }
-                      }, 100);
+              {aiSuggestions.map((suggestionObj, index) => {
+                const suggestion = typeof suggestionObj === 'string' ? suggestionObj : suggestionObj.suggestion;
+                const reference = typeof suggestionObj === 'object' ? suggestionObj.reference : null;
+                
+                return (
+                  <div
+                    key={index}
+                    style={{
+                      padding: '1rem',
+                      backgroundColor: '#f9f9f9',
+                      border: '1px solid #ddd',
+                      borderRadius: '8px',
+                      position: 'relative'
                     }}
-                    className="btn btn-primary btn-sm"
-                    style={{ width: '100%' }}
                   >
-                    Copy to Message Field
-                  </button>
-                </div>
-              ))}
+                    {/* Reference Display */}
+                    {reference && (
+                      <div style={{
+                        marginBottom: '0.75rem',
+                        padding: '0.75rem',
+                        backgroundColor: '#fff3cd',
+                        border: '1px solid #ffc107',
+                        borderRadius: '6px',
+                        fontSize: '0.85rem'
+                      }}>
+                        <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#856404' }}>
+                          📎 Based on reference message:
+                        </div>
+                        <div style={{ marginBottom: '0.5rem', color: '#333' }}>
+                          <strong>Conversation:</strong> {reference.dialogName || 'Unknown'}
+                        </div>
+                        <div style={{ 
+                          marginBottom: '0.5rem', 
+                          padding: '0.5rem',
+                          backgroundColor: 'white',
+                          borderRadius: '4px',
+                          fontStyle: 'italic',
+                          color: '#555'
+                        }}>
+                          "{reference.messageText || 'Reference message'}"
+                        </div>
+                        {reference.messageTimestamp && (
+                          <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.5rem' }}>
+                            {new Date(reference.messageTimestamp).toLocaleString()}
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const response = await conversationApi.getReferenceContext(
+                                reference.dialogId,
+                                reference.messageId,
+                                50,
+                                50,
+                                userId
+                              );
+                              if (response.data?.success) {
+                                setReferenceContext(response.data.data);
+                              }
+                            } catch (err) {
+                              setError(err.response?.data?.error || err.message || 'Failed to load reference context');
+                            }
+                          }}
+                          className="btn btn-sm btn-outline-warning"
+                          style={{ width: '100%' }}
+                        >
+                          View Reference Context
+                        </button>
+                      </div>
+                    )}
+                    
+                    <div style={{
+                      padding: '0.75rem',
+                      backgroundColor: 'white',
+                      borderRadius: '4px',
+                      marginBottom: '0.75rem',
+                      fontSize: '0.95rem',
+                      lineHeight: '1.5',
+                      whiteSpace: 'pre-wrap',
+                      wordWrap: 'break-word',
+                      minHeight: '60px'
+                    }}>
+                      {suggestion}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewMessage(suggestion);
+                        setAiSuggestions(null);
+                        setAiSuggestion(null);
+                        // Focus the input field
+                        setTimeout(() => {
+                          if (messageInputRef.current) {
+                            messageInputRef.current.focus();
+                            // Move cursor to end
+                            messageInputRef.current.setSelectionRange(
+                              messageInputRef.current.value.length,
+                              messageInputRef.current.value.length
+                            );
+                          }
+                        }, 100);
+                      }}
+                      className="btn btn-primary btn-sm"
+                      style={{ width: '100%' }}
+                    >
+                      Copy to Message Field
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -2935,6 +3059,177 @@ function ConversationView({ userId = 1 }) {
               setAiSuggestion(null);
             }}
           />
+        )}
+
+        {/* Reference Context Viewer Popup */}
+        {referenceContext && (
+          <>
+            <div
+              style={{
+                position: 'fixed',
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                backgroundColor: 'white',
+                border: '2px solid #ffc107',
+                borderRadius: '12px',
+                padding: '1.5rem',
+                maxWidth: '800px',
+                width: '90%',
+                maxHeight: '85vh',
+                overflowY: 'auto',
+                zIndex: 1001,
+                boxShadow: '0 4px 20px rgba(0,0,0,0.4)'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <div>
+                  <div style={{ fontWeight: 'bold', color: '#856404', fontSize: '1.1rem', marginBottom: '0.25rem' }}>
+                    📎 Reference Message Context
+                  </div>
+                  <div style={{ fontSize: '0.9rem', color: '#666' }}>
+                    {referenceContext.dialogName || 'Unknown Conversation'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReferenceContext(null)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    fontSize: '1.5rem',
+                    cursor: 'pointer',
+                    color: '#666',
+                    padding: '0',
+                    lineHeight: '1',
+                    width: '30px',
+                    height: '30px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}
+                  title="Close"
+                >
+                  ×
+                </button>
+              </div>
+
+              {/* Messages Before Reference */}
+              {referenceContext.messagesBefore && referenceContext.messagesBefore.length > 0 && (
+                <div style={{ marginBottom: '1rem' }}>
+                  <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#666', fontSize: '0.9rem' }}>
+                    Previous Messages ({referenceContext.messagesBefore.length})
+                  </div>
+                  <div style={{ 
+                    maxHeight: '200px', 
+                    overflowY: 'auto',
+                    padding: '0.5rem',
+                    backgroundColor: '#f9f9f9',
+                    borderRadius: '6px'
+                  }}>
+                    {referenceContext.messagesBefore.map((msg, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          marginBottom: '0.5rem',
+                          padding: '0.5rem',
+                          backgroundColor: msg.fromUser ? '#e3f2fd' : '#f5f5f5',
+                          borderRadius: '4px',
+                          fontSize: '0.9rem'
+                        }}
+                      >
+                        <div style={{ fontWeight: 'bold', marginBottom: '0.25rem', fontSize: '0.8rem', color: '#666' }}>
+                          {msg.fromUser ? 'You' : 'Them'} • {msg.timestamp ? new Date(msg.timestamp).toLocaleString() : ''}
+                        </div>
+                        <div>{msg.text || '(No text)'}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Reference Message (Highlighted) */}
+              {referenceContext.referenceMessage && (
+                <div style={{ 
+                  marginBottom: '1rem',
+                  padding: '1rem',
+                  backgroundColor: '#fff3cd',
+                  border: '2px solid #ffc107',
+                  borderRadius: '8px',
+                  position: 'relative'
+                }}>
+                  <div style={{ 
+                    position: 'absolute',
+                    top: '-10px',
+                    left: '10px',
+                    backgroundColor: '#ffc107',
+                    color: '#856404',
+                    padding: '0.25rem 0.5rem',
+                    borderRadius: '4px',
+                    fontSize: '0.75rem',
+                    fontWeight: 'bold'
+                  }}>
+                    REFERENCE MESSAGE
+                  </div>
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', fontSize: '0.9rem', color: '#856404' }}>
+                      {referenceContext.referenceMessage.fromUser ? 'You' : 'Them'} • {referenceContext.referenceMessage.timestamp ? new Date(referenceContext.referenceMessage.timestamp).toLocaleString() : ''}
+                    </div>
+                    <div style={{ fontSize: '1rem', lineHeight: '1.6', whiteSpace: 'pre-wrap' }}>
+                      {referenceContext.referenceMessage.text || '(No text)'}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Messages After Reference */}
+              {referenceContext.messagesAfter && referenceContext.messagesAfter.length > 0 && (
+                <div>
+                  <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#666', fontSize: '0.9rem' }}>
+                    Following Messages ({referenceContext.messagesAfter.length})
+                  </div>
+                  <div style={{ 
+                    maxHeight: '200px', 
+                    overflowY: 'auto',
+                    padding: '0.5rem',
+                    backgroundColor: '#f9f9f9',
+                    borderRadius: '6px'
+                  }}>
+                    {referenceContext.messagesAfter.map((msg, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          marginBottom: '0.5rem',
+                          padding: '0.5rem',
+                          backgroundColor: msg.fromUser ? '#e3f2fd' : '#f5f5f5',
+                          borderRadius: '4px',
+                          fontSize: '0.9rem'
+                        }}
+                      >
+                        <div style={{ fontWeight: 'bold', marginBottom: '0.25rem', fontSize: '0.8rem', color: '#666' }}>
+                          {msg.fromUser ? 'You' : 'Them'} • {msg.timestamp ? new Date(msg.timestamp).toLocaleString() : ''}
+                        </div>
+                        <div>{msg.text || '(No text)'}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* Backdrop for reference popup */}
+            <div
+              style={{
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                backgroundColor: 'rgba(0, 0, 0, 0.6)',
+                zIndex: 1000
+              }}
+              onClick={() => setReferenceContext(null)}
+            />
+          </>
         )}
         
         {/* Right-click Context Menu */}

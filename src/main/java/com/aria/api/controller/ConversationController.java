@@ -1160,7 +1160,7 @@ public class ConversationController {
      * GET /api/conversations/suggest?targetUserId=...&userId=...&subtargetUserId=...&multiple=false
      */
     @GetMapping("/suggest")
-    public ResponseEntity<ApiResponse<Object>> generateSuggestion(
+    public ResponseEntity<ApiResponse<?>> generateSuggestion(
             @RequestParam("targetUserId") Integer targetUserId,
             @RequestParam(value = "userId", required = false) Integer userId,
             @RequestParam(value = "subtargetUserId", required = false) Integer subtargetUserId,
@@ -1188,6 +1188,31 @@ public class ConversationController {
 
             // Check if cross-platform context is enabled
             boolean crossPlatformContextEnabled = targetUser.isCrossPlatformContextEnabled();
+
+            // Check if admin mode is enabled for the user
+            boolean adminModeEnabled = false;
+            try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                    System.getenv("DATABASE_URL") != null
+                            ? System.getenv("DATABASE_URL")
+                            : "jdbc:postgresql://localhost:5432/aria",
+                    System.getenv("DATABASE_USER") != null
+                            ? System.getenv("DATABASE_USER")
+                            : "postgres",
+                    System.getenv("DATABASE_PASSWORD") != null
+                            ? System.getenv("DATABASE_PASSWORD")
+                            : "Ezekiel(23)")) {
+                try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                        "SELECT admin_mode_enabled FROM users WHERE id = ?")) {
+                    ps.setInt(1, currentUserId);
+                    try (java.sql.ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            adminModeEnabled = rs.getBoolean("admin_mode_enabled");
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Warning: Failed to check admin mode: " + e.getMessage());
+            }
 
             // Initialize response manager and context builder
             com.aria.ai.AriaResponseManager responseManager = new com.aria.ai.AriaResponseManager();
@@ -1280,6 +1305,10 @@ public class ConversationController {
             }
 
             String suggestion = null;
+            Integer referenceDialogId = null;
+            Long referenceMessageId = null;
+            String referenceMessageText = null;
+            String referenceDialogName = null;
 
             if (previousResponseId != null) {
                 // Continue existing conversation - send all new messages since last suggestion
@@ -1288,13 +1317,78 @@ public class ConversationController {
                 // First call - build full 70/15/15 context
                 try {
                     String fullContext = contextBuilder.build70_15_15_Context(
-                        targetUser, subtargetUser, currentUserId, crossPlatformContextEnabled);
+                        targetUser, subtargetUser, currentUserId, crossPlatformContextEnabled, adminModeEnabled);
                     suggestion = responseManager.generateReply(targetUser, subtargetUser, 
                         fullContext + "\n\nNew message to respond to: " + newMessage, fullContext, highestMessageId);
                 } catch (Exception e) {
                     System.err.println("Error building 70/15/15 context: " + e.getMessage());
                     e.printStackTrace();
                     // Fall through to default response
+                }
+            }
+            
+            // Parse reference from suggestion if present (only if admin mode is enabled)
+            if (adminModeEnabled && suggestion != null && suggestion.contains("[REFERENCE:")) {
+                try {
+                    // Extract reference: [REFERENCE: DIALOG_ID=123, MESSAGE_ID=456]
+                    java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
+                        "\\[REFERENCE:\\s*DIALOG_ID=(\\d+),\\s*MESSAGE_ID=(\\d+)\\]", 
+                        java.util.regex.Pattern.CASE_INSENSITIVE);
+                    java.util.regex.Matcher matcher = pattern.matcher(suggestion);
+                    if (matcher.find()) {
+                        referenceDialogId = Integer.parseInt(matcher.group(1));
+                        referenceMessageId = Long.parseLong(matcher.group(2));
+                        
+                        // Remove reference tag from suggestion text
+                        suggestion = suggestion.replaceAll("\\[REFERENCE:[^\\]]+\\]\\s*", "").trim();
+                        
+                        // Fetch reference message details
+                        try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                                System.getenv("DATABASE_URL") != null
+                                        ? System.getenv("DATABASE_URL")
+                                        : "jdbc:postgresql://localhost:5432/aria",
+                                System.getenv("DATABASE_USER") != null
+                                        ? System.getenv("DATABASE_USER")
+                                        : "postgres",
+                                System.getenv("DATABASE_PASSWORD") != null
+                                        ? System.getenv("DATABASE_PASSWORD")
+                                        : "Ezekiel(23)")) {
+                            
+                            // Get dialog name
+                            try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                    "SELECT name FROM dialogs WHERE id = ?")) {
+                                ps.setInt(1, referenceDialogId);
+                                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                    if (rs.next()) {
+                                        referenceDialogName = rs.getString("name");
+                                    }
+                                }
+                            }
+                            
+                            // Get message text (timestamp will be fetched later when building ReferenceInfo)
+                            try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                                    "SELECT text FROM messages WHERE message_id = ? AND dialog_id = ?")) {
+                                ps.setLong(1, referenceMessageId);
+                                ps.setInt(2, referenceDialogId);
+                                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                                    if (rs.next()) {
+                                        String encryptedText = rs.getString("text");
+                                        if (encryptedText != null && !encryptedText.isEmpty()) {
+                                            try {
+                                                referenceMessageText = com.aria.storage.SecureStorage.decrypt(encryptedText);
+                                            } catch (Exception e) {
+                                                referenceMessageText = encryptedText; // Use as-is if decryption fails
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            System.err.println("Error fetching reference details: " + e.getMessage());
+                        }
+                    }
+                } catch (Exception e) {
+                    System.err.println("Error parsing reference: " + e.getMessage());
                 }
             }
 
@@ -1328,10 +1422,46 @@ public class ConversationController {
                 suggestion = defaultResponse.toString();
             }
 
+            // Build response with reference info
+            com.aria.api.dto.SuggestionResponse response = new com.aria.api.dto.SuggestionResponse(suggestion);
+            if (referenceDialogId != null && referenceMessageId != null) {
+                // Get message timestamp
+                java.sql.Timestamp messageTimestamp = null;
+                try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                        System.getenv("DATABASE_URL") != null
+                                ? System.getenv("DATABASE_URL")
+                                : "jdbc:postgresql://localhost:5432/aria",
+                        System.getenv("DATABASE_USER") != null
+                                ? System.getenv("DATABASE_USER")
+                                : "postgres",
+                        System.getenv("DATABASE_PASSWORD") != null
+                                ? System.getenv("DATABASE_PASSWORD")
+                                : "Ezekiel(23)")) {
+                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                            "SELECT timestamp FROM messages WHERE message_id = ? AND dialog_id = ?")) {
+                        ps.setLong(1, referenceMessageId);
+                        ps.setInt(2, referenceDialogId);
+                        try (java.sql.ResultSet rs = ps.executeQuery()) {
+                            if (rs.next()) {
+                                messageTimestamp = rs.getTimestamp("timestamp");
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    System.err.println("Error fetching message timestamp: " + e.getMessage());
+                }
+                
+                com.aria.api.dto.SuggestionResponse.ReferenceInfo refInfo = 
+                    new com.aria.api.dto.SuggestionResponse.ReferenceInfo(
+                        referenceDialogId, referenceMessageId, referenceMessageText, 
+                        referenceDialogName, messageTimestamp);
+                response.setReference(refInfo);
+            }
+            
             // If multiple suggestions requested, generate variations
             if (Boolean.TRUE.equals(multiple)) {
-                java.util.List<String> suggestions = new java.util.ArrayList<>();
-                suggestions.add(suggestion); // Add the first suggestion
+                java.util.List<com.aria.api.dto.SuggestionResponse> suggestions = new java.util.ArrayList<>();
+                suggestions.add(response); // Add the first suggestion with reference
                 
                 // Generate 2-3 additional variations using different style prompts
                 // Note: For variations, we generate them without saving to main response ID
@@ -1357,7 +1487,7 @@ public class ConversationController {
                         } else {
                             // For new conversation, use full context with variation instruction
                             String fullContext = contextBuilder.build70_15_15_Context(
-                                targetUser, subtargetUser, currentUserId, crossPlatformContextEnabled);
+                                targetUser, subtargetUser, currentUserId, crossPlatformContextEnabled, adminModeEnabled);
                             variation = responseManager.generateReply(targetUser, subtargetUser, 
                                 fullContext + "\n\n" + variationPrompt + "\n\nNew message to respond to: " + newMessage, 
                                 fullContext, null);
@@ -1389,30 +1519,282 @@ public class ConversationController {
                         }
                     }
                     
+                    // Parse reference from variation if present (same logic as main suggestion)
+                    com.aria.api.dto.SuggestionResponse variationResponse = new com.aria.api.dto.SuggestionResponse(variation);
+                    if (variation != null && variation.contains("[REFERENCE:")) {
+                        try {
+                            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
+                                "\\[REFERENCE:\\s*DIALOG_ID=(\\d+),\\s*MESSAGE_ID=(\\d+)\\]", 
+                                java.util.regex.Pattern.CASE_INSENSITIVE);
+                            java.util.regex.Matcher matcher = pattern.matcher(variation);
+                            if (matcher.find()) {
+                                Integer varDialogId = Integer.parseInt(matcher.group(1));
+                                Long varMessageId = Long.parseLong(matcher.group(2));
+                                variation = variation.replaceAll("\\[REFERENCE:[^\\]]+\\]\\s*", "").trim();
+                                variationResponse.setSuggestion(variation);
+                                
+                                // Fetch reference details (simplified - could cache)
+                                // For variations, we'll skip detailed fetching to avoid performance issues
+                                // User can click on main suggestion reference if needed
+                            }
+                        } catch (Exception e) {
+                            // Ignore reference parsing errors for variations
+                        }
+                    }
+                    
                     // Only add if different from existing suggestions
-                    if (variation != null && !variation.trim().isEmpty() && 
-                        !suggestions.contains(variation) && !variation.equals(suggestion)) {
-                        suggestions.add(variation);
+                    boolean isDuplicate = false;
+                    for (com.aria.api.dto.SuggestionResponse existing : suggestions) {
+                        if (variation != null && variation.equals(existing.getSuggestion())) {
+                            isDuplicate = true;
+                            break;
+                        }
+                    }
+                    
+                    if (variation != null && !variation.trim().isEmpty() && !isDuplicate) {
+                        suggestions.add(variationResponse);
                     }
                 }
                 
                 // Ensure we have at least the original suggestion
                 if (suggestions.isEmpty()) {
-                    suggestions.add(suggestion);
+                    suggestions.add(response);
                 }
                 
                 // Return list of suggestions
                 return ResponseEntity.ok(ApiResponse.success("AI suggestions generated", suggestions));
             }
 
-            // Return single suggestion
-            return ResponseEntity.ok(ApiResponse.success("AI suggestion generated", suggestion));
+            // Return single suggestion with reference
+            return ResponseEntity.ok(ApiResponse.success("AI suggestion generated", response));
         } catch (Exception e) {
             System.err.println("Error generating AI suggestion: " + e.getMessage());
             e.printStackTrace();
             // Return a safe default response even on error
-            return ResponseEntity.ok(ApiResponse.success("AI suggestion generated", 
-                "How about we discuss this further?"));
+            com.aria.api.dto.SuggestionResponse defaultResponse = new com.aria.api.dto.SuggestionResponse(
+                "How about we discuss this further?");
+            return ResponseEntity.ok(ApiResponse.success("AI suggestion generated", defaultResponse));
+        }
+    }
+    
+    /**
+     * Get reference conversation context (messages around a reference message)
+     * GET /api/conversations/reference?dialogId=...&messageId=...&before=50&after=50&userId=...
+     */
+    @GetMapping("/reference")
+    public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> getReferenceContext(
+            @RequestParam("dialogId") Integer dialogId,
+            @RequestParam("messageId") Long messageId,
+            @RequestParam(value = "before", required = false, defaultValue = "50") Integer before,
+            @RequestParam(value = "after", required = false, defaultValue = "50") Integer after,
+            @RequestParam(value = "userId", required = false) Integer userId) {
+        try {
+            int currentUserId = userId != null ? userId : 1;
+            
+            try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                    System.getenv("DATABASE_URL") != null
+                            ? System.getenv("DATABASE_URL")
+                            : "jdbc:postgresql://localhost:5432/aria",
+                    System.getenv("DATABASE_USER") != null
+                            ? System.getenv("DATABASE_USER")
+                            : "postgres",
+                    System.getenv("DATABASE_PASSWORD") != null
+                            ? System.getenv("DATABASE_PASSWORD")
+                            : "Ezekiel(23)")) {
+                
+                // Verify dialog belongs to user
+                try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                        "SELECT id, name FROM dialogs WHERE id = ? AND user_id = ?")) {
+                    ps.setInt(1, dialogId);
+                    ps.setInt(2, currentUserId);
+                    try (java.sql.ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) {
+                            return ResponseEntity.badRequest()
+                                .body(ApiResponse.error("Dialog not found or access denied"));
+                        }
+                    }
+                }
+                
+                // Get reference message timestamp
+                java.sql.Timestamp referenceTimestamp = null;
+                try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                        "SELECT timestamp FROM messages WHERE message_id = ? AND dialog_id = ?")) {
+                    ps.setLong(1, messageId);
+                    ps.setInt(2, dialogId);
+                    try (java.sql.ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            referenceTimestamp = rs.getTimestamp("timestamp");
+                        } else {
+                            return ResponseEntity.badRequest()
+                                .body(ApiResponse.error("Reference message not found"));
+                        }
+                    }
+                }
+                
+                // Get messages before reference (up to 'before' count)
+                java.util.List<java.util.Map<String, Object>> messagesBefore = new java.util.ArrayList<>();
+                if (referenceTimestamp != null) {
+                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                            """
+                            SELECT m.message_id, m.sender, m.text, m.timestamp, m.has_media, m.reference_id
+                            FROM messages m
+                            WHERE m.dialog_id = ? AND m.timestamp < ?
+                            ORDER BY m.timestamp DESC
+                            LIMIT ?
+                            """)) {
+                        ps.setInt(1, dialogId);
+                        ps.setTimestamp(2, referenceTimestamp);
+                        ps.setInt(3, before);
+                        try (java.sql.ResultSet rs = ps.executeQuery()) {
+                            while (rs.next()) {
+                                java.util.Map<String, Object> msg = new java.util.HashMap<>();
+                                msg.put("messageId", rs.getLong("message_id"));
+                                msg.put("sender", rs.getString("sender"));
+                                
+                                String encryptedText = rs.getString("text");
+                                if (encryptedText != null && !encryptedText.isEmpty()) {
+                                    try {
+                                        msg.put("text", com.aria.storage.SecureStorage.decrypt(encryptedText));
+                                    } catch (Exception e) {
+                                        msg.put("text", encryptedText);
+                                    }
+                                } else {
+                                    msg.put("text", "");
+                                }
+                                
+                                msg.put("timestamp", rs.getTimestamp("timestamp"));
+                                msg.put("fromUser", "me".equalsIgnoreCase(rs.getString("sender")) || 
+                                        "You".equalsIgnoreCase(rs.getString("sender")));
+                                msg.put("hasMedia", rs.getBoolean("has_media"));
+                                
+                                Long refId = rs.getObject("reference_id", Long.class);
+                                if (refId != null) {
+                                    msg.put("referenceId", refId);
+                                }
+                                
+                                messagesBefore.add(msg);
+                            }
+                        }
+                    }
+                }
+                
+                // Reverse to chronological order
+                java.util.Collections.reverse(messagesBefore);
+                
+                // Get reference message
+                java.util.Map<String, Object> referenceMessage = null;
+                try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                        """
+                        SELECT m.message_id, m.sender, m.text, m.timestamp, m.has_media, m.reference_id
+                        FROM messages m
+                        WHERE m.message_id = ? AND m.dialog_id = ?
+                        """)) {
+                    ps.setLong(1, messageId);
+                    ps.setInt(2, dialogId);
+                    try (java.sql.ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            referenceMessage = new java.util.HashMap<>();
+                            referenceMessage.put("messageId", rs.getLong("message_id"));
+                            referenceMessage.put("sender", rs.getString("sender"));
+                            
+                            String encryptedText = rs.getString("text");
+                            if (encryptedText != null && !encryptedText.isEmpty()) {
+                                try {
+                                    referenceMessage.put("text", com.aria.storage.SecureStorage.decrypt(encryptedText));
+                                } catch (Exception e) {
+                                    referenceMessage.put("text", encryptedText);
+                                }
+                            } else {
+                                referenceMessage.put("text", "");
+                            }
+                            
+                            referenceMessage.put("timestamp", rs.getTimestamp("timestamp"));
+                            referenceMessage.put("fromUser", "me".equalsIgnoreCase(rs.getString("sender")) || 
+                                    "You".equalsIgnoreCase(rs.getString("sender")));
+                            referenceMessage.put("hasMedia", rs.getBoolean("has_media"));
+                            
+                            Long refId = rs.getObject("reference_id", Long.class);
+                            if (refId != null) {
+                                referenceMessage.put("referenceId", refId);
+                            }
+                        }
+                    }
+                }
+                
+                // Get messages after reference (up to 'after' count)
+                java.util.List<java.util.Map<String, Object>> messagesAfter = new java.util.ArrayList<>();
+                if (referenceTimestamp != null) {
+                    try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                            """
+                            SELECT m.message_id, m.sender, m.text, m.timestamp, m.has_media, m.reference_id
+                            FROM messages m
+                            WHERE m.dialog_id = ? AND m.timestamp > ?
+                            ORDER BY m.timestamp ASC
+                            LIMIT ?
+                            """)) {
+                        ps.setInt(1, dialogId);
+                        ps.setTimestamp(2, referenceTimestamp);
+                        ps.setInt(3, after);
+                        try (java.sql.ResultSet rs = ps.executeQuery()) {
+                            while (rs.next()) {
+                                java.util.Map<String, Object> msg = new java.util.HashMap<>();
+                                msg.put("messageId", rs.getLong("message_id"));
+                                msg.put("sender", rs.getString("sender"));
+                                
+                                String encryptedText = rs.getString("text");
+                                if (encryptedText != null && !encryptedText.isEmpty()) {
+                                    try {
+                                        msg.put("text", com.aria.storage.SecureStorage.decrypt(encryptedText));
+                                    } catch (Exception e) {
+                                        msg.put("text", encryptedText);
+                                    }
+                                } else {
+                                    msg.put("text", "");
+                                }
+                                
+                                msg.put("timestamp", rs.getTimestamp("timestamp"));
+                                msg.put("fromUser", "me".equalsIgnoreCase(rs.getString("sender")) || 
+                                        "You".equalsIgnoreCase(rs.getString("sender")));
+                                msg.put("hasMedia", rs.getBoolean("has_media"));
+                                
+                                Long refId = rs.getObject("reference_id", Long.class);
+                                if (refId != null) {
+                                    msg.put("referenceId", refId);
+                                }
+                                
+                                messagesAfter.add(msg);
+                            }
+                        }
+                    }
+                }
+                
+                // Get dialog name
+                String dialogName = null;
+                try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                        "SELECT name FROM dialogs WHERE id = ?")) {
+                    ps.setInt(1, dialogId);
+                    try (java.sql.ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            dialogName = rs.getString("name");
+                        }
+                    }
+                }
+                
+                // Build response
+                java.util.Map<String, Object> result = new java.util.HashMap<>();
+                result.put("dialogId", dialogId);
+                result.put("dialogName", dialogName);
+                result.put("referenceMessage", referenceMessage);
+                result.put("messagesBefore", messagesBefore);
+                result.put("messagesAfter", messagesAfter);
+                
+                return ResponseEntity.ok(ApiResponse.success("Reference context retrieved", result));
+            }
+        } catch (Exception e) {
+            System.err.println("Error getting reference context: " + e.getMessage());
+            e.printStackTrace();
+            return ResponseEntity.internalServerError()
+                .body(ApiResponse.error("Failed to get reference context: " + e.getMessage()));
         }
     }
 

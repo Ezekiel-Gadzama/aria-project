@@ -246,6 +246,51 @@ public class DatabaseSchema {
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_quiz_questions_summary_id ON quiz_questions(conversation_summary_id)");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_quiz_results_question_id ON quiz_results(quiz_question_id)");
 
+            // Target Businesses table (for company/organization contexts)
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS target_businesses (
+                    id SERIAL PRIMARY KEY,
+                    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(user_id, name)
+                )
+            """);
+
+            // Business Sub-Targets table (channels, groups, private chats within a business)
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS business_subtargets (
+                    id SERIAL PRIMARY KEY,
+                    business_id INT NOT NULL REFERENCES target_businesses(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL CHECK (type IN ('CHANNEL', 'GROUP', 'PRIVATE_CHAT')),
+                    platform TEXT NOT NULL,
+                    platform_account_id INT REFERENCES platform_accounts(id) ON DELETE SET NULL,
+                    dialog_id INT REFERENCES dialogs(id) ON DELETE SET NULL,
+                    platform_id BIGINT DEFAULT 0,
+                    username TEXT,
+                    description TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(business_id, platform, platform_account_id, platform_id, type)
+                )
+            """);
+
+            // Business Bot Conversations (for storing bot chat state)
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS business_bot_conversations (
+                    id SERIAL PRIMARY KEY,
+                    business_id INT NOT NULL REFERENCES target_businesses(id) ON DELETE CASCADE,
+                    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    openai_response_id VARCHAR(255) UNIQUE,
+                    last_message_id BIGINT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(business_id, user_id)
+                )
+            """);
+
             // Target user responses (OpenAI Responses API state storage)
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS target_user_responses (
@@ -271,6 +316,21 @@ public class DatabaseSchema {
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_target_user_responses_target_user_id ON target_user_responses(target_user_id)");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_target_user_responses_subtarget_user_id ON target_user_responses(subtarget_user_id)");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_target_user_responses_openai_response_id ON target_user_responses(openai_response_id)");
+
+            // Indexes for target_businesses
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_target_businesses_user_id ON target_businesses(user_id)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_target_businesses_name ON target_businesses(name)");
+
+            // Indexes for business_subtargets
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_business_subtargets_business_id ON business_subtargets(business_id)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_business_subtargets_type ON business_subtargets(type)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_business_subtargets_dialog_id ON business_subtargets(dialog_id)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_business_subtargets_platform ON business_subtargets(platform, platform_account_id)");
+
+            // Indexes for business_bot_conversations
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_business_bot_conversations_business_id ON business_bot_conversations(business_id)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_business_bot_conversations_user_id ON business_bot_conversations(user_id)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_business_bot_conversations_openai_response_id ON business_bot_conversations(openai_response_id)");
 
             System.out.println("Database indexes created successfully!");
         }

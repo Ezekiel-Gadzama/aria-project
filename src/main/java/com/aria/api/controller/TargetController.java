@@ -1454,6 +1454,10 @@ public class TargetController {
     }
     
     private Map<String, Object> calculateAnalysis(Integer userId, Integer targetId, String platform, Integer platformAccountId, String category) {
+        System.out.println("[ANALYSIS DEBUG] Starting analysis calculation");
+        System.out.println("[ANALYSIS DEBUG] Parameters: userId=" + userId + ", targetId=" + targetId + 
+                          ", platform=" + platform + ", platformAccountId=" + platformAccountId + ", category=" + category);
+        
         Map<String, Object> analysis = new HashMap<>();
         
         try (Connection conn = java.sql.DriverManager.getConnection(
@@ -1467,6 +1471,8 @@ public class TargetController {
                         ? System.getenv("DATABASE_PASSWORD")
                         : "Ezekiel(23)")) {
             
+            System.out.println("[ANALYSIS DEBUG] Database connection established");
+            
             // Build query filters
             StringBuilder whereClause = new StringBuilder("tu.user_id = ?");
             List<Object> params = new ArrayList<>();
@@ -1475,17 +1481,20 @@ public class TargetController {
             if (targetId != null) {
                 whereClause.append(" AND tu.id = ?");
                 params.add(targetId);
+                System.out.println("[ANALYSIS DEBUG] Filtering by targetId: " + targetId);
             }
             
             if (platform != null && !platform.equals("all")) {
                 whereClause.append(" AND tup.platform = ?");
                 params.add(platform);
+                System.out.println("[ANALYSIS DEBUG] Filtering by platform: " + platform);
             }
             
             // Filter by platform account ID if provided (for SubTarget User filtering)
             if (platformAccountId != null) {
                 whereClause.append(" AND d.platform_account_id = ?");
                 params.add(platformAccountId);
+                System.out.println("[ANALYSIS DEBUG] Filtering by platformAccountId: " + platformAccountId);
             }
             
             // Get messages for analysis (last 3 months)
@@ -1506,12 +1515,17 @@ public class TargetController {
                 "                AND (stu.platform_id > 0 AND d.dialog_id = stu.platform_id OR LOWER(d.name) = LOWER(stu.username) OR LOWER(d.name) = LOWER('@' || stu.username)))) " +
                 "ORDER BY m.timestamp DESC";
             
+            System.out.println("[ANALYSIS DEBUG] Executing SQL query with " + params.size() + " parameters");
+            System.out.println("[ANALYSIS DEBUG] SQL: " + messagesSql);
+            
             List<MessageData> messages = new ArrayList<>();
             try (PreparedStatement ps = conn.prepareStatement(messagesSql)) {
                 for (int i = 0; i < params.size(); i++) {
                     ps.setObject(i + 1, params.get(i));
+                    System.out.println("[ANALYSIS DEBUG] Parameter " + (i + 1) + ": " + params.get(i));
                 }
                 try (ResultSet rs = ps.executeQuery()) {
+                    int messageCount = 0;
                     while (rs.next()) {
                         MessageData msg = new MessageData();
                         String encryptedText = rs.getString("text");
@@ -1520,6 +1534,7 @@ public class TargetController {
                                 msg.text = com.aria.storage.SecureStorage.decrypt(encryptedText);
                             } catch (Exception e) {
                                 msg.text = "";
+                                System.out.println("[ANALYSIS DEBUG] Warning: Failed to decrypt message text: " + e.getMessage());
                             }
                         }
                         msg.sender = rs.getString("sender");
@@ -1529,15 +1544,20 @@ public class TargetController {
                         msg.targetId = rs.getInt("target_id");
                         msg.targetName = rs.getString("target_name");
                         messages.add(msg);
+                        messageCount++;
                     }
+                    System.out.println("[ANALYSIS DEBUG] Retrieved " + messageCount + " messages from database");
                 }
             }
             
             // Calculate metrics based on actual message data
             if (messages.isEmpty()) {
+                System.out.println("[ANALYSIS DEBUG] No messages found - returning default analysis");
                 // Return default values if no messages
                 return getDefaultAnalysis();
             }
+            
+            System.out.println("[ANALYSIS DEBUG] Processing " + messages.size() + " messages for analysis");
             
             // Separate messages by target vs non-target
             List<MessageData> targetMessages = new ArrayList<>();
@@ -1546,8 +1566,10 @@ public class TargetController {
             
             if (targetId != null) {
                 targetIds.add(targetId);
+                System.out.println("[ANALYSIS DEBUG] Using single targetId: " + targetId);
             } else {
                 // Get all target IDs for this user
+                System.out.println("[ANALYSIS DEBUG] Fetching all target IDs for userId: " + userId);
                 try (java.sql.PreparedStatement ps = conn.prepareStatement(
                         "SELECT id FROM target_users WHERE user_id = ?")) {
                     ps.setInt(1, userId);
@@ -1557,6 +1579,7 @@ public class TargetController {
                         }
                     }
                 }
+                System.out.println("[ANALYSIS DEBUG] Found " + targetIds.size() + " target IDs: " + targetIds);
             }
             
             for (MessageData msg : messages) {
@@ -1567,39 +1590,58 @@ public class TargetController {
                 }
             }
             
+            System.out.println("[ANALYSIS DEBUG] Separated messages: " + targetMessages.size() + " target messages, " + 
+                              nonTargetMessages.size() + " non-target messages");
+            
             // Sentiment Analysis (mock - based on message length and keywords)
+            System.out.println("[ANALYSIS DEBUG] Calculating sentiment analysis...");
             Map<String, Object> sentiment = calculateSentiment(targetMessages, nonTargetMessages);
             analysis.put("sentiment", sentiment);
+            System.out.println("[ANALYSIS DEBUG] Sentiment calculated: " + sentiment);
             
             // Engagement Score
+            System.out.println("[ANALYSIS DEBUG] Calculating engagement score...");
             Map<String, Object> engagement = calculateEngagement(targetMessages);
             analysis.put("engagement", engagement);
+            System.out.println("[ANALYSIS DEBUG] Engagement calculated: " + engagement);
             
             // Disinterest Detection
+            System.out.println("[ANALYSIS DEBUG] Detecting disinterest indicators...");
             Map<String, Object> disinterest = detectDisinterest(targetMessages);
             analysis.put("disinterest", disinterest);
+            System.out.println("[ANALYSIS DEBUG] Disinterest calculated: " + disinterest);
             
             // Conversation Flow
+            System.out.println("[ANALYSIS DEBUG] Calculating conversation flow...");
             Map<String, Object> flow = calculateConversationFlow(targetMessages);
             analysis.put("conversationFlow", flow);
+            System.out.println("[ANALYSIS DEBUG] Conversation flow calculated: " + flow);
             
             // Goal Progression (mock - would need actual goal data)
+            System.out.println("[ANALYSIS DEBUG] Calculating goal progression...");
             Map<String, Object> goal = calculateGoalProgression(targetMessages);
             analysis.put("goalProgression", goal);
+            System.out.println("[ANALYSIS DEBUG] Goal progression calculated: " + goal);
             
             // Top 5 Targets (only for general analysis)
             if (targetId == null) {
+                System.out.println("[ANALYSIS DEBUG] Calculating top targets...");
                 List<Map<String, Object>> topTargets = calculateTopTargets(conn, userId, platform, platformAccountId);
                 analysis.put("topTargets", topTargets);
+                System.out.println("[ANALYSIS DEBUG] Top targets calculated: " + topTargets.size() + " targets");
             }
             
+            System.out.println("[ANALYSIS DEBUG] Analysis calculation completed successfully");
+            
         } catch (Exception e) {
-            System.err.println("Error calculating analysis: " + e.getMessage());
+            System.err.println("[ANALYSIS DEBUG] ERROR calculating analysis: " + e.getMessage());
+            System.err.println("[ANALYSIS DEBUG] Stack trace:");
             e.printStackTrace();
             // Return default analysis on error
             return getDefaultAnalysis();
         }
         
+        System.out.println("[ANALYSIS DEBUG] Returning analysis result");
         return analysis;
     }
     

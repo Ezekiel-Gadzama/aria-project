@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { targetApi, platformApi } from '../services/api';
+import BusinessManagement from './BusinessManagement';
 import './TargetManagement.css';
 
 function TargetManagement({ userId = 1 }) {
@@ -26,6 +27,7 @@ function TargetManagement({ userId = 1 }) {
   });
   const [profilePicture, setProfilePicture] = useState(null); // File object
   const [profilePicturePreview, setProfilePicturePreview] = useState(null); // Preview URL
+  const [activeTab, setActiveTab] = useState('targets'); // 'targets' or 'businesses'
 
   useEffect(() => {
     loadTargets();
@@ -227,28 +229,64 @@ function TargetManagement({ userId = 1 }) {
   return (
     <div className="target-management">
       <div className="container">
-        <div className="header">
-          <h1>Target Users</h1>
-          <button 
-            className="btn btn-primary" 
-            onClick={() => {
-              if (showTargetForm && !editingTarget) {
-                setShowTargetForm(false);
-                setEditingTarget(null);
-              } else {
-                setShowTargetForm(true);
-                setEditingTarget(null);
-                setTargetFormData({
-                  name: '', bio: '', desiredOutcome: '', meetingContext: '', importantDetails: ''
-                });
-                setProfilePicture(null);
-                setProfilePicturePreview(null);
-              }
+        {/* Tabs */}
+        <div className="tabs" style={{ marginBottom: '2rem', borderBottom: '2px solid #e0e0e0' }}>
+          <button
+            className={`tab ${activeTab === 'targets' ? 'active' : ''}`}
+            onClick={() => setActiveTab('targets')}
+            style={{
+              padding: '0.75rem 1.5rem',
+              border: 'none',
+              background: 'none',
+              cursor: 'pointer',
+              borderBottom: activeTab === 'targets' ? '3px solid #007bff' : '3px solid transparent',
+              fontWeight: activeTab === 'targets' ? '600' : '400',
+              color: activeTab === 'targets' ? '#007bff' : '#666',
             }}
           >
-            {showTargetForm && !editingTarget ? 'Cancel' : '+ Add Target User'}
+            Target Users
+          </button>
+          <button
+            className={`tab ${activeTab === 'businesses' ? 'active' : ''}`}
+            onClick={() => setActiveTab('businesses')}
+            style={{
+              padding: '0.75rem 1.5rem',
+              border: 'none',
+              background: 'none',
+              cursor: 'pointer',
+              borderBottom: activeTab === 'businesses' ? '3px solid #007bff' : '3px solid transparent',
+              fontWeight: activeTab === 'businesses' ? '600' : '400',
+              color: activeTab === 'businesses' ? '#007bff' : '#666',
+            }}
+          >
+            Target Business
           </button>
         </div>
+
+        {activeTab === 'targets' ? (
+          <>
+            <div className="header">
+              <h1>Target Users</h1>
+              <button 
+                className="btn btn-primary" 
+                onClick={() => {
+                  if (showTargetForm && !editingTarget) {
+                    setShowTargetForm(false);
+                    setEditingTarget(null);
+                  } else {
+                    setShowTargetForm(true);
+                    setEditingTarget(null);
+                    setTargetFormData({
+                      name: '', bio: '', desiredOutcome: '', meetingContext: '', importantDetails: ''
+                    });
+                    setProfilePicture(null);
+                    setProfilePicturePreview(null);
+                  }
+                }}
+              >
+                {showTargetForm && !editingTarget ? 'Cancel' : '+ Add Target User'}
+              </button>
+            </div>
 
         {error && <div className="alert alert-error">{error}</div>}
 
@@ -684,6 +722,10 @@ function TargetManagement({ userId = 1 }) {
             })
           )}
         </div>
+          </>
+        ) : (
+          <BusinessManagement userId={userId} />
+        )}
       </div>
     </div>
   );

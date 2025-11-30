@@ -645,6 +645,74 @@ public class UserController {
         }
     }
     
+    /**
+     * Get admin mode status for a user
+     * GET /api/users/admin-mode?userId=...
+     */
+    @GetMapping("/admin-mode")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getAdminMode(
+            @RequestParam("userId") Integer userId) {
+        try {
+            boolean adminModeEnabled = false;
+            try (Connection conn = getConnection()) {
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT admin_mode_enabled FROM users WHERE id = ?")) {
+                    ps.setInt(1, userId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            adminModeEnabled = rs.getBoolean("admin_mode_enabled");
+                        }
+                    }
+                }
+            }
+            Map<String, Object> response = new HashMap<>();
+            response.put("adminModeEnabled", adminModeEnabled);
+            return ResponseEntity.ok(ApiResponse.success("OK", response));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError()
+                .body(ApiResponse.error("Failed to get admin mode: " + e.getMessage()));
+        }
+    }
+    
+    /**
+     * Update admin mode status for a user
+     * PUT /api/users/admin-mode?userId=...
+     */
+    @PutMapping("/admin-mode")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> updateAdminMode(
+            @RequestParam("userId") Integer userId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            Object enabledObj = request.get("adminModeEnabled");
+            boolean adminModeEnabled = false;
+            if (enabledObj instanceof Boolean) {
+                adminModeEnabled = (Boolean) enabledObj;
+            } else if (enabledObj instanceof String) {
+                adminModeEnabled = Boolean.parseBoolean((String) enabledObj);
+            }
+            
+            try (Connection conn = getConnection()) {
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "UPDATE users SET admin_mode_enabled = ? WHERE id = ?")) {
+                    ps.setBoolean(1, adminModeEnabled);
+                    ps.setInt(2, userId);
+                    int updated = ps.executeUpdate();
+                    if (updated == 0) {
+                        return ResponseEntity.badRequest()
+                            .body(ApiResponse.error("User not found"));
+                    }
+                }
+            }
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("adminModeEnabled", adminModeEnabled);
+            return ResponseEntity.ok(ApiResponse.success("Admin mode updated", response));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError()
+                .body(ApiResponse.error("Failed to update admin mode: " + e.getMessage()));
+        }
+    }
+    
     private Connection getConnection() throws SQLException {
         return DriverManager.getConnection(
             System.getenv("DATABASE_URL") != null

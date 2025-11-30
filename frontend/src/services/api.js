@@ -25,6 +25,8 @@ export const userApi = {
   addCredits: (userId, amount) => api.post(`/users/credits?userId=${userId}`, { amount }),
   getSubscription: (userId) => api.get(`/users/subscription?userId=${userId}`),
   subscribe: (userId) => api.post(`/users/subscribe?userId=${userId}`),
+  getAdminMode: (userId) => api.get(`/users/admin-mode?userId=${userId}`),
+  updateAdminMode: (userId, adminModeEnabled) => api.put(`/users/admin-mode?userId=${userId}`, { adminModeEnabled }),
 };
 
 // Target API
@@ -113,6 +115,16 @@ export const conversationApi = {
       params.append('multiple', 'true');
     }
     return api.get(`/conversations/suggest?${params.toString()}`);
+  },
+  getReferenceContext: (dialogId, messageId, before = 50, after = 50, userId = 1) => {
+    const params = new URLSearchParams({
+      dialogId,
+      messageId,
+      before,
+      after,
+      userId,
+    });
+    return api.get(`/conversations/reference?${params.toString()}`);
   },
   downloadMediaUrl: (targetUserId, userId, messageId) =>
     `${API_BASE_URL}/conversations/media/download?targetUserId=${targetUserId}&userId=${userId}&messageId=${messageId}`,
@@ -238,6 +250,22 @@ export const platformApi = {
     api.post(`/platforms/telegram/verifyOtp?apiId=${encodeURIComponent(apiId)}&apiHash=${encodeURIComponent(apiHash)}&phoneNumber=${encodeURIComponent(phoneNumber)}&username=${encodeURIComponent(username || '')}&code=${encodeURIComponent(code)}${password ? `&password=${encodeURIComponent(password)}` : ''}`),
   deleteAccount: (id, userId) =>
     api.delete(`/platforms/accounts/${id}?userId=${userId}`),
+};
+
+// Business API
+export const businessApi = {
+  getAll: (userId) => api.get(`/businesses?userId=${userId}`),
+  getById: (id, userId) => api.get(`/businesses/${id}?userId=${userId}`),
+  create: (businessData, userId) => api.post(`/businesses?userId=${userId}`, businessData),
+  update: (id, businessData, userId) => api.put(`/businesses/${id}?userId=${userId}`, businessData),
+  delete: (id, userId) => api.delete(`/businesses/${id}?userId=${userId}`),
+  getSubTargets: (businessId, userId) => api.get(`/businesses/${businessId}/subtargets?userId=${userId}`),
+  getSubTarget: (businessId, id, userId) => api.get(`/businesses/${businessId}/subtargets/${id}?userId=${userId}`),
+  addSubTarget: (businessId, subTargetData, userId) => api.post(`/businesses/${businessId}/subtargets?userId=${userId}`, subTargetData),
+  updateSubTarget: (businessId, id, subTargetData, userId) => api.put(`/businesses/${businessId}/subtargets/${id}?userId=${userId}`, subTargetData),
+  deleteSubTarget: (businessId, id, userId) => api.delete(`/businesses/${businessId}/subtargets/${id}?userId=${userId}`),
+  botChat: (businessId, message, userId) => api.post(`/businesses/${businessId}/bot/chat?userId=${userId}`, { message }),
+  getBotHistory: (businessId, userId) => api.get(`/businesses/${businessId}/bot/history?userId=${userId}`),
 };
 
 export default api;

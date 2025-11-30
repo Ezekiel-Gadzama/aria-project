@@ -26,7 +26,8 @@ public class ContextBuilder70_15_15 {
             TargetUser targetUser,
             SubTargetUser subtargetUser,
             int userId,
-            boolean crossPlatformContextEnabled) throws SQLException {
+            boolean crossPlatformContextEnabled,
+            boolean adminModeEnabled) throws SQLException {
         
         StringBuilder context = new StringBuilder();
         
@@ -155,19 +156,26 @@ public class ContextBuilder70_15_15 {
             currentCategories, userId, targetUser.getTargetId(), subtargetUser, crossPlatformContextEnabled);
         
         // Separate into successful (70%), failed (15%), and AI improvement (15%)
-        List<List<Message>> successfulExamples = new ArrayList<>();
-        List<List<Message>> failedExamples = new ArrayList<>();
-        List<List<Message>> aiImprovementExamples = new ArrayList<>();
+        // Store dialog metadata with examples
+        List<DialogExample> successfulExamples = new ArrayList<>();
+        List<DialogExample> failedExamples = new ArrayList<>();
+        List<DialogExample> aiImprovementExamples = new ArrayList<>();
         
-        separateDialogsBySuccess(referenceDialogs, currentCategories, successfulExamples, failedExamples, aiImprovementExamples);
+        separateDialogsBySuccessWithMetadata(referenceDialogs, currentCategories, successfulExamples, failedExamples, aiImprovementExamples);
         
         // Add 70% successful examples
         int successfulCount = (int) Math.round(referenceDialogs.size() * 0.70);
         context.append("--- SUCCESSFUL EXAMPLES (70%) ---\n");
         context.append("These conversations achieved their goals. Learn from what worked:\n\n");
         for (int i = 0; i < Math.min(successfulCount, successfulExamples.size()); i++) {
+            DialogExample example = successfulExamples.get(i);
             context.append("SUCCESSFUL EXAMPLE ").append(i + 1).append(":\n");
-            formatConversationExample(context, successfulExamples.get(i), "SUCCESS");
+            context.append("[DIALOG_ID: ").append(example.dialogId).append("] ");
+            if (example.dialogName != null) {
+                context.append("[DIALOG_NAME: ").append(example.dialogName).append("] ");
+            }
+            context.append("\n");
+            formatConversationExample(context, example.messages, "SUCCESS");
             context.append("\n");
         }
         context.append("\n");
@@ -177,8 +185,14 @@ public class ContextBuilder70_15_15 {
         context.append("--- FAILED EXAMPLES (15%) ---\n");
         context.append("These conversations did not achieve their goals. Learn from what went wrong:\n\n");
         for (int i = 0; i < Math.min(failedCount, failedExamples.size()); i++) {
+            DialogExample example = failedExamples.get(i);
             context.append("FAILED EXAMPLE ").append(i + 1).append(":\n");
-            formatConversationExample(context, failedExamples.get(i), "FAILED");
+            context.append("[DIALOG_ID: ").append(example.dialogId).append("] ");
+            if (example.dialogName != null) {
+                context.append("[DIALOG_NAME: ").append(example.dialogName).append("] ");
+            }
+            context.append("\n");
+            formatConversationExample(context, example.messages, "FAILED");
             context.append("\n");
         }
         context.append("\n");
@@ -189,8 +203,14 @@ public class ContextBuilder70_15_15 {
         context.append("These show how AI-enhanced responses can improve communication:\n\n");
         // For now, use top successful examples as AI improvement (can be enhanced later)
         for (int i = 0; i < Math.min(aiCount, successfulExamples.size()); i++) {
+            DialogExample example = successfulExamples.get(i);
             context.append("AI IMPROVEMENT EXAMPLE ").append(i + 1).append(":\n");
-            formatConversationExample(context, successfulExamples.get(i), "AI_ENHANCED");
+            context.append("[DIALOG_ID: ").append(example.dialogId).append("] ");
+            if (example.dialogName != null) {
+                context.append("[DIALOG_NAME: ").append(example.dialogName).append("] ");
+            }
+            context.append("\n");
+            formatConversationExample(context, example.messages, "AI_ENHANCED");
             context.append("\n");
         }
         context.append("\n");
@@ -235,9 +255,26 @@ public class ContextBuilder70_15_15 {
         }
         context.append("\n");
         
+        // Only include reference instructions if Admin Mode is enabled
+        if (adminModeEnabled) {
+            context.append("REFERENCE MESSAGES:\n");
+            context.append("If your suggested response is based on or inspired by a specific message from the reference examples above,\n");
+            context.append("you can reference it by including the message ID and dialog ID in your response.\n");
+            context.append("Format: [REFERENCE: DIALOG_ID={dialog_id}, MESSAGE_ID={message_id}]\n");
+            context.append("Example: [REFERENCE: DIALOG_ID=123, MESSAGE_ID=456] Your suggested response here...\n");
+            context.append("This helps the user understand which message from which conversation inspired your suggestion.\n");
+            context.append("Only include references when your response is directly based on a specific message from the examples.\n");
+            context.append("Do NOT include references for simple, generic responses like 'have a nice day' or 'thanks'.\n");
+            context.append("References should only be used when they add meaningful context to the suggestion.\n");
+            context.append("If your response is a general synthesis of patterns, no reference is needed.\n\n");
+        }
+        
         context.append("=== END OF CONTEXT ===\n");
         context.append("From now on, you will receive only new messages. Remember all this context.\n");
         context.append("Generate responses that are natural, goal-oriented, and style-appropriate.\n");
+        if (adminModeEnabled) {
+            context.append("If referencing a specific message, include [REFERENCE: DIALOG_ID=X, MESSAGE_ID=Y] at the start of your response.\n");
+        }
         
         return context.toString();
     }
@@ -466,21 +503,23 @@ public class ContextBuilder70_15_15 {
     
     /**
      * Separate dialogs into successful (70%), failed (15%), and AI improvement (15%)
+     * Includes dialog metadata (ID and name)
      */
-    private void separateDialogsBySuccess(
+    private void separateDialogsBySuccessWithMetadata(
             Map<Integer, List<Message>> dialogs,
             List<String> categories,
-            List<List<Message>> successfulExamples,
-            List<List<Message>> failedExamples,
-            List<List<Message>> aiImprovementExamples) throws SQLException {
+            List<DialogExample> successfulExamples,
+            List<DialogExample> failedExamples,
+            List<DialogExample> aiImprovementExamples) throws SQLException {
         
         if (dialogs.isEmpty() || categories.isEmpty()) {
             return;
         }
         
-        // Get success scores from database
+        // Get success scores and dialog names from database
         Map<Integer, Double> successScores = getSuccessScoresForDialogs(
             new ArrayList<>(dialogs.keySet()), categories);
+        Map<Integer, String> dialogNames = getDialogNames(new ArrayList<>(dialogs.keySet()));
         
         List<DialogWithScore> scoredDialogs = new ArrayList<>();
         for (Map.Entry<Integer, List<Message>> entry : dialogs.entrySet()) {
@@ -493,10 +532,15 @@ public class ContextBuilder70_15_15 {
         
         // Separate: successful (>= 0.7), failed (< 0.3)
         for (DialogWithScore dialog : scoredDialogs) {
+            DialogExample example = new DialogExample(
+                dialog.dialogId, 
+                dialog.messages, 
+                dialogNames.getOrDefault(dialog.dialogId, null)
+            );
             if (dialog.score >= 0.7) {
-                successfulExamples.add(dialog.messages);
+                successfulExamples.add(example);
             } else if (dialog.score < 0.3) {
-                failedExamples.add(dialog.messages);
+                failedExamples.add(example);
             }
         }
         
@@ -505,6 +549,36 @@ public class ContextBuilder70_15_15 {
         for (int i = 0; i < aiCount && i < successfulExamples.size(); i++) {
             aiImprovementExamples.add(successfulExamples.get(i));
         }
+    }
+    
+    /**
+     * Get dialog names for dialog IDs
+     */
+    private Map<Integer, String> getDialogNames(List<Integer> dialogIds) throws SQLException {
+        Map<Integer, String> names = new HashMap<>();
+        if (dialogIds.isEmpty()) {
+            return names;
+        }
+        
+        String placeholders = String.join(",", Collections.nCopies(dialogIds.size(), "?"));
+        String sql = String.format("""
+            SELECT id, name FROM dialogs WHERE id IN (%s)
+        """, placeholders);
+        
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            for (int i = 0; i < dialogIds.size(); i++) {
+                pstmt.setInt(i + 1, dialogIds.get(i));
+            }
+            
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    names.put(rs.getInt("id"), rs.getString("name"));
+                }
+            }
+        }
+        
+        return names;
     }
     
     /**
@@ -634,12 +708,29 @@ public class ContextBuilder70_15_15 {
      * Helper class for dialogs with success scores
      */
     private static class DialogWithScore {
+        final int dialogId;
         final List<Message> messages;
         final double score;
         
         DialogWithScore(int dialogId, List<Message> messages, double score) {
+            this.dialogId = dialogId;
             this.messages = messages;
             this.score = score;
+        }
+    }
+    
+    /**
+     * Helper class for dialog examples with metadata
+     */
+    private static class DialogExample {
+        final int dialogId;
+        final List<Message> messages;
+        final String dialogName;
+        
+        DialogExample(int dialogId, List<Message> messages, String dialogName) {
+            this.dialogId = dialogId;
+            this.messages = messages;
+            this.dialogName = dialogName;
         }
     }
     

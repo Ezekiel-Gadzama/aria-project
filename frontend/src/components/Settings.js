@@ -10,6 +10,8 @@ function Settings({ userId = 1 }) {
   const [qrCodeUrl, setQrCodeUrl] = useState(null);
   const [show2FASetup, setShow2FASetup] = useState(false);
   const [twoFACode, setTwoFACode] = useState('');
+  const [adminModeEnabled, setAdminModeEnabled] = useState(false);
+  const [adminModeLoading, setAdminModeLoading] = useState(false);
   const [passwordData, setPasswordData] = useState({
     currentPassword: '',
     newPassword: '',
@@ -18,6 +20,7 @@ function Settings({ userId = 1 }) {
 
   useEffect(() => {
     check2FAStatus();
+    checkAdminMode();
   }, []);
 
   const check2FAStatus = async () => {
@@ -29,6 +32,41 @@ function Settings({ userId = 1 }) {
       }
     } catch (err) {
       console.error('Failed to check 2FA status:', err);
+    }
+  };
+
+  const checkAdminMode = async () => {
+    try {
+      const response = await userApi.getAdminMode(userId);
+      if (response.data?.success) {
+        setAdminModeEnabled(response.data.data?.adminModeEnabled || false);
+      }
+    } catch (err) {
+      console.error('Failed to check admin mode status:', err);
+    }
+  };
+
+  const handleToggleAdminMode = async (e) => {
+    const newValue = e.target.checked;
+    try {
+      setAdminModeLoading(true);
+      setError(null);
+      const response = await userApi.updateAdminMode(userId, newValue);
+      if (response.data?.success) {
+        setAdminModeEnabled(newValue);
+        setSuccess(`Admin mode ${newValue ? 'enabled' : 'disabled'} successfully!`);
+        setTimeout(() => setSuccess(null), 3000);
+      } else {
+        setError(response.data?.error || 'Failed to update admin mode');
+        // Revert checkbox state on error
+        setAdminModeEnabled(!newValue);
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to update admin mode');
+      // Revert checkbox state on error
+      setAdminModeEnabled(!newValue);
+    } finally {
+      setAdminModeLoading(false);
     }
   };
 
@@ -205,6 +243,33 @@ function Settings({ userId = 1 }) {
                 {loading ? 'Disabling...' : 'Disable 2FA'}
               </button>
             )}
+          </div>
+        </div>
+
+        {/* Admin Mode Section */}
+        <div className="settings-section">
+          <h2>Admin Mode</h2>
+          <div className="settings-card">
+            <div className="settings-info">
+              <p>Enable Admin Mode to allow AI suggestions to include references to similar conversations from other chats. References are only provided when they add meaningful context to the suggestion.</p>
+              <p className="settings-status">
+                Status: <strong style={{ color: adminModeEnabled ? '#4caf50' : '#999' }}>
+                  {adminModeEnabled ? 'Enabled' : 'Disabled'}
+                </strong>
+              </p>
+            </div>
+            <div className="form-group" style={{ marginTop: '1rem' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={adminModeEnabled}
+                  onChange={handleToggleAdminMode}
+                  disabled={adminModeLoading}
+                  style={{ width: '18px', height: '18px', cursor: adminModeLoading ? 'not-allowed' : 'pointer' }}
+                />
+                <span>Enable Admin Mode</span>
+              </label>
+            </div>
           </div>
         </div>
 
