@@ -124,6 +124,10 @@ function ConversationView({ userId = 1 }) {
   const [pinNotifications, setPinNotifications] = useState([]); // Array of pin notification messages { messageId, text, timestamp, pinnedBy }
   const [previousPinnedState, setPreviousPinnedState] = useState(new Map()); // Track previous pinned state to detect changes
   const [currentPinnedIndex, setCurrentPinnedIndex] = useState(0); // Index of pinned message to show at top (first one above viewport)
+  const [aiSuggestion, setAiSuggestion] = useState(null); // AI-generated suggestion (single)
+  const [aiSuggestions, setAiSuggestions] = useState(null); // AI-generated suggestions (multiple)
+  const [showMultipleSuggestions, setShowMultipleSuggestions] = useState(false); // Checkbox state
+  const [loadingSuggestion, setLoadingSuggestion] = useState(false); // Loading state for AI suggestion
 
   // Update current pinned index when pinned messages change
   useEffect(() => {
@@ -2687,6 +2691,48 @@ function ConversationView({ userId = 1 }) {
                 disabled={selectedMessageId !== null}
                 style={{ flex: 1 }}
               />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginRight: '0.5rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', fontSize: '0.75rem', cursor: 'pointer', userSelect: 'none' }}>
+                  <input
+                    type="checkbox"
+                    checked={showMultipleSuggestions}
+                    onChange={(e) => setShowMultipleSuggestions(e.target.checked)}
+                    style={{ marginRight: '0.25rem', cursor: 'pointer' }}
+                    title="Get multiple suggestions"
+                  />
+                  <span style={{ color: '#666' }}>Multiple</span>
+                </label>
+                <button 
+                  type="button" 
+                  onClick={async () => {
+                    try {
+                      setLoadingSuggestion(true);
+                      setError(null);
+                      setAiSuggestion(null);
+                      setAiSuggestions(null);
+                      const response = await conversationApi.getSuggestion(targetId, userId, subtargetUserId, showMultipleSuggestions);
+                      if (response.data?.success) {
+                        if (showMultipleSuggestions && Array.isArray(response.data.data)) {
+                          setAiSuggestions(response.data.data);
+                        } else {
+                          setAiSuggestion(response.data.data);
+                        }
+                      } else {
+                        setError(response.data?.error || 'Failed to generate suggestion');
+                      }
+                    } catch (err) {
+                      setError(err.response?.data?.error || err.message || 'Failed to generate AI suggestion');
+                    } finally {
+                      setLoadingSuggestion(false);
+                    }
+                  }}
+                  className="btn btn-secondary"
+                  disabled={selectedMessageId !== null || loadingSuggestion || !conversationInitialized}
+                  title="Get AI suggestion"
+                >
+                  {loadingSuggestion ? '...' : 'AI'}
+                </button>
+              </div>
               <button 
                 type="button" 
                 onClick={handleSendMessage} 
@@ -2697,6 +2743,198 @@ function ConversationView({ userId = 1 }) {
               </button>
             </form>
           </div>
+        )}
+
+        {/* AI Suggestion Display - Single */}
+        {aiSuggestion && !aiSuggestions && (
+          <div style={{
+            margin: '1rem',
+            padding: '1rem',
+            backgroundColor: '#f0f7ff',
+            border: '1px solid #4a90e2',
+            borderRadius: '8px',
+            position: 'relative'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+              <div style={{ fontWeight: 'bold', color: '#4a90e2', fontSize: '0.9rem' }}>
+                🤖 AI Suggestion
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setAiSuggestion(null);
+                  setAiSuggestions(null);
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '1.2rem',
+                  cursor: 'pointer',
+                  color: '#666',
+                  padding: '0',
+                  lineHeight: '1'
+                }}
+                title="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div style={{
+              padding: '0.75rem',
+              backgroundColor: 'white',
+              borderRadius: '4px',
+              marginBottom: '0.5rem',
+              fontSize: '0.95rem',
+              lineHeight: '1.5',
+              whiteSpace: 'pre-wrap',
+              wordWrap: 'break-word'
+            }}>
+              {aiSuggestion}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setNewMessage(aiSuggestion);
+                setAiSuggestion(null);
+                setAiSuggestions(null);
+                // Focus the input field
+                setTimeout(() => {
+                  if (messageInputRef.current) {
+                    messageInputRef.current.focus();
+                    // Move cursor to end
+                    messageInputRef.current.setSelectionRange(
+                      messageInputRef.current.value.length,
+                      messageInputRef.current.value.length
+                    );
+                  }
+                }, 100);
+              }}
+              className="btn btn-primary btn-sm"
+              style={{ width: '100%' }}
+            >
+              Copy to Message Field
+            </button>
+          </div>
+        )}
+
+        {/* AI Suggestions Display - Multiple (Popup) */}
+        {aiSuggestions && Array.isArray(aiSuggestions) && aiSuggestions.length > 0 && (
+          <div style={{
+            position: 'fixed',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            backgroundColor: 'white',
+            border: '2px solid #4a90e2',
+            borderRadius: '12px',
+            padding: '1.5rem',
+            maxWidth: '600px',
+            width: '90%',
+            maxHeight: '80vh',
+            overflowY: 'auto',
+            zIndex: 1000,
+            boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div style={{ fontWeight: 'bold', color: '#4a90e2', fontSize: '1.1rem' }}>
+                🤖 AI Suggestions ({aiSuggestions.length})
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setAiSuggestions(null);
+                  setAiSuggestion(null);
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '1.5rem',
+                  cursor: 'pointer',
+                  color: '#666',
+                  padding: '0',
+                  lineHeight: '1',
+                  width: '30px',
+                  height: '30px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+                title="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              {aiSuggestions.map((suggestion, index) => (
+                <div
+                  key={index}
+                  style={{
+                    padding: '1rem',
+                    backgroundColor: '#f9f9f9',
+                    border: '1px solid #ddd',
+                    borderRadius: '8px',
+                    position: 'relative'
+                  }}
+                >
+                  <div style={{
+                    padding: '0.75rem',
+                    backgroundColor: 'white',
+                    borderRadius: '4px',
+                    marginBottom: '0.75rem',
+                    fontSize: '0.95rem',
+                    lineHeight: '1.5',
+                    whiteSpace: 'pre-wrap',
+                    wordWrap: 'break-word',
+                    minHeight: '60px'
+                  }}>
+                    {suggestion}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewMessage(suggestion);
+                      setAiSuggestions(null);
+                      setAiSuggestion(null);
+                      // Focus the input field
+                      setTimeout(() => {
+                        if (messageInputRef.current) {
+                          messageInputRef.current.focus();
+                          // Move cursor to end
+                          messageInputRef.current.setSelectionRange(
+                            messageInputRef.current.value.length,
+                            messageInputRef.current.value.length
+                          );
+                        }
+                      }, 100);
+                    }}
+                    className="btn btn-primary btn-sm"
+                    style={{ width: '100%' }}
+                  >
+                    Copy to Message Field
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Backdrop for popup */}
+        {aiSuggestions && Array.isArray(aiSuggestions) && aiSuggestions.length > 0 && (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(0, 0, 0, 0.5)',
+              zIndex: 999
+            }}
+            onClick={() => {
+              setAiSuggestions(null);
+              setAiSuggestion(null);
+            }}
+          />
         )}
         
         {/* Right-click Context Menu */}

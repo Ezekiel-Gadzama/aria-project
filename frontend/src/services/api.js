@@ -101,6 +101,19 @@ export const conversationApi = {
     }
     return api.get(`/conversations/messages?${params.toString()}`);
   },
+  getSuggestion: (targetUserId, userId, subtargetUserId = null, multiple = false) => {
+    const params = new URLSearchParams({
+      targetUserId,
+      userId: userId || 1,
+    });
+    if (subtargetUserId) {
+      params.append('subtargetUserId', subtargetUserId);
+    }
+    if (multiple) {
+      params.append('multiple', 'true');
+    }
+    return api.get(`/conversations/suggest?${params.toString()}`);
+  },
   downloadMediaUrl: (targetUserId, userId, messageId) =>
     `${API_BASE_URL}/conversations/media/download?targetUserId=${targetUserId}&userId=${userId}&messageId=${messageId}`,
   ingest: (platform, userId) => 

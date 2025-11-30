@@ -10,9 +10,14 @@ ARIA is a full-stack web application that automates and optimizes user-initiated
 - **Goal-Based Conversation Management**: Define conversation goals (dating, investment, sponsorship, etc.) and ARIA adapts accordingly
 - **Historical Chat Analysis**: Analyzes years of chat history to learn your successful communication patterns
 - **Weighted Response Synthesis (70%/15%/15%)**:
-  - 70% weight on successful conversations (Category A)
-  - 15% weight on failed/attempted conversations (Category B)
-  - 15% weight on base AI personality (Category C)
+  - 70% weight on successful conversations (Category A) - dialogs with success score >= 0.7
+  - 15% weight on failed/attempted conversations (Category B) - dialogs with success score < 0.3
+  - 15% weight on AI improvement examples (Category C) - enhanced successful examples
+- **AI Suggestion System**: Generate contextual reply suggestions using 70/15/15 strategy with OpenAI Responses API
+  - Uses ALL conversation history (not just last 50 messages)
+  - Learns from similar conversations in same categories
+  - Maintains conversation state across requests
+  - Gradually progresses toward goals
 - **AI Categorization**: Uses OpenAI to categorize chats into multiple goal-relevant categories with success scores
 - **Incremental Categorization**: Only processes new messages on subsequent runs (optimizes API usage)
 - **Smart Score Merging**: Intelligently merges old and new scores based on message count ratio and engagement metrics
@@ -250,6 +255,7 @@ Set in `application.properties` or environment variables:
 - `disinterest_logs`: Disinterest detection records
 - `conversation_summaries`: Conversation summaries
 - `quiz_questions`: Generated quiz questions
+- `target_user_responses`: OpenAI Responses API state storage (response IDs per target/subtarget)
 
 All tables have optimal indexes for fast queries.
 
@@ -271,6 +277,7 @@ The application exposes a REST API at `/api`:
 - `DELETE /api/conversations/message` - Delete message
 - `POST /api/conversations/pin` - Pin/unpin message
 - `POST /api/conversations/sendMedia` - Send media
+- `GET /api/conversations/suggest` - Get AI suggestion for reply (70/15/15 strategy)
 - `GET /api/targets/analysis` - Get analysis data
 
 See the API documentation in `documentation/` for complete endpoint details.
@@ -325,7 +332,32 @@ When disabled:
 4. Communication profiles are blended with these weights
 5. Response generator uses synthesized profile
 
-### Response Generation Flow
+### AI Suggestion Generation Flow
+1. User clicks "AI" button in conversation
+2. Check if response ID exists in database (first request vs subsequent)
+3. **First Request**:
+   - Load ALL conversation messages (not just last 50)
+   - Get categories for current conversation
+   - Get reference dialogs in same categories
+   - Separate into 70% successful, 15% failed, 15% AI improvement
+   - Build comprehensive context with:
+     - Target user info (name, bio, desired outcome, meeting context, important details)
+     - SubTarget user info and communication style profile
+     - Full conversation history
+     - Reference examples (70/15/15)
+     - AI instructions for goal progression
+   - Send full context to OpenAI Responses API with `store=true`
+   - Save response ID to database
+4. **Subsequent Requests**:
+   - Load response ID from database
+   - Get last message from target user
+   - Send only new message to OpenAI Responses API with `previous_response_id`
+   - OpenAI remembers all previous context
+   - Update response ID in database
+5. Return generated suggestion to frontend
+6. User can copy suggestion to message field and edit before sending
+
+### Automated Response Generation Flow
 1. Receive incoming message from target
 2. Check cross-platform context toggle
 3. Aggregate chat history (all SubTarget Users if enabled, or just current if disabled)

@@ -1155,6 +1155,268 @@ public class ConversationController {
     }
 
     /**
+     * Generate an AI suggestion for a reply (without sending it)
+     * Uses 70/15/15 strategy with OpenAI Responses API for conversation state management
+     * GET /api/conversations/suggest?targetUserId=...&userId=...&subtargetUserId=...&multiple=false
+     */
+    @GetMapping("/suggest")
+    public ResponseEntity<ApiResponse<Object>> generateSuggestion(
+            @RequestParam("targetUserId") Integer targetUserId,
+            @RequestParam(value = "userId", required = false) Integer userId,
+            @RequestParam(value = "subtargetUserId", required = false) Integer subtargetUserId,
+            @RequestParam(value = "multiple", required = false, defaultValue = "false") Boolean multiple) {
+        try {
+            int currentUserId = userId != null ? userId : 1;
+            
+            DatabaseManager databaseManager = new DatabaseManager();
+            TargetUserService targetUserService = new TargetUserService(databaseManager);
+            TargetUser targetUser = targetUserService.getTargetUserById(targetUserId);
+
+            if (targetUser == null) {
+                return ResponseEntity.badRequest().body(ApiResponse.error("Target user not found"));
+            }
+
+            // Get SubTarget User if provided
+            com.aria.core.model.SubTargetUser subtargetUser = null;
+            if (subtargetUserId != null) {
+                com.aria.service.SubTargetUserService subTargetUserService = new com.aria.service.SubTargetUserService(databaseManager);
+                subtargetUser = subTargetUserService.getSubTargetUserById(subtargetUserId);
+                if (subtargetUser == null || subtargetUser.getTargetUserId() != targetUserId) {
+                    return ResponseEntity.badRequest().body(ApiResponse.error("SubTarget user not found or does not belong to this Target user"));
+                }
+            }
+
+            // Check if cross-platform context is enabled
+            boolean crossPlatformContextEnabled = targetUser.isCrossPlatformContextEnabled();
+
+            // Initialize response manager and context builder
+            com.aria.ai.AriaResponseManager responseManager = new com.aria.ai.AriaResponseManager();
+            com.aria.ai.ContextBuilder70_15_15 contextBuilder = new com.aria.ai.ContextBuilder70_15_15();
+
+            // Get or create response ID
+            Integer subtargetUserIdForResponse = subtargetUser != null ? subtargetUser.getId() : null;
+            String previousResponseId = responseManager.getResponseId(targetUserId, subtargetUserIdForResponse);
+            Long lastStoredMessageId = responseManager.getLastMessageId(targetUserId, subtargetUserIdForResponse);
+
+            // Get all messages (enough to get new ones since last suggestion)
+            java.util.List<java.util.Map<String, Object>> allMessages = new java.util.ArrayList<>();
+            Long highestMessageId = null;
+            try {
+                ResponseEntity<ApiResponse<java.util.List<java.util.Map<String, Object>>>> messagesResp = 
+                    getMessages(targetUserId, currentUserId, 100, subtargetUserId); // Get more messages to find new ones
+                ApiResponse<java.util.List<java.util.Map<String, Object>>> body = messagesResp.getBody();
+                if (body != null && body.isSuccess()) {
+                    allMessages = body.getData();
+                    // Find highest message ID
+                    for (java.util.Map<String, Object> msg : allMessages) {
+                        Object msgIdObj = msg.get("messageId");
+                        if (msgIdObj != null) {
+                            long msgId = ((Number) msgIdObj).longValue();
+                            if (highestMessageId == null || msgId > highestMessageId) {
+                                highestMessageId = msgId;
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Warning: Failed to load messages: " + e.getMessage());
+            }
+
+            // Build conversation snippet from new messages (since last suggestion)
+            StringBuilder conversationSnippet = new StringBuilder();
+            boolean hasNewMessages = false;
+            String lastMessageFromTarget = null; // Track for fallback
+            
+            if (lastStoredMessageId != null && !allMessages.isEmpty()) {
+                // Get all messages after the last stored message ID
+                for (java.util.Map<String, Object> msg : allMessages) {
+                    Object msgIdObj = msg.get("messageId");
+                    if (msgIdObj != null) {
+                        long msgId = ((Number) msgIdObj).longValue();
+                        if (msgId > lastStoredMessageId) {
+                            Boolean fromUser = (Boolean) msg.get("fromUser");
+                            String text = (String) msg.get("text");
+                            if (text != null && !text.trim().isEmpty()) {
+                                conversationSnippet.append(fromUser ? "You" : "Them")
+                                                  .append(": ")
+                                                  .append(text)
+                                                  .append("\n");
+                                hasNewMessages = true;
+                                // Track last message from target for fallback
+                                if (!fromUser) {
+                                    lastMessageFromTarget = text;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // If no new messages since last suggestion, get the last message from target user
+            if (!hasNewMessages || conversationSnippet.length() == 0) {
+                int count = 0;
+                for (int i = allMessages.size() - 1; i >= 0 && count < 10; i--) {
+                    java.util.Map<String, Object> msg = allMessages.get(i);
+                    Boolean fromUser = (Boolean) msg.get("fromUser");
+                    String text = (String) msg.get("text");
+                    if (!fromUser && text != null && !text.trim().isEmpty()) {
+                        lastMessageFromTarget = text;
+                        break;
+                    }
+                    count++;
+                }
+            }
+            
+            // Determine what to send to OpenAI
+            String newMessage;
+            if (!hasNewMessages || conversationSnippet.length() == 0) {
+                // No new messages, use last target message or default
+                newMessage = lastMessageFromTarget != null && !lastMessageFromTarget.trim().isEmpty()
+                    ? lastMessageFromTarget
+                    : "Generate an appropriate opening message or continue the conversation naturally.";
+            } else {
+                // Use the conversation snippet (all new messages since last suggestion)
+                newMessage = conversationSnippet.toString().trim();
+            }
+
+            String suggestion = null;
+
+            if (previousResponseId != null) {
+                // Continue existing conversation - send all new messages since last suggestion
+                suggestion = responseManager.generateReply(targetUser, subtargetUser, newMessage, null, highestMessageId);
+            } else {
+                // First call - build full 70/15/15 context
+                try {
+                    String fullContext = contextBuilder.build70_15_15_Context(
+                        targetUser, subtargetUser, currentUserId, crossPlatformContextEnabled);
+                    suggestion = responseManager.generateReply(targetUser, subtargetUser, 
+                        fullContext + "\n\nNew message to respond to: " + newMessage, fullContext, highestMessageId);
+                } catch (Exception e) {
+                    System.err.println("Error building 70/15/15 context: " + e.getMessage());
+                    e.printStackTrace();
+                    // Fall through to default response
+                }
+            }
+
+            // Fallback to default response if AI fails (e.g., API key issues, quota exceeded)
+            if (suggestion == null || suggestion.trim().isEmpty()) {
+                // Generate a contextually appropriate default response
+                StringBuilder defaultResponse = new StringBuilder();
+                
+                if (lastMessageFromTarget == null || lastMessageFromTarget.trim().isEmpty()) {
+                    // Opening message
+                    if (subtargetUser != null && subtargetUser.getAdvancedCommunicationSettings() != null) {
+                        try {
+                            org.json.JSONObject settings = new org.json.JSONObject(subtargetUser.getAdvancedCommunicationSettings());
+                            String preferredOpening = settings.optString("preferredOpening", "");
+                            if (!preferredOpening.trim().isEmpty()) {
+                                defaultResponse.append(preferredOpening);
+                            } else {
+                                defaultResponse.append("Hey! How are you doing?");
+                            }
+                        } catch (Exception e) {
+                            defaultResponse.append("Hey! How are you doing?");
+                        }
+                    } else {
+                        defaultResponse.append("Hey! How are you doing?");
+                    }
+                } else {
+                    // Response to existing message
+                    defaultResponse.append("That's interesting! Tell me more about that.");
+                }
+                
+                suggestion = defaultResponse.toString();
+            }
+
+            // If multiple suggestions requested, generate variations
+            if (Boolean.TRUE.equals(multiple)) {
+                java.util.List<String> suggestions = new java.util.ArrayList<>();
+                suggestions.add(suggestion); // Add the first suggestion
+                
+                // Generate 2-3 additional variations using different style prompts
+                // Note: For variations, we generate them without saving to main response ID
+                // to avoid interfering with the main conversation state
+                String[] variationPrompts = {
+                    "Generate a more casual and friendly response",
+                    "Generate a more professional and concise response",
+                    "Generate a more engaging and question-based response"
+                };
+                
+                for (int i = 0; i < Math.min(3, variationPrompts.length); i++) {
+                    String variationPrompt = variationPrompts[i] + " to: " + newMessage;
+                    String variation = null;
+                    
+                    // Try to generate variation (without saving to main response ID)
+                    // We'll use the same context but with a variation instruction
+                    try {
+                        if (previousResponseId != null) {
+                            // For existing conversation, create a temporary variation
+                            // by modifying the prompt slightly (don't update lastMessageId for variations)
+                            variation = responseManager.generateReply(targetUser, subtargetUser, 
+                                variationPrompt, null, null);
+                        } else {
+                            // For new conversation, use full context with variation instruction
+                            String fullContext = contextBuilder.build70_15_15_Context(
+                                targetUser, subtargetUser, currentUserId, crossPlatformContextEnabled);
+                            variation = responseManager.generateReply(targetUser, subtargetUser, 
+                                fullContext + "\n\n" + variationPrompt + "\n\nNew message to respond to: " + newMessage, 
+                                fullContext, null);
+                        }
+                    } catch (Exception e) {
+                        System.err.println("Error generating variation " + i + ": " + e.getMessage());
+                    }
+                    
+                    // Fallback to default variations if AI fails
+                    if (variation == null || variation.trim().isEmpty()) {
+                        if (lastMessageFromTarget == null || lastMessageFromTarget.trim().isEmpty()) {
+                            // Opening message variations
+                            if (i == 0) {
+                                variation = "Hey there! What's up?";
+                            } else if (i == 1) {
+                                variation = "Hello, how can I help you today?";
+                            } else {
+                                variation = "Hi! How are things going?";
+                            }
+                        } else {
+                            // Response variations
+                            if (i == 0) {
+                                variation = "That sounds great! I'd love to hear more.";
+                            } else if (i == 1) {
+                                variation = "Interesting point. Can you elaborate?";
+                            } else {
+                                variation = "That's really cool! What made you think of that?";
+                            }
+                        }
+                    }
+                    
+                    // Only add if different from existing suggestions
+                    if (variation != null && !variation.trim().isEmpty() && 
+                        !suggestions.contains(variation) && !variation.equals(suggestion)) {
+                        suggestions.add(variation);
+                    }
+                }
+                
+                // Ensure we have at least the original suggestion
+                if (suggestions.isEmpty()) {
+                    suggestions.add(suggestion);
+                }
+                
+                // Return list of suggestions
+                return ResponseEntity.ok(ApiResponse.success("AI suggestions generated", suggestions));
+            }
+
+            // Return single suggestion
+            return ResponseEntity.ok(ApiResponse.success("AI suggestion generated", suggestion));
+        } catch (Exception e) {
+            System.err.println("Error generating AI suggestion: " + e.getMessage());
+            e.printStackTrace();
+            // Return a safe default response even on error
+            return ResponseEntity.ok(ApiResponse.success("AI suggestion generated", 
+                "How about we discuss this further?"));
+        }
+    }
+
+    /**
      * Edit the last outgoing message to the target (Telegram)
      * POST /api/conversations/editLast?targetUserId=...&userId=...
      * body: text/plain (new message text)

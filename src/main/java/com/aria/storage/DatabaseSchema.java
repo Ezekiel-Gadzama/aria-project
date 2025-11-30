@@ -242,12 +242,38 @@ public class DatabaseSchema {
         stmt.execute("CREATE INDEX IF NOT EXISTS idx_summaries_conv_state_id ON conversation_summaries(conversation_state_id)");
         stmt.execute("CREATE INDEX IF NOT EXISTS idx_summaries_goal_id ON conversation_summaries(goal_id)");
 
-        // Quiz indexes
-        stmt.execute("CREATE INDEX IF NOT EXISTS idx_quiz_questions_summary_id ON quiz_questions(conversation_summary_id)");
-        stmt.execute("CREATE INDEX IF NOT EXISTS idx_quiz_results_question_id ON quiz_results(quiz_question_id)");
+            // Quiz indexes
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_quiz_questions_summary_id ON quiz_questions(conversation_summary_id)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_quiz_results_question_id ON quiz_results(quiz_question_id)");
 
-        System.out.println("Database indexes created successfully!");
-    }
+            // Target user responses (OpenAI Responses API state storage)
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS target_user_responses (
+                    id SERIAL PRIMARY KEY,
+                    target_user_id INTEGER NOT NULL REFERENCES target_users(id) ON DELETE CASCADE,
+                    subtarget_user_id INTEGER REFERENCES subtarget_users(id) ON DELETE CASCADE,
+                    openai_response_id VARCHAR(255) UNIQUE NOT NULL,
+                    last_message_id BIGINT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(target_user_id, subtarget_user_id)
+                )
+            """);
+            
+            // Add last_message_id column if it doesn't exist (for existing databases)
+            try {
+                stmt.execute("ALTER TABLE target_user_responses ADD COLUMN IF NOT EXISTS last_message_id BIGINT");
+            } catch (SQLException e) {
+                // Column might already exist, ignore
+            }
+
+            // Indexes for target_user_responses
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_target_user_responses_target_user_id ON target_user_responses(target_user_id)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_target_user_responses_subtarget_user_id ON target_user_responses(subtarget_user_id)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_target_user_responses_openai_response_id ON target_user_responses(openai_response_id)");
+
+            System.out.println("Database indexes created successfully!");
+        }
 
     private static Connection getConnection() throws SQLException {
         return java.sql.DriverManager.getConnection(URL, USER, PASSWORD);

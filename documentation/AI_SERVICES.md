@@ -8,15 +8,19 @@ This document describes all AI service integrations in the ARIA application, inc
 
 1. [Overview](#overview)
 2. [OpenAI Client](#openai-client)
-3. [Undetectable.ai Client](#undetectableai-client)
-4. [Response Generator](#response-generator)
-5. [Conversation Summarizer](#conversation-summarizer)
-6. [Quiz Generator](#quiz-generator)
+3. [OpenAI Responses API Client](#openai-responses-api-client)
+4. [Aria Response Manager](#aria-response-manager)
+5. [Context Builder (70/15/15)](#context-builder-701515)
+6. [Undetectable.ai Client](#undetectableai-client)
+7. [Response Generator](#response-generator)
+8. [Conversation Summarizer](#conversation-summarizer)
+9. [Quiz Generator](#quiz-generator)
 
 ## Overview
 
 The ARIA application integrates with multiple AI services:
 - **OpenAI**: Text generation, categorization, summarization
+- **OpenAI Responses API**: Conversation state management for AI suggestions
 - **Undetectable.ai**: Humanization of AI-generated text
 
 **Location**: `src/main/java/com/aria/ai/`
@@ -102,6 +106,210 @@ String response = client.generateResponse("Hello, how are you?");
 ```
 
 **Reference**: `OpenAIClient.java` lines 28-67
+
+---
+
+## OpenAI Responses API Client
+
+**Location**: `src/main/java/com/aria/ai/OpenAIResponsesClient.java`
+
+### Purpose
+
+Provides client for OpenAI Responses API, which maintains conversation state across requests. This enables the AI to remember full conversation context without resending it every time.
+
+### Configuration
+
+**Reference**: `OpenAIResponsesClient.java` lines 12-22
+
+```java
+public OpenAIResponsesClient() {
+    this.client = new OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .build();
+    this.apiKey = System.getenv("OPENAI_API_KEY");
+    this.model = "gpt-4";
+}
+```
+
+### Methods
+
+#### `createResponse(String input)`
+
+**Reference**: `OpenAIResponsesClient.java` lines 28-70
+
+Creates a new response with full context (first call). OpenAI stores the conversation state and returns a response ID.
+
+```java
+public ResponseResult createResponse(String input) {
+    // Sends full context to OpenAI with store=true
+    // Returns response ID and output text
+}
+```
+
+#### `continueResponse(String previousResponseId, String input)`
+
+**Reference**: `OpenAIResponsesClient.java` lines 77-119
+
+Continues existing conversation (subsequent calls). Only sends the new message; OpenAI remembers all previous context.
+
+```java
+public ResponseResult continueResponse(String previousResponseId, String input) {
+    // Sends only new message with previous_response_id
+    // OpenAI remembers all previous context
+    // Returns updated response ID and output text
+}
+```
+
+### API Configuration
+
+- **Base URL**: `https://api.openai.com/v1/responses`
+- **Model**: `gpt-4`
+- **Timeout**: 30 seconds (connect), 60 seconds (read)
+
+### Usage
+
+```java
+OpenAIResponsesClient client = new OpenAIResponsesClient();
+
+// First call - send full context
+ResponseResult result = client.createResponse(fullContext);
+String responseId = result.responseId;
+String suggestion = result.outputText;
+
+// Subsequent calls - send only new message
+ResponseResult nextResult = client.continueResponse(responseId, newMessage);
+```
+
+**Reference**: `OpenAIResponsesClient.java` lines 28-119
+
+---
+
+## Aria Response Manager
+
+**Location**: `src/main/java/com/aria/ai/AriaResponseManager.java`
+
+### Purpose
+
+Manages OpenAI Responses API state for target users. Stores response IDs in database to maintain conversation context across sessions.
+
+### Key Features
+
+- **Per-Subtarget Isolation**: Each subtarget user has its own response ID
+- **Cross-Platform Support**: Single response ID for cross-platform context (NULL subtarget_user_id)
+- **Database Persistence**: Response IDs stored in `target_user_responses` table
+- **In-Memory Cache**: Fast access with database sync
+
+### Methods
+
+#### `getResponseId(int targetUserId, Integer subtargetUserId)`
+
+Gets stored response ID for a target/subtarget user combination.
+
+#### `saveResponseId(int targetUserId, Integer subtargetUserId, String responseId)`
+
+Saves response ID to database and cache.
+
+#### `generateReply(TargetUser, SubTargetUser, String newMessage, String fullContext)`
+
+Generates reply using OpenAI Responses API:
+- If response ID exists: Continues conversation (sends only new message)
+- If no response ID: Creates new conversation (sends full context)
+
+### Database Schema
+
+```sql
+CREATE TABLE target_user_responses (
+    id SERIAL PRIMARY KEY,
+    target_user_id INTEGER NOT NULL REFERENCES target_users(id),
+    subtarget_user_id INTEGER REFERENCES subtarget_users(id), -- NULL for cross-platform
+    openai_response_id VARCHAR(255) UNIQUE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(target_user_id, subtarget_user_id)
+)
+```
+
+### Usage
+
+```java
+AriaResponseManager manager = new AriaResponseManager();
+
+// Generate reply (handles first vs subsequent calls automatically)
+String suggestion = manager.generateReply(
+    targetUser, 
+    subtargetUser, 
+    newMessage, 
+    fullContext
+);
+```
+
+**Reference**: `AriaResponseManager.java`
+
+---
+
+## Context Builder (70/15/15)
+
+**Location**: `src/main/java/com/aria/ai/ContextBuilder70_15_15.java`
+
+### Purpose
+
+Builds comprehensive context for AI suggestions using the 70/15/15 strategy:
+- **70%**: Successful dialogs (success score >= 0.7) in same categories
+- **15%**: Failed dialogs (success score < 0.3) in same categories
+- **15%**: AI improvement examples (enhanced successful examples)
+
+### Key Features
+
+- **Full Conversation History**: Loads ALL messages (not just last 50)
+- **Category-Based Learning**: Finds similar dialogs in same categories
+- **Comprehensive Context**: Includes target user info, subtarget user info, communication style, goals
+- **Goal-Oriented Instructions**: Guides AI to gradually progress toward desired outcome
+
+### Methods
+
+#### `build70_15_15_Context(TargetUser, SubTargetUser, int userId, boolean crossPlatformContextEnabled)`
+
+Builds comprehensive context including:
+
+1. **Target User Information**:
+   - Name, Bio, Desired Outcome, Where/How You Met, Important Details
+
+2. **SubTarget User Information**:
+   - Platform, Username, Communication Style Profile
+
+3. **Current Conversation History**:
+   - ALL messages with IDs and reference IDs
+
+4. **Conversation Categories**:
+   - Categories the current conversation belongs to
+
+5. **Reference Conversations (70/15/15)**:
+   - Successful examples (70%)
+   - Failed examples (15%)
+   - AI improvement examples (15%)
+
+6. **AI Instructions**:
+   - Goal progression guidance
+   - Communication style matching
+   - Response guidelines
+
+### Usage
+
+```java
+ContextBuilder70_15_15 builder = new ContextBuilder70_15_15();
+
+String fullContext = builder.build70_15_15_Context(
+    targetUser,
+    subtargetUser,
+    userId,
+    crossPlatformContextEnabled
+);
+```
+
+**Reference**: `ContextBuilder70_15_15.java`
+
+---
 
 ### Success Scoring and Categorization
 
